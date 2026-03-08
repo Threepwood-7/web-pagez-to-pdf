@@ -13,7 +13,6 @@ from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
 GW_HWNDPREV = 3
 HISTORY_LIMIT = 80
 MAX_Z_ORDER_HOPS = 96
-SW_RESTORE = 9
 VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
@@ -43,8 +42,6 @@ USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 USER32.GetClassNameW.restype = ctypes.c_int
 USER32.WindowFromPoint.argtypes = [wintypes.POINT]
 USER32.WindowFromPoint.restype = wintypes.HWND
-USER32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-USER32.ShowWindow.restype = wintypes.BOOL
 USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
 USER32.SetForegroundWindow.restype = wintypes.BOOL
 USER32.SetFocus.argtypes = [wintypes.HWND]
@@ -157,14 +154,21 @@ class WindowCaptureService:
         return hwnd
 
     @staticmethod
-    def activate_window(hwnd: int) -> bool:
-        """Bring a window to foreground for keyboard-driven scrolling."""
+    def activate_window(hwnd: int) -> tuple[bool, str]:
+        """Attempt foreground/focus without changing target window state."""
 
         if hwnd <= 0:
-            return False
-        USER32.ShowWindow(hwnd, SW_RESTORE)
+            return (False, "Target window handle is invalid.")
+        if not bool(USER32.IsWindowVisible(hwnd)):
+            return (False, "Target window is not visible. Bring it on-screen and retry.")
+        if bool(USER32.IsIconic(hwnd)):
+            return (False, "Target window is minimized. Restore it manually, then retry.")
+
+        foreground_ok = bool(USER32.SetForegroundWindow(hwnd))
         USER32.SetFocus(hwnd)
-        return bool(USER32.SetForegroundWindow(hwnd))
+        if not foreground_ok:
+            return (False, "Could not focus target window. Click it once, then retry.")
+        return (True, "")
 
     @staticmethod
     def send_page_down() -> None:

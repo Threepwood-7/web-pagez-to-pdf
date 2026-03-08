@@ -42,9 +42,9 @@ def run_full_page_capture(
 ) -> ScrollCaptureResult:
     """Capture browser frames while paging down, then stitch."""
 
-    activated = service.activate_window(target_hwnd)
+    activated, reason = service.activate_window(target_hwnd)
     if not activated:
-        raise RuntimeError("Could not bring selected window to foreground.")
+        raise RuntimeError(reason or "Could not bring selected window to foreground.")
 
     frames: list[Image.Image] = []
     repeated_count = 0

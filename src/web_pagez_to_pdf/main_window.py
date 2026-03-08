@@ -382,7 +382,10 @@ class MainWindow(QMainWindow):
         if self._selected_target is None:
             self.status_label.setText("Select a target window first.")
             return
-        self._capture_service.activate_window(self._selected_target.hwnd)
+        focused, message = self._capture_service.activate_window(self._selected_target.hwnd)
+        if not focused:
+            self.status_label.setText(message)
+            return
         pixmap = self._capture_service.capture_window(self._selected_target.hwnd)
         if pixmap is None:
             self.status_label.setText("Capture failed.")
