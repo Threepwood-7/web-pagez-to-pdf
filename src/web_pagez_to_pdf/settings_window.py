@@ -27,7 +27,12 @@ from PySide6.QtWidgets import (
 )
 
 from . import widget_naming
-from .scroll_capture import DEFAULT_SCROLL_STRATEGY
+from .scroll_capture import (
+    DEFAULT_CENTER_CLICK_ASSIST,
+    DEFAULT_CURSOR_HOLD_MODE,
+    DEFAULT_SCROLL_STRATEGY,
+    DEFAULT_WHEEL_INJECTION_MODE,
+)
 
 
 @dataclass
@@ -168,6 +173,42 @@ class SettingsWindow(QDialog):
             "capture full scroll strategy wheel pagedown hybrid",
             self.capture_scroll_strategy_combo,
         )
+        self.capture_wheel_injection_combo = QComboBox(self)
+        self.capture_wheel_injection_combo.addItem(
+            "Physical Center (SendInput)",
+            "physical_center_sendinput",
+        )
+        self.capture_wheel_injection_combo.addItem(
+            "Legacy WM_MOUSEWHEEL",
+            "legacy_message_wheel",
+        )
+        self._add_row(
+            capture_group,
+            "capture.wheel_injection_mode",
+            "Wheel Injection",
+            "capture wheel injection sendinput legacy message",
+            self.capture_wheel_injection_combo,
+        )
+        self.capture_center_click_assist_combo = QComboBox(self)
+        self.capture_center_click_assist_combo.addItem("On No Movement", "on_no_movement")
+        self.capture_center_click_assist_combo.addItem("Off", "off")
+        self._add_row(
+            capture_group,
+            "capture.center_click_assist",
+            "Center Click Assist",
+            "capture center click assist fallback",
+            self.capture_center_click_assist_combo,
+        )
+        self.capture_cursor_hold_combo = QComboBox(self)
+        self.capture_cursor_hold_combo.addItem("Keep At Center", "keep_at_center")
+        self.capture_cursor_hold_combo.addItem("Restore Each Step", "restore_each_step")
+        self._add_row(
+            capture_group,
+            "capture.cursor_hold_mode",
+            "Cursor Hold",
+            "capture cursor hold keep center restore each step",
+            self.capture_cursor_hold_combo,
+        )
         self.auto_pick_second_last_checkbox = QCheckBox(
             "Auto-target second last active window", self
         )
@@ -298,6 +339,18 @@ class SettingsWindow(QDialog):
             self.capture_scroll_strategy_combo,
             str(values.get("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)),
         )
+        self._set_combo_value(
+            self.capture_wheel_injection_combo,
+            str(values.get("capture.wheel_injection_mode", DEFAULT_WHEEL_INJECTION_MODE)),
+        )
+        self._set_combo_value(
+            self.capture_center_click_assist_combo,
+            str(values.get("capture.center_click_assist", DEFAULT_CENTER_CLICK_ASSIST)),
+        )
+        self._set_combo_value(
+            self.capture_cursor_hold_combo,
+            str(values.get("capture.cursor_hold_mode", DEFAULT_CURSOR_HOLD_MODE)),
+        )
         self.auto_pick_second_last_checkbox.setChecked(
             bool(values.get("capture.auto_pick_second_last", True))
         )
@@ -325,6 +378,9 @@ class SettingsWindow(QDialog):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.scroll_strategy": str(self.capture_scroll_strategy_combo.currentData()),
+            "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
+            "capture.center_click_assist": str(self.capture_center_click_assist_combo.currentData()),
+            "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),
             "capture.auto_pick_second_last": self.auto_pick_second_last_checkbox.isChecked(),
             "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
             "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),

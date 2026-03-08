@@ -64,8 +64,14 @@ from .models import (
     PrintLayout,
 )
 from .scroll_capture import (
+    CENTER_CLICK_ASSIST_MODES,
+    CURSOR_HOLD_MODES,
+    DEFAULT_CENTER_CLICK_ASSIST,
+    DEFAULT_CURSOR_HOLD_MODE,
     DEFAULT_SCROLL_STRATEGY,
+    DEFAULT_WHEEL_INJECTION_MODE,
     SCROLL_STRATEGIES,
+    WHEEL_INJECTION_MODES,
     ScrollCaptureOptions,
     ScrollCaptureProgress,
     run_full_page_capture,
@@ -282,6 +288,36 @@ class MainWindow(QMainWindow):
             "capture_scroll_strategy_combo",
             "capture_scroll_strategy_combo",
         )
+        self.capture_wheel_injection_combo = QComboBox()
+        self.capture_wheel_injection_combo.addItem(
+            "Physical Center (SendInput)",
+            "physical_center_sendinput",
+        )
+        self.capture_wheel_injection_combo.addItem(
+            "Legacy WM_MOUSEWHEEL",
+            "legacy_message_wheel",
+        )
+        self._assign_control_identity(
+            self.capture_wheel_injection_combo,
+            "capture_wheel_injection_combo",
+            "capture_wheel_injection_combo",
+        )
+        self.capture_center_click_assist_combo = QComboBox()
+        self.capture_center_click_assist_combo.addItem("On No Movement", "on_no_movement")
+        self.capture_center_click_assist_combo.addItem("Off", "off")
+        self._assign_control_identity(
+            self.capture_center_click_assist_combo,
+            "capture_center_click_assist_combo",
+            "capture_center_click_assist_combo",
+        )
+        self.capture_cursor_hold_combo = QComboBox()
+        self.capture_cursor_hold_combo.addItem("Keep At Center", "keep_at_center")
+        self.capture_cursor_hold_combo.addItem("Restore Each Step", "restore_each_step")
+        self._assign_control_identity(
+            self.capture_cursor_hold_combo,
+            "capture_cursor_hold_combo",
+            "capture_cursor_hold_combo",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
@@ -290,8 +326,14 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(self.capture_backend_combo, 2, 1)
         cap_grid.addWidget(QLabel("Scroll strategy"), 3, 0)
         cap_grid.addWidget(self.capture_scroll_strategy_combo, 3, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 4, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 5, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Wheel injection"), 4, 0)
+        cap_grid.addWidget(self.capture_wheel_injection_combo, 4, 1)
+        cap_grid.addWidget(QLabel("Center click assist"), 5, 0)
+        cap_grid.addWidget(self.capture_center_click_assist_combo, 5, 1)
+        cap_grid.addWidget(QLabel("Cursor hold"), 6, 0)
+        cap_grid.addWidget(self.capture_cursor_hold_combo, 6, 1)
+        cap_grid.addWidget(self.auto_target_checkbox, 7, 0, 1, 2)
+        cap_grid.addWidget(self.pick_second_last_button, 8, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -507,6 +549,15 @@ class MainWindow(QMainWindow):
         self.capture_scroll_strategy_combo.currentIndexChanged.connect(
             self._persist_capture_scroll_strategy
         )
+        self.capture_wheel_injection_combo.currentIndexChanged.connect(
+            self._persist_capture_wheel_injection_mode
+        )
+        self.capture_center_click_assist_combo.currentIndexChanged.connect(
+            self._persist_capture_center_click_assist
+        )
+        self.capture_cursor_hold_combo.currentIndexChanged.connect(
+            self._persist_capture_cursor_hold_mode
+        )
         for checkbox in (
             self.pdf_checkbox,
             self.paged_images_checkbox,
@@ -574,6 +625,15 @@ class MainWindow(QMainWindow):
             "capture.scroll_strategy": str(
                 self.capture_scroll_strategy_combo.currentData() or DEFAULT_SCROLL_STRATEGY
             ),
+            "capture.wheel_injection_mode": str(
+                self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
+            ),
+            "capture.center_click_assist": str(
+                self.capture_center_click_assist_combo.currentData() or DEFAULT_CENTER_CLICK_ASSIST
+            ),
+            "capture.cursor_hold_mode": str(
+                self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
+            ),
             "editor.auto_open_mini": self._bool_setting("editor.auto_open_mini", False),
             "editor.show_grid": self._bool_setting("editor.show_grid", False),
             "export.output_dir": self.output_input.text().strip(),
@@ -601,6 +661,27 @@ class MainWindow(QMainWindow):
             self._settings.value("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)
         )
         self._set_scroll_strategy_combo(scroll_strategy)
+        wheel_injection = str(
+            self._settings.value(
+                "capture.wheel_injection_mode",
+                DEFAULT_WHEEL_INJECTION_MODE,
+            )
+        )
+        self._set_wheel_injection_combo(wheel_injection)
+        center_click_assist = str(
+            self._settings.value(
+                "capture.center_click_assist",
+                DEFAULT_CENTER_CLICK_ASSIST,
+            )
+        )
+        self._set_center_click_assist_combo(center_click_assist)
+        cursor_hold_mode = str(
+            self._settings.value(
+                "capture.cursor_hold_mode",
+                DEFAULT_CURSOR_HOLD_MODE,
+            )
+        )
+        self._set_cursor_hold_combo(cursor_hold_mode)
         self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
         self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
         self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
@@ -693,6 +774,76 @@ class MainWindow(QMainWindow):
 
     def _persist_capture_scroll_strategy(self) -> None:
         self._settings.setValue("capture.scroll_strategy", self._capture_scroll_strategy())
+
+    def _set_wheel_injection_combo(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in WHEEL_INJECTION_MODES:
+            normalized = DEFAULT_WHEEL_INJECTION_MODE
+        for index in range(self.capture_wheel_injection_combo.count()):
+            if str(self.capture_wheel_injection_combo.itemData(index)) == normalized:
+                self.capture_wheel_injection_combo.setCurrentIndex(index)
+                return
+        self.capture_wheel_injection_combo.setCurrentIndex(0)
+
+    def _capture_wheel_injection_mode(self) -> str:
+        value = str(
+            self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
+        )
+        if value in WHEEL_INJECTION_MODES:
+            return value
+        return DEFAULT_WHEEL_INJECTION_MODE
+
+    def _persist_capture_wheel_injection_mode(self) -> None:
+        self._settings.setValue(
+            "capture.wheel_injection_mode",
+            self._capture_wheel_injection_mode(),
+        )
+
+    def _set_center_click_assist_combo(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in CENTER_CLICK_ASSIST_MODES:
+            normalized = DEFAULT_CENTER_CLICK_ASSIST
+        for index in range(self.capture_center_click_assist_combo.count()):
+            if str(self.capture_center_click_assist_combo.itemData(index)) == normalized:
+                self.capture_center_click_assist_combo.setCurrentIndex(index)
+                return
+        self.capture_center_click_assist_combo.setCurrentIndex(0)
+
+    def _capture_center_click_assist(self) -> str:
+        value = str(
+            self.capture_center_click_assist_combo.currentData() or DEFAULT_CENTER_CLICK_ASSIST
+        )
+        if value in CENTER_CLICK_ASSIST_MODES:
+            return value
+        return DEFAULT_CENTER_CLICK_ASSIST
+
+    def _persist_capture_center_click_assist(self) -> None:
+        self._settings.setValue(
+            "capture.center_click_assist",
+            self._capture_center_click_assist(),
+        )
+
+    def _set_cursor_hold_combo(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in CURSOR_HOLD_MODES:
+            normalized = DEFAULT_CURSOR_HOLD_MODE
+        for index in range(self.capture_cursor_hold_combo.count()):
+            if str(self.capture_cursor_hold_combo.itemData(index)) == normalized:
+                self.capture_cursor_hold_combo.setCurrentIndex(index)
+                return
+        self.capture_cursor_hold_combo.setCurrentIndex(0)
+
+    def _capture_cursor_hold_mode(self) -> str:
+        value = str(self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE)
+        if value in CURSOR_HOLD_MODES:
+            return value
+        return DEFAULT_CURSOR_HOLD_MODE
+
+    def _persist_capture_cursor_hold_mode(self) -> None:
+        self._settings.setValue(
+            "capture.cursor_hold_mode",
+            self._capture_cursor_hold_mode(),
+        )
 
     def _sync_quick_formats_from_main(self) -> None:
         if self._format_sync_guard:
@@ -864,6 +1015,9 @@ class MainWindow(QMainWindow):
                 delay_ms=int(self.capture_delay_spin.value()),
                 capture_backend=self._capture_backend_primary(),
                 scroll_strategy=self._capture_scroll_strategy(),
+                wheel_injection_mode=self._capture_wheel_injection_mode(),
+                center_click_assist=self._capture_center_click_assist(),
+                cursor_hold_mode=self._capture_cursor_hold_mode(),
             ),
             stop_event=self._stop_event,
         )
@@ -877,7 +1031,9 @@ class MainWindow(QMainWindow):
         )
         self._append_capture_log(
             "Full capture started "
-            f"(backend={self._capture_backend_primary()}, strategy={self._capture_scroll_strategy()})."
+            f"(backend={self._capture_backend_primary()}, strategy={self._capture_scroll_strategy()}, "
+            f"wheel={self._capture_wheel_injection_mode()}, click_assist={self._capture_center_click_assist()}, "
+            f"cursor={self._capture_cursor_hold_mode()})."
         )
         self._stop_overlay.show_top_right()
         self._capture_worker.start()

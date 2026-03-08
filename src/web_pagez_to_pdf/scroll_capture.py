@@ -20,6 +20,21 @@ SCROLL_STRATEGIES = (
     "pagedown_only",
     "wheel_only",
 )
+DEFAULT_WHEEL_INJECTION_MODE = "physical_center_sendinput"
+WHEEL_INJECTION_MODES = (
+    DEFAULT_WHEEL_INJECTION_MODE,
+    "legacy_message_wheel",
+)
+DEFAULT_CENTER_CLICK_ASSIST = "on_no_movement"
+CENTER_CLICK_ASSIST_MODES = (
+    "off",
+    DEFAULT_CENTER_CLICK_ASSIST,
+)
+DEFAULT_CURSOR_HOLD_MODE = "keep_at_center"
+CURSOR_HOLD_MODES = (
+    DEFAULT_CURSOR_HOLD_MODE,
+    "restore_each_step",
+)
 STOP_REASON_RUNNING = "running"
 STOP_REASON_USER = "user_stop"
 STOP_REASON_REPEAT = "repeat_detected"
@@ -35,6 +50,9 @@ class ScrollCaptureOptions:
     max_capture_pages: int = 18
     capture_backend: str = "screen_region_gdi"
     scroll_strategy: str = DEFAULT_SCROLL_STRATEGY
+    wheel_injection_mode: str = DEFAULT_WHEEL_INJECTION_MODE
+    center_click_assist: str = DEFAULT_CENTER_CLICK_ASSIST
+    cursor_hold_mode: str = DEFAULT_CURSOR_HOLD_MODE
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -80,164 +98,233 @@ def run_full_page_capture(
     repeat_stop = max(1, int(options.repeated_frame_stop_count))
     delay_ms = max(120, int(options.delay_ms))
     scroll_strategy = _normalize_scroll_strategy(options.scroll_strategy)
+    wheel_mode = _normalize_wheel_injection_mode(options.wheel_injection_mode)
+    click_assist = _normalize_center_click_assist(options.center_click_assist)
+    cursor_hold_mode = _normalize_cursor_hold_mode(options.cursor_hold_mode)
 
-    first_pixmap, first_backend = service.capture_window(
+    service.start_full_capture_input_session(
         target_hwnd,
-        primary_backend=options.capture_backend,
+        cursor_hold_mode=cursor_hold_mode,
     )
-    if first_pixmap is None:
-        raise RuntimeError("No frames were captured.")
-
-    frames: list[Image.Image] = [ImageQt.fromqpixmap(first_pixmap).convert("RGB")]
-    repeated_count = 0
-    stop_reason = STOP_REASON_RUNNING
-    _emit_progress(
-        progress_callback,
-        ScrollCaptureProgress(
-            frame_index=1,
-            backend_used=first_backend,
-            scroll_method="initial",
-            diff_score=None,
-            repeated_count=0,
-            stop_reason=STOP_REASON_RUNNING,
-            message=f"Frame 1 captured via {first_backend or 'unknown backend'} (initial).",
-        ),
-    )
-
-    while len(frames) < max_pages:
-        if stop_requested():
-            stop_reason = STOP_REASON_USER
-            break
-
-        focused, focus_reason = service.ensure_window_foreground(target_hwnd)
-        if not focused:
-            stop_reason = STOP_REASON_CAPTURE_FAILED
-            _emit_progress(
-                progress_callback,
-                ScrollCaptureProgress(
-                    frame_index=len(frames),
-                    backend_used="",
-                    scroll_method="focus",
-                    diff_score=None,
-                    repeated_count=repeated_count,
-                    stop_reason=stop_reason,
-                    message=focus_reason or "Could not refocus target window.",
-                ),
-            )
-            break
-
-        scroll_method = service.scroll_target_window(target_hwnd, strategy=scroll_strategy)
-        if not scroll_method:
-            scroll_method = "fallback"
-        service.wait_after_scroll(delay_ms)
-
-        attempted_frame = len(frames) + 1
-        pixmap, backend_used = service.capture_window(
+    try:
+        first_frame, first_backend = _capture_frame(
+            service,
             target_hwnd,
-            primary_backend=options.capture_backend,
+            options.capture_backend,
         )
-        if pixmap is None:
-            stop_reason = STOP_REASON_CAPTURE_FAILED
-            _emit_progress(
-                progress_callback,
-                ScrollCaptureProgress(
-                    frame_index=attempted_frame,
-                    backend_used=backend_used,
-                    scroll_method=scroll_method,
-                    diff_score=None,
-                    repeated_count=repeated_count,
-                    stop_reason=stop_reason,
-                    message=f"Frame {attempted_frame} capture failed after scroll={scroll_method}.",
-                ),
-            )
-            break
+        if first_frame is None:
+            raise RuntimeError("No frames were captured.")
 
-        frame = ImageQt.fromqpixmap(pixmap).convert("RGB")
-        diff_score = frame_diff_score(frames[-1], frame)
-        if scroll_strategy == DEFAULT_SCROLL_STRATEGY and diff_score <= threshold:
-            fallback_method = service.scroll_target_window(target_hwnd, strategy="pagedown_only")
-            service.wait_after_scroll(delay_ms)
-            fallback_pixmap, fallback_backend = service.capture_window(
-                target_hwnd,
-                primary_backend=options.capture_backend,
-            )
-            if fallback_pixmap is None:
+        frames: list[Image.Image] = [first_frame]
+        repeated_count = 0
+        stop_reason = STOP_REASON_RUNNING
+        _emit_progress(
+            progress_callback,
+            ScrollCaptureProgress(
+                frame_index=1,
+                backend_used=first_backend,
+                scroll_method="initial",
+                diff_score=None,
+                repeated_count=0,
+                stop_reason=STOP_REASON_RUNNING,
+                message=f"Frame 1 captured via {first_backend or 'unknown backend'} (initial).",
+            ),
+        )
+
+        while len(frames) < max_pages:
+            if stop_requested():
+                stop_reason = STOP_REASON_USER
+                break
+
+            focused, focus_reason = service.ensure_window_foreground(target_hwnd)
+            if not focused:
                 stop_reason = STOP_REASON_CAPTURE_FAILED
                 _emit_progress(
                     progress_callback,
                     ScrollCaptureProgress(
-                        frame_index=attempted_frame,
-                        backend_used=fallback_backend,
-                        scroll_method=fallback_method or "pagedown",
-                        diff_score=diff_score,
+                        frame_index=len(frames),
+                        backend_used="",
+                        scroll_method="focus",
+                        diff_score=None,
                         repeated_count=repeated_count,
                         stop_reason=stop_reason,
-                        message=f"Frame {attempted_frame} fallback capture failed after no wheel movement.",
+                        message=focus_reason or "Could not refocus target window.",
                     ),
                 )
                 break
-            frame = ImageQt.fromqpixmap(fallback_pixmap).convert("RGB")
-            diff_score = frame_diff_score(frames[-1], frame)
-            backend_used = fallback_backend or backend_used
-            if diff_score <= threshold:
-                scroll_method = "fallback"
-            else:
-                scroll_method = fallback_method or "pagedown"
 
-        if diff_score <= threshold:
-            repeated_count += 1
-            message = (
-                f"Frame {attempted_frame}: no movement (scroll={scroll_method}, "
-                f"diff={diff_score:.2f}, repeat={repeated_count}/{repeat_stop})."
+            attempted_frame_index = len(frames) + 1
+            frame, backend_used, scroll_method = _capture_after_scroll_ladder(
+                service=service,
+                target_hwnd=target_hwnd,
+                previous_frame=frames[-1],
+                delay_ms=delay_ms,
+                capture_backend=options.capture_backend,
+                scroll_strategy=scroll_strategy,
+                wheel_mode=wheel_mode,
+                click_assist=click_assist,
+                cursor_hold_mode=cursor_hold_mode,
+                threshold=threshold,
             )
-            if repeated_count >= repeat_stop:
-                stop_reason = STOP_REASON_REPEAT
+            if frame is None:
+                stop_reason = STOP_REASON_CAPTURE_FAILED
                 _emit_progress(
                     progress_callback,
                     ScrollCaptureProgress(
-                        frame_index=attempted_frame,
+                        frame_index=attempted_frame_index,
                         backend_used=backend_used,
                         scroll_method=scroll_method,
-                        diff_score=diff_score,
+                        diff_score=None,
                         repeated_count=repeated_count,
                         stop_reason=stop_reason,
-                        message=message,
+                        message=(
+                            f"Frame {attempted_frame_index} capture failed "
+                            f"after scroll={scroll_method}."
+                        ),
                     ),
                 )
                 break
-        else:
-            repeated_count = 0
-            message = (
-                f"Frame {attempted_frame} captured via {backend_used or 'unknown backend'} "
-                f"(scroll={scroll_method}, diff={diff_score:.2f})."
+
+            diff_score = frame_diff_score(frames[-1], frame)
+            if diff_score <= threshold:
+                repeated_count += 1
+                message = (
+                    f"Frame {attempted_frame_index}: no movement (scroll={scroll_method}, "
+                    f"diff={diff_score:.2f}, repeat={repeated_count}/{repeat_stop})."
+                )
+                if repeated_count >= repeat_stop:
+                    stop_reason = STOP_REASON_REPEAT
+                    _emit_progress(
+                        progress_callback,
+                        ScrollCaptureProgress(
+                            frame_index=attempted_frame_index,
+                            backend_used=backend_used,
+                            scroll_method=scroll_method,
+                            diff_score=diff_score,
+                            repeated_count=repeated_count,
+                            stop_reason=stop_reason,
+                            message=message,
+                        ),
+                    )
+                    break
+            else:
+                repeated_count = 0
+                message = (
+                    f"Frame {attempted_frame_index} captured via {backend_used or 'unknown backend'} "
+                    f"(scroll={scroll_method}, diff={diff_score:.2f})."
+                )
+
+            frames.append(frame)
+            _emit_progress(
+                progress_callback,
+                ScrollCaptureProgress(
+                    frame_index=len(frames),
+                    backend_used=backend_used,
+                    scroll_method=scroll_method,
+                    diff_score=diff_score,
+                    repeated_count=repeated_count,
+                    stop_reason=STOP_REASON_RUNNING,
+                    message=message,
+                ),
             )
 
-        frames.append(frame)
-        _emit_progress(
-            progress_callback,
-            ScrollCaptureProgress(
-                frame_index=len(frames),
-                backend_used=backend_used,
-                scroll_method=scroll_method,
-                diff_score=diff_score,
-                repeated_count=repeated_count,
-                stop_reason=STOP_REASON_RUNNING,
-                message=message,
-            ),
+        if stop_reason == STOP_REASON_RUNNING:
+            stop_reason = STOP_REASON_MAX_PAGES
+        if not frames:
+            raise RuntimeError("No frames were captured.")
+
+        stitched = stitch_frames(frames).image
+        return ScrollCaptureResult(
+            image=stitched,
+            captured_frames=len(frames),
+            ended_by_repeat=stop_reason == STOP_REASON_REPEAT,
+            stop_reason=stop_reason,
         )
+    finally:
+        service.end_full_capture_input_session()
 
-    if stop_reason == STOP_REASON_RUNNING:
-        stop_reason = STOP_REASON_MAX_PAGES
-    if not frames:
-        raise RuntimeError("No frames were captured.")
 
-    stitched = stitch_frames(frames).image
-    return ScrollCaptureResult(
-        image=stitched,
-        captured_frames=len(frames),
-        ended_by_repeat=stop_reason == STOP_REASON_REPEAT,
-        stop_reason=stop_reason,
+def _capture_after_scroll_ladder(
+    *,
+    service: WindowCaptureService,
+    target_hwnd: int,
+    previous_frame: Image.Image,
+    delay_ms: int,
+    capture_backend: str,
+    scroll_strategy: str,
+    wheel_mode: str,
+    click_assist: str,
+    cursor_hold_mode: str,
+    threshold: float,
+) -> tuple[Image.Image | None, str, str]:
+    scroll_method = "wheel_center"
+    if scroll_strategy == "pagedown_only":
+        service.send_page_down()
+        service.wait_after_scroll(delay_ms)
+        frame, backend = _capture_frame(service, target_hwnd, capture_backend)
+        return (frame, backend, "pagedown")
+
+    service.wheel_down_at_window_center(
+        target_hwnd,
+        wheel_injection_mode=wheel_mode,
+        cursor_hold_mode=cursor_hold_mode,
     )
+    service.wait_after_scroll(delay_ms)
+    frame, backend = _capture_frame(service, target_hwnd, capture_backend)
+    if frame is None:
+        return (None, backend, scroll_method)
+    diff_score = frame_diff_score(previous_frame, frame)
+    if diff_score > threshold:
+        return (frame, backend, scroll_method)
+
+    if click_assist == "on_no_movement":
+        service.click_window_center(target_hwnd, cursor_hold_mode=cursor_hold_mode)
+        service.wheel_down_at_window_center(
+            target_hwnd,
+            wheel_injection_mode=wheel_mode,
+            cursor_hold_mode=cursor_hold_mode,
+        )
+        service.wait_after_scroll(delay_ms)
+        frame_after_click, backend_after_click = _capture_frame(
+            service, target_hwnd, capture_backend
+        )
+        scroll_method = "click_center_then_wheel"
+        if frame_after_click is None:
+            return (None, backend_after_click, scroll_method)
+        frame = frame_after_click
+        backend = backend_after_click or backend
+        diff_score = frame_diff_score(previous_frame, frame)
+        if diff_score > threshold or scroll_strategy == "wheel_only":
+            return (frame, backend, scroll_method)
+    elif scroll_strategy == "wheel_only":
+        return (frame, backend, scroll_method)
+
+    if scroll_strategy == DEFAULT_SCROLL_STRATEGY:
+        service.send_page_down()
+        service.wait_after_scroll(delay_ms)
+        frame_after_page, backend_after_page = _capture_frame(
+            service, target_hwnd, capture_backend
+        )
+        scroll_method = "pagedown"
+        if frame_after_page is None:
+            return (None, backend_after_page, scroll_method)
+        return (frame_after_page, backend_after_page or backend, scroll_method)
+
+    return (frame, backend, scroll_method)
+
+
+def _capture_frame(
+    service: WindowCaptureService,
+    target_hwnd: int,
+    capture_backend: str,
+) -> tuple[Image.Image | None, str]:
+    pixmap, backend_used = service.capture_window(
+        target_hwnd,
+        primary_backend=capture_backend,
+    )
+    if pixmap is None:
+        return (None, backend_used)
+    return (ImageQt.fromqpixmap(pixmap).convert("RGB"), backend_used)
 
 
 def _emit_progress(
@@ -265,3 +352,24 @@ def _normalize_scroll_strategy(strategy: str) -> str:
     if resolved not in SCROLL_STRATEGIES:
         return DEFAULT_SCROLL_STRATEGY
     return resolved
+
+
+def _normalize_wheel_injection_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "legacy_message_wheel":
+        return "legacy_message_wheel"
+    return DEFAULT_WHEEL_INJECTION_MODE
+
+
+def _normalize_center_click_assist(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "off":
+        return "off"
+    return DEFAULT_CENTER_CLICK_ASSIST
+
+
+def _normalize_cursor_hold_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "restore_each_step":
+        return "restore_each_step"
+    return DEFAULT_CURSOR_HOLD_MODE

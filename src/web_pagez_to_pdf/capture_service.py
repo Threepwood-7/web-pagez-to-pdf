@@ -6,6 +6,7 @@ import ctypes
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
+from typing import ClassVar
 
 import win32con
 import win32gui
@@ -21,6 +22,10 @@ VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
 WM_MOUSEWHEEL = 0x020A
 WHEEL_DELTA = 120
+INPUT_MOUSE = 0
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
@@ -56,6 +61,10 @@ USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 USER32.GetClassNameW.restype = ctypes.c_int
 USER32.WindowFromPoint.argtypes = [wintypes.POINT]
 USER32.WindowFromPoint.restype = wintypes.HWND
+USER32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+USER32.GetCursorPos.restype = wintypes.BOOL
+USER32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+USER32.SetCursorPos.restype = wintypes.BOOL
 USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
 USER32.SetForegroundWindow.restype = wintypes.BOOL
 USER32.SetFocus.argtypes = [wintypes.HWND]
@@ -78,6 +87,8 @@ USER32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BO
 USER32.AttachThreadInput.restype = wintypes.BOOL
 USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 USER32.PrintWindow.restype = wintypes.BOOL
+USER32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+USER32.SendInput.restype = wintypes.UINT
 USER32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 USER32.SendMessageW.restype = LRESULT
 USER32.keybd_event.argtypes = [
@@ -108,6 +119,35 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
 
 
+class MOUSEINPUT(ctypes.Structure):
+    """ctypes mapping for Win32 MOUSEINPUT."""
+
+    _fields_: ClassVar[list[tuple[str, object]]] = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_: ClassVar[list[tuple[str, object]]] = [("mi", MOUSEINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    """ctypes mapping for Win32 INPUT."""
+
+    _fields_: ClassVar[list[tuple[str, object]]] = [
+        ("type", wintypes.DWORD),
+        ("union", _INPUTUNION),
+    ]
+
+
+USER32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+
+
 @dataclass(slots=True)
 class WindowInfo:
     """Metadata for a visible top-level window."""
@@ -129,6 +169,9 @@ class WindowCaptureService:
 
     def __init__(self) -> None:
         self._foreground_history: list[int] = []
+        self._scroll_cursor_origin: tuple[int, int] | None = None
+        self._scroll_cursor_hold_mode = "keep_at_center"
+        self._scroll_session_active = False
 
     def record_foreground_window(self) -> int:
         """Append current foreground window handle into history."""
@@ -255,19 +298,108 @@ class WindowCaptureService:
         USER32.keybd_event(VK_NEXT, 0, 0, 0)
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
 
-    def scroll_target_window(self, hwnd: int, strategy: str = "hybrid_wheel_pagedown") -> str:
-        """Inject scroll input toward target window using requested strategy."""
+    def start_full_capture_input_session(
+        self,
+        target_hwnd: int,
+        *,
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> None:
+        """Initialize cursor handling for the full-capture loop."""
+
+        self._scroll_session_active = True
+        self._scroll_cursor_hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
+        self._scroll_cursor_origin = self._current_cursor_pos()
+        if self._scroll_cursor_hold_mode == "keep_at_center":
+            self._move_cursor_to_window_center(target_hwnd)
+
+    def end_full_capture_input_session(self) -> None:
+        """Restore cursor state after full-capture loop ends."""
+
+        try:
+            if (
+                self._scroll_session_active
+                and self._scroll_cursor_hold_mode == "keep_at_center"
+                and self._scroll_cursor_origin is not None
+            ):
+                USER32.SetCursorPos(self._scroll_cursor_origin[0], self._scroll_cursor_origin[1])
+        finally:
+            self._scroll_cursor_origin = None
+            self._scroll_cursor_hold_mode = "keep_at_center"
+            self._scroll_session_active = False
+
+    def wheel_down_at_window_center(
+        self,
+        hwnd: int,
+        *,
+        wheel_injection_mode: str = "physical_center_sendinput",
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> bool:
+        """Move cursor to target center and emit WheelDown via selected backend."""
+
+        normalized_mode = self._normalize_wheel_injection_mode(wheel_injection_mode)
+        hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
+        original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+
+        if normalized_mode == "legacy_message_wheel":
+            ok = self._scroll_with_wheel_message(hwnd)
+        else:
+            moved = self._move_cursor_to_window_center(hwnd)
+            if not moved:
+                return False
+            ok = self._send_mouse_wheel_down()
+
+        if hold_mode == "restore_each_step" and original_pos is not None:
+            USER32.SetCursorPos(original_pos[0], original_pos[1])
+        return ok
+
+    def click_window_center(
+        self,
+        hwnd: int,
+        *,
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> bool:
+        """Move cursor to target center and perform a left click."""
+
+        hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
+        original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+        if not self._move_cursor_to_window_center(hwnd):
+            return False
+        clicked = self._send_mouse_left_click()
+        if hold_mode == "restore_each_step" and original_pos is not None:
+            USER32.SetCursorPos(original_pos[0], original_pos[1])
+        return clicked
+
+    def scroll_target_window(
+        self,
+        hwnd: int,
+        strategy: str = "hybrid_wheel_pagedown",
+        *,
+        wheel_injection_mode: str = "physical_center_sendinput",
+        center_click_assist: str = "on_no_movement",
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> str:
+        """Compatibility wrapper for legacy callers."""
 
         normalized = str(strategy or "").strip().lower()
         if normalized in {"pagedown_only", "pagedown", "page_down"}:
             self.send_page_down()
             return "pagedown"
-        if normalized in {"wheel_only", "wheel"}:
-            if self._scroll_with_wheel(hwnd):
-                return "wheel"
-            return ""
-        if self._scroll_with_wheel(hwnd):
-            return "wheel"
+        if self.wheel_down_at_window_center(
+            hwnd,
+            wheel_injection_mode=wheel_injection_mode,
+            cursor_hold_mode=cursor_hold_mode,
+        ):
+            return "wheel_center"
+        if (
+            str(center_click_assist or "").strip().lower() == "on_no_movement"
+            and self.click_window_center(hwnd, cursor_hold_mode=cursor_hold_mode)
+            and self.wheel_down_at_window_center(
+                hwnd,
+                wheel_injection_mode=wheel_injection_mode,
+                cursor_hold_mode=cursor_hold_mode,
+            )
+        ):
+            return "click_center_then_wheel"
         self.send_page_down()
         return "pagedown"
 
@@ -518,7 +650,7 @@ class WindowCaptureService:
             return None
         return pixmap
 
-    def _scroll_with_wheel(self, hwnd: int) -> bool:
+    def _scroll_with_wheel_message(self, hwnd: int) -> bool:
         rect = self._window_rect(hwnd)
         if rect is None:
             return False
@@ -538,6 +670,68 @@ class WindowCaptureService:
         except Exception:
             return False
         return True
+
+    @staticmethod
+    def _normalize_wheel_injection_mode(mode: str) -> str:
+        normalized = str(mode or "").strip().lower()
+        if normalized == "legacy_message_wheel":
+            return "legacy_message_wheel"
+        return "physical_center_sendinput"
+
+    @staticmethod
+    def _normalize_cursor_hold_mode(mode: str) -> str:
+        normalized = str(mode or "").strip().lower()
+        if normalized == "restore_each_step":
+            return "restore_each_step"
+        return "keep_at_center"
+
+    @staticmethod
+    def _send_mouse_input(flags: int, mouse_data: int = 0) -> bool:
+        input_event = INPUT()
+        input_event.type = INPUT_MOUSE
+        input_event.union.mi = MOUSEINPUT(
+            dx=0,
+            dy=0,
+            mouseData=wintypes.DWORD(mouse_data),
+            dwFlags=flags,
+            time=0,
+            dwExtraInfo=ULONG_PTR(0),
+        )
+        sent = int(USER32.SendInput(1, ctypes.byref(input_event), ctypes.sizeof(INPUT)))
+        return sent == 1
+
+    @staticmethod
+    def _send_mouse_wheel_down() -> bool:
+        wheel_delta = ctypes.c_uint32((-WHEEL_DELTA) & 0xFFFFFFFF).value
+        return WindowCaptureService._send_mouse_input(MOUSEEVENTF_WHEEL, wheel_delta)
+
+    @staticmethod
+    def _send_mouse_left_click() -> bool:
+        down_ok = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTDOWN)
+        up_ok = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTUP)
+        return down_ok and up_ok
+
+    @staticmethod
+    def _current_cursor_pos() -> tuple[int, int] | None:
+        point = wintypes.POINT()
+        if not bool(USER32.GetCursorPos(ctypes.byref(point))):
+            return None
+        return (int(point.x), int(point.y))
+
+    def _window_center_point(self, hwnd: int) -> tuple[int, int] | None:
+        rect = self._window_rect(hwnd)
+        if rect is None:
+            return None
+        left, top, width, height = rect
+        x_pos = int(left + max(2, width // 2))
+        y_pos = int(top + max(2, height // 2))
+        return (x_pos, y_pos)
+
+    def _move_cursor_to_window_center(self, hwnd: int) -> bool:
+        center = self._window_center_point(hwnd)
+        if center is None:
+            return False
+        return bool(USER32.SetCursorPos(center[0], center[1]))
 
     @staticmethod
     def _is_blank_like(pixmap: QPixmap) -> bool:
