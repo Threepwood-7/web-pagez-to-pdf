@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
-from PIL import Image, ImageQt
+from PIL import Image, ImageDraw, ImageQt
 from reportlab.lib.pagesizes import A0, A1, A2, A3, A4, A5, A6, LEGAL, LETTER, TABLOID
 from reportlab.lib.units import mm
 
@@ -44,43 +44,156 @@ def pil_to_qpixmap(image: Image.Image):
     return ImageQt.toqpixmap(image)
 
 
-def apply_edit_transform(image: Image.Image, layout: PrintLayout, edits: EditAdjustments) -> Image.Image:
-    """Apply user edits and print transform knobs to a source image."""
+def apply_edit_transform(
+    image: Image.Image, layout: PrintLayout, edits: EditAdjustments
+) -> Image.Image:
+    """Apply non-destructive editor operations and print transform knobs."""
 
     transformed = image.convert("RGB")
 
-    rotate = int(layout.rotate_degrees) % 360
-    if rotate:
-        transformed = transformed.rotate(-rotate, expand=True, fillcolor="white")
+    for operation in edits.operations:
+        op_type = operation.op_type.strip().lower()
+        params = operation.params
 
-    left = max(0, int(edits.crop_left_px + edits.auto_crop_left_px))
-    right = max(0, int(edits.crop_right_px + edits.auto_crop_right_px))
-    top = max(0, int(edits.crop_top_px))
-    bottom = max(0, int(edits.crop_bottom_px))
+        if op_type == "crop_rect":
+            transformed = _apply_crop_rect(transformed, params)
+            continue
+        if op_type == "crop_free":
+            transformed = _apply_crop_free(transformed, params)
+            continue
+        if op_type in {"rotate", "straighten"}:
+            transformed = _apply_rotation(transformed, params)
+            continue
+        if op_type == "scale":
+            transformed = _apply_scale(transformed, params)
+            continue
+        if op_type == "nav_auto_crop":
+            transformed = _apply_nav_crop(transformed, params)
+            continue
+        if op_type == "redact_rects":
+            transformed = _apply_redactions(transformed, params)
+            continue
 
-    width = transformed.width
-    height = transformed.height
-    crop_box = (
-        min(left, width - 1),
-        min(top, height - 1),
-        max(1, width - right),
-        max(1, height - bottom),
-    )
-    if crop_box[2] <= crop_box[0]:
-        crop_box = (0, crop_box[1], width, crop_box[3])
-    if crop_box[3] <= crop_box[1]:
-        crop_box = (crop_box[0], 0, crop_box[2], height)
-    transformed = transformed.crop(crop_box)
-
-    zoom = max(10.0, float(layout.zoom_percent))
-    if zoom != 100.0:
-        factor = zoom / 100.0
-        new_size = (
-            max(1, round(transformed.width * factor)),
-            max(1, round(transformed.height * factor)),
+    if any(
+        (
+            edits.crop_left_px,
+            edits.crop_right_px,
+            edits.crop_top_px,
+            edits.crop_bottom_px,
+            edits.auto_crop_left_px,
+            edits.auto_crop_right_px,
         )
-        transformed = transformed.resize(new_size, Image.Resampling.LANCZOS)
+    ):
+        transformed = _apply_nav_crop(
+            transformed,
+            {
+                "left": int(edits.crop_left_px + edits.auto_crop_left_px),
+                "right": int(edits.crop_right_px + edits.auto_crop_right_px),
+            },
+        )
+        transformed = _apply_crop_rect(
+            transformed,
+            {
+                "left": 0,
+                "top": int(edits.crop_top_px),
+                "width": transformed.width,
+                "height": max(1, transformed.height - int(edits.crop_top_px + edits.crop_bottom_px)),
+            },
+        )
+
+    transformed = _apply_rotation(transformed, {"degrees": layout.rotate_degrees})
+    transformed = _apply_scale(transformed, {"percent": layout.zoom_percent})
     return transformed
+
+
+def _apply_rotation(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    degrees = float(params.get("degrees", 0.0))
+    if abs(degrees) <= 0.01:
+        return image
+    return image.rotate(-degrees, expand=True, fillcolor="white")
+
+
+def _apply_scale(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    percent = max(10.0, float(params.get("percent", 100.0)))
+    if abs(percent - 100.0) <= 0.01:
+        return image
+    factor = percent / 100.0
+    size = (
+        max(1, round(image.width * factor)),
+        max(1, round(image.height * factor)),
+    )
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
+def _apply_crop_rect(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    left = max(0, int(params.get("left", 0)))
+    top = max(0, int(params.get("top", 0)))
+    width = max(1, int(params.get("width", image.width)))
+    height = max(1, int(params.get("height", image.height)))
+
+    x1 = min(left, max(0, image.width - 1))
+    y1 = min(top, max(0, image.height - 1))
+    x2 = min(image.width, x1 + width)
+    y2 = min(image.height, y1 + height)
+    if x2 <= x1:
+        x1, x2 = 0, image.width
+    if y2 <= y1:
+        y1, y2 = 0, image.height
+    return image.crop((x1, y1, x2, y2))
+
+
+def _apply_crop_free(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    points = params.get("points")
+    if not isinstance(points, list) or len(points) < 2:
+        return image
+
+    xs: list[int] = []
+    ys: list[int] = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        xs.append(int(point[0]))
+        ys.append(int(point[1]))
+    if len(xs) < 2 or len(ys) < 2:
+        return image
+    left = max(0, min(xs))
+    top = max(0, min(ys))
+    right = min(image.width, max(xs))
+    bottom = min(image.height, max(ys))
+    if right <= left or bottom <= top:
+        return image
+    return image.crop((left, top, right, bottom))
+
+
+def _apply_nav_crop(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    left = max(0, int(params.get("left", 0)))
+    right = max(0, int(params.get("right", 0)))
+    x1 = min(left, max(0, image.width - 1))
+    x2 = max(1, image.width - right)
+    if x2 <= x1:
+        return image
+    return image.crop((x1, 0, x2, image.height))
+
+
+def _apply_redactions(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    rectangles = params.get("rectangles")
+    if not isinstance(rectangles, list) or not rectangles:
+        return image
+    redacted = image.copy()
+    draw = ImageDraw.Draw(redacted)
+    for rect in rectangles:
+        if not isinstance(rect, dict):
+            continue
+        x_pos = int(rect.get("x", 0))
+        y_pos = int(rect.get("y", 0))
+        width = max(1, int(rect.get("width", 1)))
+        height = max(1, int(rect.get("height", 1)))
+        x1 = max(0, min(image.width - 1, x_pos))
+        y1 = max(0, min(image.height - 1, y_pos))
+        x2 = max(1, min(image.width, x1 + width))
+        y2 = max(1, min(image.height, y1 + height))
+        draw.rectangle((x1, y1, x2, y2), fill="black")
+    return redacted
 
 
 def suggest_navigation_crop(image: Image.Image) -> tuple[int, int]:
@@ -116,7 +229,9 @@ def suggest_navigation_crop(image: Image.Image) -> tuple[int, int]:
     return (min(left, max_edge_crop), min(right_crop, max_edge_crop))
 
 
-def compute_page_slices(image: Image.Image, layout: PrintLayout, manual_markers: Iterable[int]) -> list[PageSlice]:
+def compute_page_slices(
+    image: Image.Image, layout: PrintLayout, manual_markers: Iterable[int]
+) -> list[PageSlice]:
     """Compute vertical split points matching printable page height."""
 
     page_size = PAPER_SIZES.get(layout.paper_name.upper(), A4)
@@ -124,7 +239,9 @@ def compute_page_slices(image: Image.Image, layout: PrintLayout, manual_markers:
     if layout.orientation.lower() == "landscape":
         page_w, page_h = page_h, page_w
 
-    avail_w = page_w - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    avail_w = page_w - (
+        layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm
+    ) * mm
     avail_h = page_h - (layout.margin_top_mm + layout.margin_bottom_mm) * mm
 
     if image.width <= 0:

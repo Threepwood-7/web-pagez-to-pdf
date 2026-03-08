@@ -21,6 +21,7 @@ from .image_processing import (
     apply_edit_transform,
     compute_page_slices,
 )
+from .models import EditAdjustments
 
 if TYPE_CHECKING:
     from .models import CaptureItem, ExportRequest
@@ -89,19 +90,26 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
     transformed_images: list[tuple[CaptureItem, Image.Image]] = []
     for item in request.captures:
         image = Image.open(item.image_path).convert("RGB")
-        transformed = apply_edit_transform(image, request.layout, request.edits)
+        edits = _edits_for_item(request, item)
+        transformed = apply_edit_transform(image, request.layout, edits)
         transformed_images.append((item, transformed))
 
     frames: list[PageFrame] = []
     if request.combine_mode:
         for item, image in transformed_images:
-            slices = compute_page_slices(image, request.layout, request.edits.split_markers_px)
+            edits = _edits_for_item(request, item)
+            slices = compute_page_slices(image, request.layout, edits.split_markers_px)
             frames.extend(_frames_for_slices(item, image, slices))
     else:
         first_item, first_image = transformed_images[0]
-        slices = compute_page_slices(first_image, request.layout, request.edits.split_markers_px)
+        edits = _edits_for_item(request, first_item)
+        slices = compute_page_slices(first_image, request.layout, edits.split_markers_px)
         frames.extend(_frames_for_slices(first_item, first_image, slices))
     return (frames, transformed_images)
+
+
+def _edits_for_item(request: ExportRequest, item: CaptureItem) -> EditAdjustments:
+    return request.edits_by_item_id.get(item.item_id) or request.edits or EditAdjustments()
 
 
 def _frames_for_slices(item: CaptureItem, image: Image.Image, slices: list[PageSlice]) -> list[PageFrame]:
