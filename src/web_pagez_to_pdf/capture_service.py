@@ -21,6 +21,10 @@ VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
 WM_MOUSEWHEEL = 0x020A
 WHEEL_DELTA = 120
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOACTIVATE = 0x0010
+HWND_TOP = 0
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
@@ -56,6 +60,22 @@ USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
 USER32.SetForegroundWindow.restype = wintypes.BOOL
 USER32.SetFocus.argtypes = [wintypes.HWND]
 USER32.SetFocus.restype = wintypes.HWND
+USER32.SetActiveWindow.argtypes = [wintypes.HWND]
+USER32.SetActiveWindow.restype = wintypes.HWND
+USER32.BringWindowToTop.argtypes = [wintypes.HWND]
+USER32.BringWindowToTop.restype = wintypes.BOOL
+USER32.SetWindowPos.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+]
+USER32.SetWindowPos.restype = wintypes.BOOL
+USER32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+USER32.AttachThreadInput.restype = wintypes.BOOL
 USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 USER32.PrintWindow.restype = wintypes.BOOL
 USER32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
@@ -72,6 +92,8 @@ KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 KERNEL32.OpenProcess.restype = wintypes.HANDLE
 KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
 KERNEL32.CloseHandle.restype = wintypes.BOOL
+KERNEL32.GetCurrentThreadId.argtypes = []
+KERNEL32.GetCurrentThreadId.restype = wintypes.DWORD
 
 PSAPI = ctypes.windll.psapi
 PSAPI.GetModuleBaseNameW.argtypes = [
@@ -177,11 +199,40 @@ class WindowCaptureService:
             return (False, "Target window is not visible. Bring it on-screen and retry.")
         if bool(USER32.IsIconic(hwnd)):
             return (False, "Target window is minimized. Restore it manually, then retry.")
+        if WindowCaptureService.is_foreground_window(hwnd):
+            return (True, "")
 
-        foreground_ok = bool(USER32.SetForegroundWindow(hwnd))
-        USER32.SetFocus(hwnd)
-        if not foreground_ok:
-            return (False, "Could not focus target window. Click it once, then retry.")
+        WindowCaptureService._focus_window(hwnd)
+        if WindowCaptureService.is_foreground_window(hwnd):
+            return (True, "")
+
+        foreground_hwnd = int(USER32.GetForegroundWindow())
+        foreground_thread = WindowCaptureService._window_thread_id(foreground_hwnd)
+        target_thread = WindowCaptureService._window_thread_id(hwnd)
+        current_thread = int(KERNEL32.GetCurrentThreadId())
+        attached_foreground = False
+        attached_target = False
+        try:
+            if foreground_thread and foreground_thread != current_thread:
+                attached_foreground = bool(
+                    USER32.AttachThreadInput(current_thread, foreground_thread, True)
+                )
+            if target_thread and target_thread != current_thread:
+                attached_target = bool(
+                    USER32.AttachThreadInput(current_thread, target_thread, True)
+                )
+            WindowCaptureService._focus_window(hwnd)
+        finally:
+            if attached_target and target_thread:
+                USER32.AttachThreadInput(current_thread, target_thread, False)
+            if attached_foreground and foreground_thread:
+                USER32.AttachThreadInput(current_thread, foreground_thread, False)
+
+        if not WindowCaptureService.is_foreground_window(hwnd):
+            return (
+                False,
+                "Could not focus target window. Click it once, keep it visible, then retry.",
+            )
         return (True, "")
 
     @staticmethod
@@ -326,6 +377,29 @@ class WindowCaptureService:
         if hwnd <= 0:
             return False
         return bool(USER32.IsWindowVisible(hwnd)) and not bool(USER32.IsIconic(hwnd))
+
+    @staticmethod
+    def _focus_window(hwnd: int) -> None:
+        USER32.BringWindowToTop(hwnd)
+        USER32.SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        USER32.SetForegroundWindow(hwnd)
+        USER32.SetActiveWindow(hwnd)
+        USER32.SetFocus(hwnd)
+
+    @staticmethod
+    def _window_thread_id(hwnd: int) -> int:
+        if hwnd <= 0:
+            return 0
+        pid = wintypes.DWORD(0)
+        return int(USER32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)))
 
     @staticmethod
     def _previous_visible_window(start_hwnd: int, own_hwnd: int) -> int | None:

@@ -6,14 +6,17 @@ from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QPixmap
 
+from web_pagez_to_pdf.capture_service import WindowInfo
 from web_pagez_to_pdf.main_window import MainWindow
 from web_pagez_to_pdf.mini_editor import MiniEditorWindow
 from web_pagez_to_pdf.models import CaptureItem, EditAdjustments
 from web_pagez_to_pdf.scroll_capture import ScrollCaptureProgress
+from web_pagez_to_pdf.target_picker import PickedWindow
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pytest import MonkeyPatch
     from pytestqt.qtbot import QtBot
 
 
@@ -124,9 +127,55 @@ def test_capture_progress_updates_status_and_log(qtbot: QtBot) -> None:
     )
     window._on_full_capture_progress(payload)
 
-    assert window.capture_log_list.count() == 1
-    assert "frame 2 captured" in window.capture_log_list.item(0).text().lower()
+    assert window.capture_log_list.count() >= 1
+    assert "frame 2 captured" in window.capture_log_list.item(window.capture_log_list.count() - 1).text().lower()
     assert "full capture frame 2" in window.status_label.text().lower()
+
+
+def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:
+    def _list_top_windows(_self, _own_hwnd: int) -> list[WindowInfo]:
+        return [
+            WindowInfo(
+                hwnd=1111,
+                title="Notes",
+                process_name="notepad.exe",
+                class_name="Notepad",
+            ),
+            WindowInfo(
+                hwnd=2222,
+                title="Docs",
+                process_name="chrome.exe",
+                class_name="Chrome_WidgetWin_1",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.capture_service.WindowCaptureService.list_top_windows",
+        _list_top_windows,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window._selected_target is not None
+    assert window._selected_target.hwnd == 2222
+    assert "default browser target selected" in window.status_label.text().lower()
+
+
+def test_full_capture_requires_focus_before_start(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._set_target(PickedWindow(hwnd=4242, label="target"))
+
+    def _focus_fail(_hwnd: int) -> tuple[bool, str]:
+        return (False, "could not focus")
+
+    window._capture_service.ensure_window_foreground = _focus_fail  # type: ignore[method-assign]
+    window._capture_full_scroll()
+
+    assert window._capture_worker is None
+    assert "could not focus" in window.status_label.text().lower()
 
 
 def test_full_capture_finished_restores_focus_to_app(qtbot: QtBot) -> None:

@@ -74,6 +74,16 @@ from .settings_window import SettingsWindow
 from .stop_overlay import HoverStopOverlay
 from .target_picker import CrosshairPickerOverlay, PickedWindow, WindowPickerDialog
 
+BROWSER_PROCESS_PRIORITY = (
+    "msedge.exe",
+    "chrome.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "arc.exe",
+)
+
 
 class FullCaptureWorker(QThread):
     """Worker thread wrapper for full-scroll capture flow."""
@@ -140,6 +150,7 @@ class MainWindow(QMainWindow):
         self._apply_start_geometry()
         self._load_defaults()
         self._load_runtime_settings()
+        self._select_default_browser_target()
         self._hotkeys.start()
 
     def _build_ui(self) -> None:
@@ -761,6 +772,35 @@ class MainWindow(QMainWindow):
             return
         self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
 
+    def _select_default_browser_target(self) -> None:
+        if self._selected_target is not None:
+            return
+        windows = self._capture_service.list_top_windows(int(self.winId()))
+        if not windows:
+            return
+        process_rank = {name: index for index, name in enumerate(BROWSER_PROCESS_PRIORITY)}
+        browser_candidates = [
+            item
+            for item in windows
+            if item.process_name.strip().lower() in process_rank
+        ]
+        if not browser_candidates:
+            return
+        best = min(
+            browser_candidates,
+            key=lambda item: (
+                process_rank.get(item.process_name.strip().lower(), len(process_rank)),
+                item.label.lower(),
+            ),
+        )
+        self._set_target(PickedWindow(hwnd=best.hwnd, label=best.label))
+        self.status_label.setText(
+            f"Default browser target selected: {best.label} [hwnd={best.hwnd}]"
+        )
+        self._append_capture_log(
+            f"Default browser target selected ({best.process_name or 'browser'})."
+        )
+
     def _capture_last_selected_window(self) -> None:
         hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
         if hwnd is None:
@@ -806,6 +846,15 @@ class MainWindow(QMainWindow):
         if self._capture_worker is not None and self._capture_worker.isRunning():
             self.status_label.setText("Capture already running.")
             return
+        focused, message = self._capture_service.ensure_window_foreground(
+            self._selected_target.hwnd
+        )
+        if not focused:
+            self.status_label.setText(message or "Could not focus selected target window.")
+            self._append_capture_log(
+                f"Failed to focus target before full capture: {message or 'unknown reason'}"
+            )
+            return
         self._stop_event.clear()
         self._capture_worker = FullCaptureWorker(
             capture_service=self._capture_service,
@@ -823,6 +872,9 @@ class MainWindow(QMainWindow):
         self._capture_worker.capture_progress.connect(self._on_full_capture_progress)
         self._capture_worker.finished.connect(self._full_capture_finished)
         self.capture_log_list.clear()
+        self._append_capture_log(
+            f"Target focused: {self._selected_target.label} [hwnd={self._selected_target.hwnd}]."
+        )
         self._append_capture_log(
             "Full capture started "
             f"(backend={self._capture_backend_primary()}, strategy={self._capture_scroll_strategy()})."
