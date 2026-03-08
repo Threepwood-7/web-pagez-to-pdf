@@ -129,6 +129,23 @@ def test_capture_progress_updates_status_and_log(qtbot: QtBot) -> None:
     assert "full capture frame 2" in window.status_label.text().lower()
 
 
+def test_full_capture_finished_restores_focus_to_app(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    called: dict[str, int] = {"hwnd": 0}
+
+    def _ensure_window_foreground(hwnd: int) -> tuple[bool, str]:
+        called["hwnd"] = hwnd
+        return (True, "")
+
+    window._capture_service.ensure_window_foreground = _ensure_window_foreground  # type: ignore[method-assign]
+    window._full_capture_finished()
+
+    assert called["hwnd"] == int(window.winId())
+    assert "focus returned" in window.capture_log_list.item(window.capture_log_list.count() - 1).text().lower()
+
+
 def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)

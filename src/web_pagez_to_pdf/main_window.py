@@ -877,6 +877,19 @@ class MainWindow(QMainWindow):
     def _full_capture_finished(self) -> None:
         self._stop_overlay.hide()
         self._capture_worker = None
+        self._restore_focus_after_full_capture()
+
+    def _restore_focus_after_full_capture(self) -> None:
+        own_hwnd = int(self.winId())
+        self.raise_()
+        self.activateWindow()
+        focused, message = self._capture_service.ensure_window_foreground(own_hwnd)
+        if focused:
+            self._append_capture_log("Focus returned to web-pagez-to-pdf.")
+            return
+        self._append_capture_log(
+            f"Could not restore app focus automatically: {message or 'unknown reason'}"
+        )
 
     def _add_capture(
         self,
