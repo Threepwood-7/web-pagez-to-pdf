@@ -16,7 +16,6 @@ from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -45,6 +45,7 @@ from .capture_service import (
     CAPTURE_LOGGER_NAME,
     DEFAULT_CAPTURE_BACKEND,
     WindowCaptureService,
+    WindowInfo,
 )
 from .constants import APP_DISPLAY_NAME, APP_IDENTITY
 from .exporters import run_export, sanitize_basename
@@ -67,14 +68,12 @@ from .models import (
 )
 from .scroll_capture import (
     CAPTURE_LOG_LEVELS,
-    CENTER_CLICK_ASSIST_MODES,
     CURSOR_HOLD_MODES,
     DEFAULT_CAPTURE_LOG_LEVEL,
-    DEFAULT_CENTER_CLICK_ASSIST,
     DEFAULT_CURSOR_HOLD_MODE,
-    DEFAULT_SCROLL_STRATEGY,
+    DEFAULT_SCROLL_MODE,
     DEFAULT_WHEEL_INJECTION_MODE,
-    SCROLL_STRATEGIES,
+    SCROLL_MODES,
     WHEEL_INJECTION_MODES,
     ScrollCaptureOptions,
     ScrollCaptureProgress,
@@ -83,7 +82,7 @@ from .scroll_capture import (
 )
 from .settings_window import SettingsWindow
 from .stop_overlay import HoverStopOverlay
-from .target_picker import CrosshairPickerOverlay, PickedWindow, WindowPickerDialog
+from .target_picker import CrosshairPickerOverlay, PickedWindow
 
 BROWSER_PROCESS_PRIORITY = (
     "msedge.exe",
@@ -122,10 +121,10 @@ class FullCaptureWorker(QThread):
             self.capture_progress.emit(progress_obj)
 
         CAPTURE_UI_LOGGER.info(
-            "worker start target_hwnd=%s backend=%s strategy=%s",
+            "worker start target_hwnd=%s backend=%s scroll_mode=%s",
             self._target_hwnd,
             self._options.capture_backend,
-            self._options.scroll_strategy,
+            self._options.scroll_mode,
         )
         try:
             result = run_full_page_capture(
@@ -196,7 +195,7 @@ class MainWindow(QMainWindow):
         top_row.setSpacing(6)
         self.target_label = QLabel("Target: none")
         self.pick_list_button = QPushButton("Pick")
-        self.pick_crosshair_button = QPushButton("Crosshair")
+        self.pick_target_menu = QMenu(self.pick_list_button)
         self.capture_button = QPushButton("Capture (Ctrl+Shift+C)")
         self.capture_full_button = QPushButton("Capture Full (Ctrl+Shift+S)")
         self.capture_last_selected_button = QPushButton("Capture Last Selected Window")
@@ -205,7 +204,6 @@ class MainWindow(QMainWindow):
         for widget, control in (
             (self.target_label, "target_label"),
             (self.pick_list_button, "pick_list_button"),
-            (self.pick_crosshair_button, "pick_crosshair_button"),
             (self.capture_button, "capture_button"),
             (self.capture_full_button, "capture_full_button"),
             (self.capture_last_selected_button, "capture_last_selected_button"),
@@ -213,9 +211,9 @@ class MainWindow(QMainWindow):
             (self.import_button, "import_button"),
         ):
             self._assign_control_identity(widget, control, control)
+        self.pick_list_button.setMenu(self.pick_target_menu)
         top_row.addWidget(self.target_label, 2)
         top_row.addWidget(self.pick_list_button)
-        top_row.addWidget(self.pick_crosshair_button)
         top_row.addWidget(self.capture_button)
         top_row.addWidget(self.capture_full_button)
         top_row.addWidget(self.capture_last_selected_button)
@@ -299,14 +297,15 @@ class MainWindow(QMainWindow):
             "capture_backend_combo",
             "capture_backend_combo",
         )
-        self.capture_scroll_strategy_combo = QComboBox()
-        self.capture_scroll_strategy_combo.addItem("Hybrid Wheel + PageDown", "hybrid_wheel_pagedown")
-        self.capture_scroll_strategy_combo.addItem("PageDown only", "pagedown_only")
-        self.capture_scroll_strategy_combo.addItem("Wheel only", "wheel_only")
+        self.capture_scroll_mode_combo = QComboBox()
+        self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
+        self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
+        self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
+        self.capture_scroll_mode_combo.addItem("Wheel + Click + PageDown", "wheel_click_pagedown")
         self._assign_control_identity(
-            self.capture_scroll_strategy_combo,
-            "capture_scroll_strategy_combo",
-            "capture_scroll_strategy_combo",
+            self.capture_scroll_mode_combo,
+            "capture_scroll_mode_combo",
+            "capture_scroll_mode_combo",
         )
         self.capture_wheel_injection_combo = QComboBox()
         self.capture_wheel_injection_combo.addItem(
@@ -321,14 +320,6 @@ class MainWindow(QMainWindow):
             self.capture_wheel_injection_combo,
             "capture_wheel_injection_combo",
             "capture_wheel_injection_combo",
-        )
-        self.capture_center_click_assist_combo = QComboBox()
-        self.capture_center_click_assist_combo.addItem("On No Movement", "on_no_movement")
-        self.capture_center_click_assist_combo.addItem("Off", "off")
-        self._assign_control_identity(
-            self.capture_center_click_assist_combo,
-            "capture_center_click_assist_combo",
-            "capture_center_click_assist_combo",
         )
         self.capture_cursor_hold_combo = QComboBox()
         self.capture_cursor_hold_combo.addItem("Keep At Center", "keep_at_center")
@@ -352,18 +343,16 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(self.capture_delay_spin, 1, 1)
         cap_grid.addWidget(QLabel("Capture backend"), 2, 0)
         cap_grid.addWidget(self.capture_backend_combo, 2, 1)
-        cap_grid.addWidget(QLabel("Scroll strategy"), 3, 0)
-        cap_grid.addWidget(self.capture_scroll_strategy_combo, 3, 1)
+        cap_grid.addWidget(QLabel("Scroll mode"), 3, 0)
+        cap_grid.addWidget(self.capture_scroll_mode_combo, 3, 1)
         cap_grid.addWidget(QLabel("Wheel injection"), 4, 0)
         cap_grid.addWidget(self.capture_wheel_injection_combo, 4, 1)
-        cap_grid.addWidget(QLabel("Center click assist"), 5, 0)
-        cap_grid.addWidget(self.capture_center_click_assist_combo, 5, 1)
-        cap_grid.addWidget(QLabel("Cursor hold"), 6, 0)
-        cap_grid.addWidget(self.capture_cursor_hold_combo, 6, 1)
-        cap_grid.addWidget(QLabel("Diagnostics log level"), 7, 0)
-        cap_grid.addWidget(self.capture_log_level_combo, 7, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 8, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 9, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Cursor hold"), 5, 0)
+        cap_grid.addWidget(self.capture_cursor_hold_combo, 5, 1)
+        cap_grid.addWidget(QLabel("Diagnostics log level"), 6, 0)
+        cap_grid.addWidget(self.capture_log_level_combo, 6, 1)
+        cap_grid.addWidget(self.auto_target_checkbox, 7, 0, 1, 2)
+        cap_grid.addWidget(self.pick_second_last_button, 8, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -546,8 +535,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_label)
 
     def _bind_events(self) -> None:
-        self.pick_list_button.clicked.connect(self._pick_window_from_list)
-        self.pick_crosshair_button.clicked.connect(self._pick_window_crosshair)
+        self.pick_target_menu.aboutToShow.connect(self._populate_pick_target_menu)
         self.pick_second_last_button.clicked.connect(self._pick_second_last_window)
         self.capture_last_selected_button.clicked.connect(self._capture_last_selected_window)
         self.capture_button.clicked.connect(self._capture_selected_viewport)
@@ -576,14 +564,9 @@ class MainWindow(QMainWindow):
         self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
-        self.capture_scroll_strategy_combo.currentIndexChanged.connect(
-            self._persist_capture_scroll_strategy
-        )
+        self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
         self.capture_wheel_injection_combo.currentIndexChanged.connect(
             self._persist_capture_wheel_injection_mode
-        )
-        self.capture_center_click_assist_combo.currentIndexChanged.connect(
-            self._persist_capture_center_click_assist
         )
         self.capture_cursor_hold_combo.currentIndexChanged.connect(
             self._persist_capture_cursor_hold_mode
@@ -655,14 +638,11 @@ class MainWindow(QMainWindow):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.auto_pick_second_last": self.auto_target_checkbox.isChecked(),
             "capture.backend_primary": str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND),
-            "capture.scroll_strategy": str(
-                self.capture_scroll_strategy_combo.currentData() or DEFAULT_SCROLL_STRATEGY
+            "capture.scroll_mode": str(
+                self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
             ),
             "capture.wheel_injection_mode": str(
                 self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
-            ),
-            "capture.center_click_assist": str(
-                self.capture_center_click_assist_combo.currentData() or DEFAULT_CENTER_CLICK_ASSIST
             ),
             "capture.cursor_hold_mode": str(
                 self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
@@ -693,10 +673,8 @@ class MainWindow(QMainWindow):
         self.auto_target_checkbox.setChecked(self._bool_setting("capture.auto_pick_second_last", True))
         backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
         self._set_capture_backend_combo(backend)
-        scroll_strategy = str(
-            self._settings.value("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)
-        )
-        self._set_scroll_strategy_combo(scroll_strategy)
+        scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
+        self._set_scroll_mode_combo(scroll_mode)
         wheel_injection = str(
             self._settings.value(
                 "capture.wheel_injection_mode",
@@ -704,13 +682,6 @@ class MainWindow(QMainWindow):
             )
         )
         self._set_wheel_injection_combo(wheel_injection)
-        center_click_assist = str(
-            self._settings.value(
-                "capture.center_click_assist",
-                DEFAULT_CENTER_CLICK_ASSIST,
-            )
-        )
-        self._set_center_click_assist_combo(center_click_assist)
         cursor_hold_mode = str(
             self._settings.value(
                 "capture.cursor_hold_mode",
@@ -797,24 +768,24 @@ class MainWindow(QMainWindow):
     def _persist_capture_backend(self) -> None:
         self._settings.setValue("capture.backend_primary", self._capture_backend_primary())
 
-    def _set_scroll_strategy_combo(self, strategy: str) -> None:
-        normalized = str(strategy or "").strip().lower()
-        if normalized not in SCROLL_STRATEGIES:
-            normalized = DEFAULT_SCROLL_STRATEGY
-        for index in range(self.capture_scroll_strategy_combo.count()):
-            if str(self.capture_scroll_strategy_combo.itemData(index)) == normalized:
-                self.capture_scroll_strategy_combo.setCurrentIndex(index)
+    def _set_scroll_mode_combo(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in SCROLL_MODES:
+            normalized = DEFAULT_SCROLL_MODE
+        for index in range(self.capture_scroll_mode_combo.count()):
+            if str(self.capture_scroll_mode_combo.itemData(index)) == normalized:
+                self.capture_scroll_mode_combo.setCurrentIndex(index)
                 return
-        self.capture_scroll_strategy_combo.setCurrentIndex(0)
+        self.capture_scroll_mode_combo.setCurrentIndex(0)
 
-    def _capture_scroll_strategy(self) -> str:
-        value = str(self.capture_scroll_strategy_combo.currentData() or DEFAULT_SCROLL_STRATEGY)
-        if value in SCROLL_STRATEGIES:
+    def _capture_scroll_mode(self) -> str:
+        value = str(self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE)
+        if value in SCROLL_MODES:
             return value
-        return DEFAULT_SCROLL_STRATEGY
+        return DEFAULT_SCROLL_MODE
 
-    def _persist_capture_scroll_strategy(self) -> None:
-        self._settings.setValue("capture.scroll_strategy", self._capture_scroll_strategy())
+    def _persist_capture_scroll_mode(self) -> None:
+        self._settings.setValue("capture.scroll_mode", self._capture_scroll_mode())
 
     def _set_wheel_injection_combo(self, mode: str) -> None:
         normalized = str(mode or "").strip().lower()
@@ -838,30 +809,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue(
             "capture.wheel_injection_mode",
             self._capture_wheel_injection_mode(),
-        )
-
-    def _set_center_click_assist_combo(self, mode: str) -> None:
-        normalized = str(mode or "").strip().lower()
-        if normalized not in CENTER_CLICK_ASSIST_MODES:
-            normalized = DEFAULT_CENTER_CLICK_ASSIST
-        for index in range(self.capture_center_click_assist_combo.count()):
-            if str(self.capture_center_click_assist_combo.itemData(index)) == normalized:
-                self.capture_center_click_assist_combo.setCurrentIndex(index)
-                return
-        self.capture_center_click_assist_combo.setCurrentIndex(0)
-
-    def _capture_center_click_assist(self) -> str:
-        value = str(
-            self.capture_center_click_assist_combo.currentData() or DEFAULT_CENTER_CLICK_ASSIST
-        )
-        if value in CENTER_CLICK_ASSIST_MODES:
-            return value
-        return DEFAULT_CENTER_CLICK_ASSIST
-
-    def _persist_capture_center_click_assist(self) -> None:
-        self._settings.setValue(
-            "capture.center_click_assist",
-            self._capture_center_click_assist(),
         )
 
     def _set_cursor_hold_combo(self, mode: str) -> None:
@@ -958,18 +905,35 @@ class MainWindow(QMainWindow):
         self.output_input.setText(str(output_dir))
         self._refresh_queue_summary()
 
-    def _pick_window_from_list(self) -> None:
+    def _populate_pick_target_menu(self) -> None:
+        menu = self.pick_target_menu
+        menu.clear()
+        crosshair_action = menu.addAction("Pick with Crosshair...")
+        crosshair_action.triggered.connect(self._pick_window_crosshair)
+        menu.addSeparator()
+
         windows = self._capture_service.list_top_windows(int(self.winId()))
         if not windows:
-            self.status_label.setText("No visible windows to pick.")
+            empty_action = menu.addAction("No visible windows")
+            empty_action.setEnabled(False)
             return
-        dialog = WindowPickerDialog(windows, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        for info in sorted(windows, key=lambda item: item.sort_key):
+            action = menu.addAction(info.label)
+            action.setData(info.hwnd)
+            action.triggered.connect(self._pick_window_from_menu_action)
+
+    def _pick_window_from_menu_action(self) -> None:
+        sender = self.sender()
+        if not isinstance(sender, QAction):
             return
-        picked = dialog.selected_window()
-        if picked is None:
+        hwnd_data = sender.data()
+        if hwnd_data is None:
             return
-        self._set_target(picked)
+        try:
+            hwnd = int(hwnd_data)
+        except (TypeError, ValueError):
+            return
+        self._set_target(self._picked_window_from_hwnd(hwnd))
 
     def _pick_window_crosshair(self) -> None:
         self._crosshair_overlay = CrosshairPickerOverlay(self)
@@ -982,14 +946,26 @@ class MainWindow(QMainWindow):
         if hwnd is None:
             self.status_label.setText("No window found under crosshair.")
             return
-        self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
+        self._set_target(self._picked_window_from_hwnd(hwnd))
 
     def _pick_second_last_window(self) -> None:
         hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
         if hwnd is None:
             self.status_label.setText("No second-last active window found.")
             return
-        self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
+        self._set_target(self._picked_window_from_hwnd(hwnd))
+
+    def _picked_window_from_hwnd(self, hwnd: int) -> PickedWindow:
+        info = self._capture_service.window_info(hwnd)
+        if info is not None:
+            return self._picked_window_from_info(info)
+        title = self._capture_service.window_title(hwnd).strip() or f"hwnd:{hwnd}"
+        label = f"unknown - {title} [0, {hwnd}]"
+        return PickedWindow(hwnd=hwnd, label=label, title=title)
+
+    @staticmethod
+    def _picked_window_from_info(info: WindowInfo) -> PickedWindow:
+        return PickedWindow(hwnd=info.hwnd, label=info.label, title=info.title)
 
     def _select_default_browser_target(self) -> None:
         if self._selected_target is not None:
@@ -1009,13 +985,11 @@ class MainWindow(QMainWindow):
             browser_candidates,
             key=lambda item: (
                 process_rank.get(item.process_name.strip().lower(), len(process_rank)),
-                item.label.lower(),
+                item.title.lower(),
             ),
         )
-        self._set_target(PickedWindow(hwnd=best.hwnd, label=best.label))
-        self.status_label.setText(
-            f"Default browser target selected: {best.label} [hwnd={best.hwnd}]"
-        )
+        self._set_target(self._picked_window_from_info(best))
+        self.status_label.setText(f"Default browser target selected: {best.label}")
         self._append_capture_log(
             f"Default browser target selected ({best.process_name or 'browser'})."
         )
@@ -1027,15 +1001,16 @@ class MainWindow(QMainWindow):
             CAPTURE_UI_LOGGER.error("quick capture failed: no second-last active window")
             self.status_label.setText("No second-last active window found for quick capture.")
             return
-        self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
+        self._set_target(self._picked_window_from_hwnd(hwnd))
         self._capture_selected_viewport()
 
     def _set_target(self, target: PickedWindow) -> None:
         self._selected_target = target
         CAPTURE_UI_LOGGER.info("target selected hwnd=%s label=%r", target.hwnd, target.label)
-        self.target_label.setText(f"Target: {target.label} [hwnd={target.hwnd}]")
+        self.target_label.setText(f"Target: {target.label}")
         if self.base_input.text().strip() in {"", "capture"}:
-            self.base_input.setText(sanitize_basename(target.label))
+            seed_name = target.title or target.label
+            self.base_input.setText(sanitize_basename(seed_name))
         self.status_label.setText("Target selected.")
 
     def _capture_selected_viewport(self) -> None:
@@ -1074,7 +1049,13 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture failed.")
             return
         image = ImageQt.fromqpixmap(pixmap).convert("RGB")
-        self._add_capture(image=image, title=self._selected_target.label, source_hwnd=self._selected_target.hwnd, frame_count=1)
+        capture_title = self._selected_target.title or self._selected_target.label
+        self._add_capture(
+            image=image,
+            title=capture_title,
+            source_hwnd=self._selected_target.hwnd,
+            frame_count=1,
+        )
         CAPTURE_UI_LOGGER.info(
             "viewport capture complete hwnd=%s backend=%s",
             self._selected_target.hwnd,
@@ -1095,13 +1076,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s strategy=%s wheel=%s click_assist=%s cursor=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
-            self._capture_scroll_strategy(),
+            self._capture_scroll_mode(),
             self._capture_wheel_injection_mode(),
-            self._capture_center_click_assist(),
             self._capture_cursor_hold_mode(),
         )
         effective_wheel_mode = self._capture_wheel_injection_mode()
@@ -1136,9 +1116,8 @@ class MainWindow(QMainWindow):
                 max_capture_pages=int(self.max_pages_spin.value()),
                 delay_ms=int(self.capture_delay_spin.value()),
                 capture_backend=self._capture_backend_primary(),
-                scroll_strategy=self._capture_scroll_strategy(),
+                scroll_mode=self._capture_scroll_mode(),
                 wheel_injection_mode=effective_wheel_mode,
-                center_click_assist=self._capture_center_click_assist(),
                 cursor_hold_mode=self._capture_cursor_hold_mode(),
             ),
             stop_event=self._stop_event,
@@ -1150,12 +1129,12 @@ class MainWindow(QMainWindow):
         self._capture_worker.finished.connect(self._full_capture_finished)
         self.capture_log_list.clear()
         self._append_capture_log(
-            f"Target focused: {self._selected_target.label} [hwnd={self._selected_target.hwnd}]."
+            f"Target focused: {self._selected_target.label}."
         )
         self._append_capture_log(
             "Full capture started "
-            f"(backend={self._capture_backend_primary()}, strategy={self._capture_scroll_strategy()}, "
-            f"wheel={self._capture_wheel_injection_mode()}, click_assist={self._capture_center_click_assist()}, "
+            f"(backend={self._capture_backend_primary()}, scroll_mode={self._capture_scroll_mode()}, "
+            f"wheel={self._capture_wheel_injection_mode()}, "
             f"cursor={self._capture_cursor_hold_mode()})."
         )
         try:
@@ -1220,7 +1199,11 @@ class MainWindow(QMainWindow):
         frame_count = int(getattr(result_obj, "captured_frames", 0))
         self._add_capture(
             image=image,
-            title=self._selected_target.label if self._selected_target else "capture",
+            title=(
+                self._selected_target.title or self._selected_target.label
+                if self._selected_target
+                else "capture"
+            ),
             source_hwnd=self._selected_target.hwnd if self._selected_target else None,
             frame_count=frame_count,
         )

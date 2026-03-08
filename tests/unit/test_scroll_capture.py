@@ -150,8 +150,7 @@ def test_run_full_capture_hybrid_uses_wheel_click_then_pagedown(monkeypatch) -> 
         options=scroll_capture.ScrollCaptureOptions(
             max_capture_pages=2,
             delay_ms=160,
-            scroll_strategy="hybrid_wheel_pagedown",
-            center_click_assist="on_no_movement",
+            scroll_mode="wheel_click_pagedown",
             wheel_injection_mode="physical_center_sendinput",
         ),
         stop_requested=lambda: False,
@@ -184,7 +183,7 @@ def test_run_full_capture_reports_repeat_after_full_ladder(monkeypatch) -> None:
         options=scroll_capture.ScrollCaptureOptions(
             max_capture_pages=5,
             repeated_frame_stop_count=1,
-            center_click_assist="on_no_movement",
+            scroll_mode="wheel_click_pagedown",
         ),
         stop_requested=lambda: False,
         progress_callback=progress.append,
@@ -246,7 +245,10 @@ def test_run_full_capture_logs_movement_probe_verdicts(monkeypatch, caplog) -> N
     result = scroll_capture.run_full_page_capture(
         service=service,
         target_hwnd=4242,
-        options=scroll_capture.ScrollCaptureOptions(max_capture_pages=2),
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=2,
+            scroll_mode="wheel_click_pagedown",
+        ),
         stop_requested=lambda: False,
     )
 
@@ -285,3 +287,56 @@ def test_capture_logger_info_suppresses_debug(monkeypatch, caplog) -> None:
 
     assert any(record.levelno == logging.INFO for record in caplog.records)
     assert not any(record.levelno == logging.DEBUG for record in caplog.records)
+
+
+def test_scroll_mode_wheel_only_never_uses_click_or_pagedown(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img_a = Image.new("RGB", (8, 8), "red")
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_a, "screen_region_gdi"),
+        ],
+    )
+
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=3,
+            repeated_frame_stop_count=1,
+            scroll_mode="wheel_only",
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "repeat_detected"
+    assert len(service.click_calls) == 0
+    assert service.pagedown_calls == 0
+
+
+def test_scroll_mode_wheel_pagedown_disables_click(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img_a = Image.new("RGB", (8, 8), "red")
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_a, "screen_region_gdi"),
+            (img_a, "screen_region_gdi"),
+        ],
+    )
+
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=4,
+            repeated_frame_stop_count=1,
+            scroll_mode="wheel_pagedown",
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "capture_failed"
+    assert len(service.click_calls) == 0
+    assert service.pagedown_calls == 1

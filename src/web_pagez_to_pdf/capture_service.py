@@ -160,12 +160,24 @@ class WindowInfo:
     title: str
     process_name: str
     class_name: str
+    process_id: int = 0
+
+    @property
+    def process_short_name(self) -> str:
+        normalized = str(self.process_name or "").strip().lower()
+        if normalized.endswith(".exe"):
+            normalized = normalized[:-4]
+        return normalized or "unknown"
+
+    @property
+    def sort_key(self) -> tuple[str, str]:
+        title_text = str(self.title or "").strip().lower()
+        return (self.process_short_name, title_text)
 
     @property
     def label(self) -> str:
-        if self.process_name:
-            return f"{self.title} ({self.process_name})"
-        return self.title
+        title_text = str(self.title or "").strip() or f"hwnd:{self.hwnd}"
+        return f"{self.process_short_name} - {title_text} [{self.process_id}, {self.hwnd}]"
 
 
 class WindowCaptureService:
@@ -216,22 +228,34 @@ class WindowCaptureService:
                 return True
             if not self._is_capture_candidate(hwnd):
                 return True
-            title = self.window_title(hwnd).strip()
-            if not title:
+            info = self.window_info(int(hwnd))
+            if info is None:
                 return True
-            windows.append(
-                WindowInfo(
-                    hwnd=int(hwnd),
-                    title=title,
-                    process_name=self.window_process_name(hwnd),
-                    class_name=self.window_class_name(hwnd),
-                )
-            )
+            if not info.title.strip():
+                return True
+            windows.append(info)
             return True
 
         USER32.EnumWindows(_enum_proc, 0)
-        windows.sort(key=lambda item: item.label.lower())
+        windows.sort(key=lambda item: item.sort_key)
         return windows
+
+    def window_info(self, hwnd: int) -> WindowInfo | None:
+        """Build best-effort metadata snapshot for one window handle."""
+
+        if hwnd <= 0:
+            return None
+        title = self.window_title(hwnd).strip()
+        if not title:
+            title = f"hwnd:{hwnd}"
+        process_id = self.window_process_id(hwnd)
+        return WindowInfo(
+            hwnd=int(hwnd),
+            title=title,
+            process_name=self.window_process_name(hwnd),
+            process_id=process_id,
+            class_name=self.window_class_name(hwnd),
+        )
 
     @staticmethod
     def window_from_point(global_x: int, global_y: int) -> int | None:
@@ -617,16 +641,13 @@ class WindowCaptureService:
     def window_process_name(hwnd: int) -> str:
         """Resolve executable name for the owning window process."""
 
-        if hwnd <= 0:
-            return ""
-        pid = wintypes.DWORD(0)
-        USER32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value <= 0:
+        process_id = WindowCaptureService.window_process_id(hwnd)
+        if process_id <= 0:
             return ""
         process_handle = KERNEL32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
             False,
-            pid.value,
+            process_id,
         )
         if not process_handle:
             return ""
@@ -643,6 +664,16 @@ class WindowCaptureService:
             return buffer.value.strip()
         finally:
             KERNEL32.CloseHandle(process_handle)
+
+    @staticmethod
+    def window_process_id(hwnd: int) -> int:
+        """Resolve process id for one native window handle."""
+
+        if hwnd <= 0:
+            return 0
+        pid = wintypes.DWORD(0)
+        USER32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
 
     def wait_after_scroll(self, delay_ms: int) -> None:
         """Sleep helper for scroll-and-capture loops."""

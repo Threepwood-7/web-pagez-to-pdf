@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -27,6 +27,7 @@ class PickedWindow:
 
     hwnd: int
     label: str
+    title: str = ""
 
 
 class WindowPickerDialog(QDialog):
@@ -96,7 +97,7 @@ class CrosshairPickerOverlay(QWidget):
         if screen is None:
             from PySide6.QtGui import QGuiApplication
 
-            screen = QGuiApplication.screenAt(QGuiApplication.cursor().pos())
+            screen = QGuiApplication.screenAt(QCursor.pos())
         if screen is None:
             from PySide6.QtGui import QGuiApplication
 
@@ -124,7 +125,7 @@ class CrosshairPickerOverlay(QWidget):
         pen = QPen(QColor(255, 80, 80, 220))
         pen.setWidth(2)
         painter.setPen(pen)
-        center = self.mapFromGlobal(self.cursor().pos())
+        center = self.mapFromGlobal(QCursor.pos())
         painter.drawLine(center.x() - 20, center.y(), center.x() + 20, center.y())
         painter.drawLine(center.x(), center.y() - 20, center.x(), center.y() + 20)
         super().paintEvent(event)

@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
 from . import widget_naming
 from .scroll_capture import (
     DEFAULT_CAPTURE_LOG_LEVEL,
-    DEFAULT_CENTER_CLICK_ASSIST,
     DEFAULT_CURSOR_HOLD_MODE,
-    DEFAULT_SCROLL_STRATEGY,
+    DEFAULT_SCROLL_MODE,
     DEFAULT_WHEEL_INJECTION_MODE,
+    SCROLL_MODES,
     normalize_capture_log_level,
 )
 
@@ -164,16 +164,17 @@ class SettingsWindow(QDialog):
             "capture backend gdi qt printwindow",
             self.capture_backend_combo,
         )
-        self.capture_scroll_strategy_combo = QComboBox(self)
-        self.capture_scroll_strategy_combo.addItem("Hybrid Wheel + PageDown", "hybrid_wheel_pagedown")
-        self.capture_scroll_strategy_combo.addItem("PageDown only", "pagedown_only")
-        self.capture_scroll_strategy_combo.addItem("Wheel only", "wheel_only")
+        self.capture_scroll_mode_combo = QComboBox(self)
+        self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
+        self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
+        self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
+        self.capture_scroll_mode_combo.addItem("Wheel + Click + PageDown", "wheel_click_pagedown")
         self._add_row(
             capture_group,
-            "capture.scroll_strategy",
-            "Scroll Strategy",
-            "capture full scroll strategy wheel pagedown hybrid",
-            self.capture_scroll_strategy_combo,
+            "capture.scroll_mode",
+            "Scroll Mode",
+            "capture full scroll mode wheel click pagedown",
+            self.capture_scroll_mode_combo,
         )
         self.capture_wheel_injection_combo = QComboBox(self)
         self.capture_wheel_injection_combo.addItem(
@@ -190,16 +191,6 @@ class SettingsWindow(QDialog):
             "Wheel Injection",
             "capture wheel injection sendinput legacy message",
             self.capture_wheel_injection_combo,
-        )
-        self.capture_center_click_assist_combo = QComboBox(self)
-        self.capture_center_click_assist_combo.addItem("On No Movement", "on_no_movement")
-        self.capture_center_click_assist_combo.addItem("Off", "off")
-        self._add_row(
-            capture_group,
-            "capture.center_click_assist",
-            "Center Click Assist",
-            "capture center click assist fallback",
-            self.capture_center_click_assist_combo,
         )
         self.capture_cursor_hold_combo = QComboBox(self)
         self.capture_cursor_hold_combo.addItem("Keep At Center", "keep_at_center")
@@ -348,16 +339,12 @@ class SettingsWindow(QDialog):
             str(values.get("capture.backend_primary", "screen_region_gdi")),
         )
         self._set_combo_value(
-            self.capture_scroll_strategy_combo,
-            str(values.get("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)),
+            self.capture_scroll_mode_combo,
+            str(values.get("capture.scroll_mode", DEFAULT_SCROLL_MODE)),
         )
         self._set_combo_value(
             self.capture_wheel_injection_combo,
             str(values.get("capture.wheel_injection_mode", DEFAULT_WHEEL_INJECTION_MODE)),
-        )
-        self._set_combo_value(
-            self.capture_center_click_assist_combo,
-            str(values.get("capture.center_click_assist", DEFAULT_CENTER_CLICK_ASSIST)),
         )
         self._set_combo_value(
             self.capture_cursor_hold_combo,
@@ -395,9 +382,8 @@ class SettingsWindow(QDialog):
             "capture.max_pages": int(self.capture_max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
-            "capture.scroll_strategy": str(self.capture_scroll_strategy_combo.currentData()),
+            "capture.scroll_mode": self._scroll_mode_value(),
             "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
-            "capture.center_click_assist": str(self.capture_center_click_assist_combo.currentData()),
             "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),
             "capture.log_level": normalize_capture_log_level(
                 str(self.capture_log_level_combo.currentData())
@@ -418,6 +404,12 @@ class SettingsWindow(QDialog):
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }
+
+    def _scroll_mode_value(self) -> str:
+        value = str(self.capture_scroll_mode_combo.currentData())
+        if value in SCROLL_MODES:
+            return value
+        return DEFAULT_SCROLL_MODE
 
     def _emit_apply(self) -> None:
         self.settings_applied.emit(self.values())

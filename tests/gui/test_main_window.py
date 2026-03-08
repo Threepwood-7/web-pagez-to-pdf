@@ -35,17 +35,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
     )
     assert window.capture_backend_combo.property("widget_id") == "window:main:control:capture_backend_combo"
     assert (
-        window.capture_scroll_strategy_combo.property("widget_id")
-        == "window:main:control:capture_scroll_strategy_combo"
+        window.capture_scroll_mode_combo.property("widget_id")
+        == "window:main:control:capture_scroll_mode_combo"
     )
-    assert (
-        window.capture_wheel_injection_combo.property("widget_id")
-        == "window:main:control:capture_wheel_injection_combo"
-    )
-    assert (
-        window.capture_center_click_assist_combo.property("widget_id")
-        == "window:main:control:capture_center_click_assist_combo"
-    )
+    assert window.capture_wheel_injection_combo.property("widget_id") == "window:main:control:capture_wheel_injection_combo"
     assert (
         window.capture_cursor_hold_combo.property("widget_id")
         == "window:main:control:capture_cursor_hold_combo"
@@ -153,14 +146,14 @@ def test_capture_input_modes_persist_and_reload(qtbot: QtBot) -> None:
     qtbot.addWidget(window)
     window.show()
 
+    window._set_scroll_mode_combo("wheel_click_pagedown")
     window._set_wheel_injection_combo("legacy_message_wheel")
-    window._set_center_click_assist_combo("off")
     window._set_cursor_hold_combo("restore_each_step")
     window._set_capture_log_level_combo("DEBUG")
     payload = window._collect_settings_payload()
 
+    assert str(payload["capture.scroll_mode"]) == "wheel_click_pagedown"
     assert str(payload["capture.wheel_injection_mode"]) == "legacy_message_wheel"
-    assert str(payload["capture.center_click_assist"]) == "off"
     assert str(payload["capture.cursor_hold_mode"]) == "restore_each_step"
     assert str(payload["capture.log_level"]) == "DEBUG"
 
@@ -175,6 +168,67 @@ def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:
 
     window._set_capture_log_level_combo("not-a-level")
     assert str(window.capture_log_level_combo.currentData()) == "DEBUG"
+
+
+def test_pick_button_uses_menu_and_crosshair_button_removed(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.pick_list_button.menu() is not None
+    assert not hasattr(window, "pick_crosshair_button")
+
+
+def test_pick_menu_sorted_and_target_label_format(
+    qtbot: QtBot, monkeypatch: MonkeyPatch
+) -> None:
+    windows = [
+        WindowInfo(
+            hwnd=4002,
+            title="B Site",
+            process_name="chrome.exe",
+            class_name="Chrome_WidgetWin_1",
+            process_id=222,
+        ),
+        WindowInfo(
+            hwnd=4001,
+            title="A Site",
+            process_name="chrome.exe",
+            class_name="Chrome_WidgetWin_1",
+            process_id=111,
+        ),
+        WindowInfo(
+            hwnd=3000,
+            title="Main",
+            process_name="firefox.exe",
+            class_name="MozillaWindowClass",
+            process_id=333,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.capture_service.WindowCaptureService.list_top_windows",
+        lambda _self, _own_hwnd: windows,
+    )
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.capture_service.WindowCaptureService.window_info",
+        lambda _self, hwnd: next((item for item in windows if item.hwnd == hwnd), None),
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._populate_pick_target_menu()
+
+    actions = [action for action in window.pick_target_menu.actions() if not action.isSeparator()]
+    assert actions[0].text() == "Pick with Crosshair..."
+    assert actions[1].text() == "chrome - A Site [111, 4001]"
+    assert actions[2].text() == "chrome - B Site [222, 4002]"
+    assert actions[3].text() == "firefox - Main [333, 3000]"
+
+    actions[2].trigger()
+    assert window._selected_target is not None
+    assert window.target_label.text() == "Target: chrome - B Site [222, 4002]"
 
 
 def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:

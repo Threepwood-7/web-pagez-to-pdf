@@ -17,21 +17,17 @@ if TYPE_CHECKING:
 
     from .capture_service import WindowCaptureService
 
-DEFAULT_SCROLL_STRATEGY = "hybrid_wheel_pagedown"
-SCROLL_STRATEGIES = (
-    DEFAULT_SCROLL_STRATEGY,
-    "pagedown_only",
-    "wheel_only",
+DEFAULT_SCROLL_MODE = "wheel_only"
+SCROLL_MODES = (
+    DEFAULT_SCROLL_MODE,
+    "wheel_click",
+    "wheel_pagedown",
+    "wheel_click_pagedown",
 )
 DEFAULT_WHEEL_INJECTION_MODE = "physical_center_sendinput"
 WHEEL_INJECTION_MODES = (
     DEFAULT_WHEEL_INJECTION_MODE,
     "legacy_message_wheel",
-)
-DEFAULT_CENTER_CLICK_ASSIST = "on_no_movement"
-CENTER_CLICK_ASSIST_MODES = (
-    "off",
-    DEFAULT_CENTER_CLICK_ASSIST,
 )
 DEFAULT_CAPTURE_LOG_LEVEL = "DEBUG"
 CAPTURE_LOG_LEVELS = (
@@ -59,9 +55,8 @@ class ScrollCaptureOptions:
     delay_ms: int = 380
     max_capture_pages: int = 18
     capture_backend: str = "screen_region_gdi"
-    scroll_strategy: str = DEFAULT_SCROLL_STRATEGY
+    scroll_mode: str = DEFAULT_SCROLL_MODE
     wheel_injection_mode: str = DEFAULT_WHEEL_INJECTION_MODE
-    center_click_assist: str = DEFAULT_CENTER_CLICK_ASSIST
     cursor_hold_mode: str = DEFAULT_CURSOR_HOLD_MODE
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
@@ -129,21 +124,19 @@ def run_full_page_capture(
     threshold = max(0.1, float(options.repeated_frame_score_threshold))
     repeat_stop = max(1, int(options.repeated_frame_stop_count))
     delay_ms = max(120, int(options.delay_ms))
-    scroll_strategy = _normalize_scroll_strategy(options.scroll_strategy)
+    scroll_mode = _normalize_scroll_mode(options.scroll_mode)
     wheel_mode = _normalize_wheel_injection_mode(options.wheel_injection_mode)
-    click_assist = _normalize_center_click_assist(options.center_click_assist)
     cursor_hold_mode = _normalize_cursor_hold_mode(options.cursor_hold_mode)
     LOGGER.info(
         "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
-        "strategy=%s wheel=%s click_assist=%s cursor_hold=%s max_pages=%s delay_ms=%s",
+        "scroll_mode=%s wheel=%s cursor_hold=%s max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
         target_process,
         options.capture_backend,
-        scroll_strategy,
+        scroll_mode,
         wheel_mode,
-        click_assist,
         cursor_hold_mode,
         max_pages,
         delay_ms,
@@ -155,10 +148,10 @@ def run_full_page_capture(
         session_id=session_id,
         target_label=target_title,
         target_process=target_process,
-        scroll_strategy=scroll_strategy,
+        scroll_strategy=scroll_mode,
         capture_backend=options.capture_backend,
         wheel_injection_mode=wheel_mode,
-        center_click_assist=click_assist,
+        center_click_assist=scroll_mode,
     )
     try:
         first_frame, first_backend = _capture_frame(
@@ -244,9 +237,8 @@ def run_full_page_capture(
                 session_id=session_id,
                 delay_ms=delay_ms,
                 capture_backend=options.capture_backend,
-                scroll_strategy=scroll_strategy,
+                scroll_mode=scroll_mode,
                 wheel_mode=wheel_mode,
-                click_assist=click_assist,
                 cursor_hold_mode=cursor_hold_mode,
                 threshold=threshold,
             )
@@ -400,31 +392,11 @@ def _capture_after_scroll_ladder(
     session_id: str,
     delay_ms: int,
     capture_backend: str,
-    scroll_strategy: str,
+    scroll_mode: str,
     wheel_mode: str,
-    click_assist: str,
     cursor_hold_mode: str,
     threshold: float,
 ) -> _ScrollStepOutcome:
-    if scroll_strategy == "pagedown_only":
-        service.send_page_down()
-        frame, backend, diff_score = _capture_frame_with_diff(
-            service=service,
-            target_hwnd=target_hwnd,
-            previous_frame=previous_frame,
-            capture_backend=capture_backend,
-            delay_ms=delay_ms,
-        )
-        moved = bool(diff_score is not None and diff_score > threshold)
-        return _ScrollStepOutcome(
-            frame=frame,
-            backend_used=backend,
-            scroll_method="pagedown",
-            diff_score=diff_score,
-            movement_detected=moved,
-            probe_exhausted=False,
-        )
-
     wheel_ok = service.wheel_down_at_window_center(
         target_hwnd,
         wheel_injection_mode=wheel_mode,
@@ -452,7 +424,7 @@ def _capture_after_scroll_ladder(
             scroll_method="wheel_center",
             diff_score=None,
             movement_detected=False,
-            probe_exhausted=scroll_strategy == DEFAULT_SCROLL_STRATEGY,
+            probe_exhausted=scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"},
         )
     if diff_score is not None and diff_score > threshold:
         return _ScrollStepOutcome(
@@ -464,7 +436,7 @@ def _capture_after_scroll_ladder(
             probe_exhausted=False,
         )
 
-    if click_assist == "on_no_movement":
+    if scroll_mode in {"wheel_click", "wheel_click_pagedown"}:
         LOGGER.debug(
             "[capture-session:%s] frame=%s fallback=click_center_then_wheel reason=no_movement "
             "diff=%s",
@@ -502,7 +474,7 @@ def _capture_after_scroll_ladder(
                 scroll_method="click_center_then_wheel",
                 diff_score=None,
                 movement_detected=False,
-                probe_exhausted=scroll_strategy == DEFAULT_SCROLL_STRATEGY,
+                probe_exhausted=scroll_mode == "wheel_click_pagedown",
             )
         frame = frame_after_click
         backend = backend_after_click or backend
@@ -516,7 +488,7 @@ def _capture_after_scroll_ladder(
                 movement_detected=True,
                 probe_exhausted=False,
             )
-        if scroll_strategy == "wheel_only":
+        if scroll_mode == "wheel_click":
             return _ScrollStepOutcome(
                 frame=frame,
                 backend_used=backend,
@@ -525,7 +497,7 @@ def _capture_after_scroll_ladder(
                 movement_detected=False,
                 probe_exhausted=False,
             )
-    elif scroll_strategy == "wheel_only":
+    elif scroll_mode == "wheel_only":
         return _ScrollStepOutcome(
             frame=frame,
             backend_used=backend,
@@ -535,7 +507,7 @@ def _capture_after_scroll_ladder(
             probe_exhausted=False,
         )
 
-    if scroll_strategy == DEFAULT_SCROLL_STRATEGY:
+    if scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"}:
         LOGGER.debug(
             "[capture-session:%s] frame=%s fallback=pagedown reason=no_movement diff=%s",
             session_id,
@@ -583,7 +555,7 @@ def _capture_after_scroll_ladder(
         scroll_method="wheel_center",
         diff_score=diff_score,
         movement_detected=False,
-        probe_exhausted=False,
+        probe_exhausted=scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"},
     )
 
 
@@ -625,22 +597,11 @@ def _emit_progress(
     callback(payload)
 
 
-def _normalize_scroll_strategy(strategy: str) -> str:
-    normalized = str(strategy or "").strip().lower()
-    aliases = {
-        "hybrid": DEFAULT_SCROLL_STRATEGY,
-        "hybrid_wheel": DEFAULT_SCROLL_STRATEGY,
-        "hybrid_wheel_pagedown": DEFAULT_SCROLL_STRATEGY,
-        "pagedown_only": "pagedown_only",
-        "pagedown": "pagedown_only",
-        "page_down": "pagedown_only",
-        "wheel_only": "wheel_only",
-        "wheel": "wheel_only",
-    }
-    resolved = aliases.get(normalized, DEFAULT_SCROLL_STRATEGY)
-    if resolved not in SCROLL_STRATEGIES:
-        return DEFAULT_SCROLL_STRATEGY
-    return resolved
+def _normalize_scroll_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in SCROLL_MODES:
+        return DEFAULT_SCROLL_MODE
+    return normalized
 
 
 def _normalize_wheel_injection_mode(mode: str) -> str:
@@ -648,13 +609,6 @@ def _normalize_wheel_injection_mode(mode: str) -> str:
     if normalized == "legacy_message_wheel":
         return "legacy_message_wheel"
     return DEFAULT_WHEEL_INJECTION_MODE
-
-
-def _normalize_center_click_assist(mode: str) -> str:
-    normalized = str(mode or "").strip().lower()
-    if normalized == "off":
-        return "off"
-    return DEFAULT_CENTER_CLICK_ASSIST
 
 
 def _normalize_cursor_hold_mode(mode: str) -> str:
