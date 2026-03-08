@@ -60,6 +60,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:capture_scroll_to_top_checkbox"
     )
     assert (
+        window.capture_auto_trim_fixed_checkbox.property("widget_id")
+        == "window:main:control:capture_auto_trim_fixed_checkbox"
+    )
+    assert (
         window.capture_tab_preview_label.property("widget_id")
         == "window:main:control:capture_tab_preview_label"
     )
@@ -165,6 +169,7 @@ def test_capture_input_modes_persist_and_reload(qtbot: QtBot) -> None:
     window._set_scroll_mode_combo("wheel_click_pagedown")
     window._set_capture_frame_region_combo("full_window")
     window.capture_scroll_to_top_checkbox.setChecked(False)
+    window.capture_auto_trim_fixed_checkbox.setChecked(False)
     window._set_wheel_injection_combo("legacy_message_wheel")
     window._set_cursor_hold_combo("restore_each_step")
     window.capture_include_mouse_checkbox.setChecked(True)
@@ -174,6 +179,7 @@ def test_capture_input_modes_persist_and_reload(qtbot: QtBot) -> None:
     assert str(payload["capture.scroll_mode"]) == "wheel_click_pagedown"
     assert str(payload["capture.frame_region"]) == "full_window"
     assert bool(payload["capture.scroll_to_top_on_full"]) is False
+    assert bool(payload["capture.auto_trim_fixed_strips"]) is False
     assert str(payload["capture.wheel_injection_mode"]) == "legacy_message_wheel"
     assert str(payload["capture.cursor_hold_mode"]) == "restore_each_step"
     assert bool(payload["capture.include_mouse_cursor"]) is True
@@ -186,6 +192,14 @@ def test_scroll_to_top_checkbox_defaults_enabled(qtbot: QtBot) -> None:
     window.show()
 
     assert window.capture_scroll_to_top_checkbox.isChecked()
+
+
+def test_auto_trim_fixed_checkbox_defaults_enabled(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.capture_auto_trim_fixed_checkbox.isChecked()
 
 
 def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:

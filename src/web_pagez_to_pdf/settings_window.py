@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from . import widget_naming
 from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
 from .scroll_capture import (
+    DEFAULT_AUTO_TRIM_FIXED_STRIPS,
     DEFAULT_CAPTURE_LOG_LEVEL,
     DEFAULT_CURSOR_HOLD_MODE,
     DEFAULT_SCROLL_MODE,
@@ -188,6 +189,17 @@ class SettingsWindow(QDialog):
             "Scroll To Top",
             "capture scroll to top before full capture wheel up home",
             self.capture_scroll_to_top_checkbox,
+        )
+        self.capture_auto_trim_fixed_checkbox = QCheckBox(
+            "Auto-trim fixed top/bottom strips",
+            self,
+        )
+        self._add_row(
+            capture_group,
+            "capture.auto_trim_fixed_strips",
+            "Auto Trim Fixed Strips",
+            "capture auto trim fixed strips sticky top bottom",
+            self.capture_auto_trim_fixed_checkbox,
         )
         self.capture_frame_region_combo = QComboBox(self)
         self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
@@ -366,6 +378,14 @@ class SettingsWindow(QDialog):
         self.capture_scroll_to_top_checkbox.setChecked(
             bool(values.get("capture.scroll_to_top_on_full", True))
         )
+        self.capture_auto_trim_fixed_checkbox.setChecked(
+            bool(
+                values.get(
+                    "capture.auto_trim_fixed_strips",
+                    DEFAULT_AUTO_TRIM_FIXED_STRIPS,
+                )
+            )
+        )
         self._set_combo_value(
             self.capture_frame_region_combo,
             str(values.get("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)),
@@ -412,6 +432,7 @@ class SettingsWindow(QDialog):
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.scroll_mode": self._scroll_mode_value(),
             "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
+            "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
             "capture.frame_region": self._frame_region_value(),
             "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
             "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),

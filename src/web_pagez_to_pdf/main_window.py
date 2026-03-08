@@ -71,6 +71,7 @@ from .models import (
 from .scroll_capture import (
     CAPTURE_LOG_LEVELS,
     CURSOR_HOLD_MODES,
+    DEFAULT_AUTO_TRIM_FIXED_STRIPS,
     DEFAULT_CAPTURE_LOG_LEVEL,
     DEFAULT_CURSOR_HOLD_MODE,
     DEFAULT_SCROLL_MODE,
@@ -359,6 +360,14 @@ class MainWindow(QMainWindow):
             "capture_scroll_to_top_checkbox",
             "capture_scroll_to_top_checkbox",
         )
+        self.capture_auto_trim_fixed_checkbox = QCheckBox(
+            "Auto-trim fixed top/bottom strips",
+        )
+        self._assign_control_identity(
+            self.capture_auto_trim_fixed_checkbox,
+            "capture_auto_trim_fixed_checkbox",
+            "capture_auto_trim_fixed_checkbox",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
@@ -368,15 +377,16 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(QLabel("Scroll mode"), 3, 0)
         cap_grid.addWidget(self.capture_scroll_mode_combo, 3, 1)
         cap_grid.addWidget(self.capture_scroll_to_top_checkbox, 4, 0, 1, 2)
-        cap_grid.addWidget(QLabel("Frame region"), 5, 0)
-        cap_grid.addWidget(self.capture_frame_region_combo, 5, 1)
-        cap_grid.addWidget(QLabel("Wheel injection"), 6, 0)
-        cap_grid.addWidget(self.capture_wheel_injection_combo, 6, 1)
-        cap_grid.addWidget(QLabel("Cursor hold"), 7, 0)
-        cap_grid.addWidget(self.capture_cursor_hold_combo, 7, 1)
-        cap_grid.addWidget(QLabel("Diagnostics log level"), 8, 0)
-        cap_grid.addWidget(self.capture_log_level_combo, 8, 1)
-        cap_grid.addWidget(self.capture_include_mouse_checkbox, 9, 0, 1, 2)
+        cap_grid.addWidget(self.capture_auto_trim_fixed_checkbox, 5, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Frame region"), 6, 0)
+        cap_grid.addWidget(self.capture_frame_region_combo, 6, 1)
+        cap_grid.addWidget(QLabel("Wheel injection"), 7, 0)
+        cap_grid.addWidget(self.capture_wheel_injection_combo, 7, 1)
+        cap_grid.addWidget(QLabel("Cursor hold"), 8, 0)
+        cap_grid.addWidget(self.capture_cursor_hold_combo, 8, 1)
+        cap_grid.addWidget(QLabel("Diagnostics log level"), 9, 0)
+        cap_grid.addWidget(self.capture_log_level_combo, 9, 1)
+        cap_grid.addWidget(self.capture_include_mouse_checkbox, 10, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -590,6 +600,9 @@ class MainWindow(QMainWindow):
         self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
         self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
         self.capture_scroll_to_top_checkbox.toggled.connect(self._persist_capture_scroll_to_top_on_full)
+        self.capture_auto_trim_fixed_checkbox.toggled.connect(
+            self._persist_capture_auto_trim_fixed_strips
+        )
         self.capture_wheel_injection_combo.currentIndexChanged.connect(
             self._persist_capture_wheel_injection_mode
         )
@@ -669,6 +682,7 @@ class MainWindow(QMainWindow):
                 self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
             ),
             "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
+            "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
             "capture.frame_region": str(
                 self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION
             ),
@@ -708,6 +722,12 @@ class MainWindow(QMainWindow):
         self._set_scroll_mode_combo(scroll_mode)
         self.capture_scroll_to_top_checkbox.setChecked(
             self._bool_setting("capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL)
+        )
+        self.capture_auto_trim_fixed_checkbox.setChecked(
+            self._bool_setting(
+                "capture.auto_trim_fixed_strips",
+                DEFAULT_AUTO_TRIM_FIXED_STRIPS,
+            )
         )
         frame_region = str(
             self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
@@ -857,6 +877,15 @@ class MainWindow(QMainWindow):
         self._settings.setValue(
             "capture.scroll_to_top_on_full",
             self._capture_scroll_to_top_on_full(),
+        )
+
+    def _capture_auto_trim_fixed_strips(self) -> bool:
+        return bool(self.capture_auto_trim_fixed_checkbox.isChecked())
+
+    def _persist_capture_auto_trim_fixed_strips(self) -> None:
+        self._settings.setValue(
+            "capture.auto_trim_fixed_strips",
+            self._capture_auto_trim_fixed_strips(),
         )
 
     def _persist_capture_include_mouse_cursor(self) -> None:
@@ -1167,7 +1196,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s auto_trim=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
@@ -1177,6 +1206,7 @@ class MainWindow(QMainWindow):
             self._capture_frame_region(),
             self._capture_include_mouse_cursor(),
             self._capture_scroll_to_top_on_full(),
+            self._capture_auto_trim_fixed_strips(),
         )
         effective_wheel_mode = self._capture_wheel_injection_mode()
         if effective_wheel_mode == "legacy_message_wheel":
@@ -1216,6 +1246,7 @@ class MainWindow(QMainWindow):
                 frame_region=self._capture_frame_region(),
                 include_mouse_cursor=self._capture_include_mouse_cursor(),
                 scroll_to_top_on_full=self._capture_scroll_to_top_on_full(),
+                auto_trim_fixed_strips=self._capture_auto_trim_fixed_strips(),
             ),
             stop_event=self._stop_event,
         )
@@ -1235,7 +1266,8 @@ class MainWindow(QMainWindow):
             f"cursor={self._capture_cursor_hold_mode()}, "
             f"frame_region={self._capture_frame_region()}, "
             f"include_cursor={self._capture_include_mouse_cursor()}, "
-            f"scroll_to_top={self._capture_scroll_to_top_on_full()})."
+            f"scroll_to_top={self._capture_scroll_to_top_on_full()}, "
+            f"auto_trim={self._capture_auto_trim_fixed_strips()})."
         )
         try:
             CAPTURE_UI_LOGGER.info("full capture show stop overlay")

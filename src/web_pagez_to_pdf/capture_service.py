@@ -131,6 +131,13 @@ PROCESS_VM_READ = 0x0010
 LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
+def _hwnd_to_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class MOUSEINPUT(ctypes.Structure):
     """ctypes mapping for Win32 MOUSEINPUT."""
 
@@ -207,7 +214,7 @@ class WindowCaptureService:
     def record_foreground_window(self) -> int:
         """Append current foreground window handle into history."""
 
-        hwnd = int(USER32.GetForegroundWindow())
+        hwnd = _hwnd_to_int(USER32.GetForegroundWindow())
         if hwnd and (not self._foreground_history or self._foreground_history[-1] != hwnd):
             self._foreground_history.append(hwnd)
             if len(self._foreground_history) > HISTORY_LIMIT:
@@ -298,7 +305,7 @@ class WindowCaptureService:
             LOGGER.debug("activate_window focus succeeded direct hwnd=%s", hwnd)
             return (True, "")
 
-        foreground_hwnd = int(USER32.GetForegroundWindow())
+        foreground_hwnd = _hwnd_to_int(USER32.GetForegroundWindow())
         foreground_thread = WindowCaptureService._window_thread_id(foreground_hwnd)
         target_thread = WindowCaptureService._window_thread_id(hwnd)
         current_thread = int(KERNEL32.GetCurrentThreadId())
@@ -333,7 +340,7 @@ class WindowCaptureService:
     def is_foreground_window(hwnd: int) -> bool:
         """Return whether the given hwnd currently owns foreground focus."""
 
-        return hwnd > 0 and int(USER32.GetForegroundWindow()) == int(hwnd)
+        return hwnd > 0 and _hwnd_to_int(USER32.GetForegroundWindow()) == int(hwnd)
 
     def ensure_window_foreground(self, hwnd: int) -> tuple[bool, str]:
         """Ensure target is in foreground without changing window state."""

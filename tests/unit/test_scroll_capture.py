@@ -462,3 +462,172 @@ def test_scroll_to_top_preflight_skipped_when_disabled(monkeypatch) -> None:
 
     assert len(service.wheel_up_calls) == 0
     assert service.home_calls == 0
+
+
+def test_estimate_fixed_vertical_strips_detects_top_and_bottom() -> None:
+    width = 140
+    height = 240
+    fixed_top = 48
+    fixed_bottom = 36
+    img_a = Image.new("RGB", (width, height), "white")
+    img_b = Image.new("RGB", (width, height), "white")
+    for y_pos in range(fixed_top):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (22, 44, 66))
+            img_b.putpixel((x_pos, y_pos), (22, 44, 66))
+    for y_pos in range(height - fixed_bottom, height):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (80, 80, 80))
+            img_b.putpixel((x_pos, y_pos), (80, 80, 80))
+    for y_pos in range(fixed_top, height - fixed_bottom):
+        for x_pos in range(width):
+            if (y_pos + x_pos) % 19 == 0:
+                img_a.putpixel((x_pos, y_pos), (6, 6, 6))
+            if (y_pos + x_pos + 7) % 19 == 0:
+                img_b.putpixel((x_pos, y_pos), (6, 6, 6))
+
+    top_trim, bottom_trim = scroll_capture._estimate_fixed_vertical_strips(img_a, img_b)
+    assert top_trim >= 24
+    assert bottom_trim >= 24
+
+
+def test_auto_trim_removes_fixed_top_and_bottom_strips_from_output_frames(monkeypatch) -> None:
+    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+
+    def _diff_score(left: Image.Image, right: Image.Image) -> float:
+        width = min(left.width, right.width)
+        height = min(left.height, right.height)
+        left_px = left.load()
+        right_px = right.load()
+        acc = 0
+        count = 0
+        for y_pos in range(height):
+            for x_pos in range(width):
+                lv = left_px[x_pos, y_pos]
+                rv = right_px[x_pos, y_pos]
+                acc += abs(lv[0] - rv[0]) + abs(lv[1] - rv[1]) + abs(lv[2] - rv[2])
+                count += 3
+        return float(acc) / float(max(1, count))
+
+    monkeypatch.setattr(scroll_capture, "frame_diff_score", _diff_score)
+    captured_heights: list[int] = []
+
+    def _stitch_frames(frames: list[Image.Image]):
+        captured_heights.extend(frame.height for frame in frames)
+        return SimpleNamespace(image=frames[-1])
+
+    monkeypatch.setattr(scroll_capture, "stitch_frames", _stitch_frames)
+
+    width = 120
+    height = 180
+    fixed_top = 52
+    fixed_bottom = 34
+    img_a = Image.new("RGB", (width, height), "white")
+    img_b = Image.new("RGB", (width, height), "white")
+    for y_pos in range(fixed_top):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (87, 110, 161))
+            img_b.putpixel((x_pos, y_pos), (87, 110, 161))
+    for y_pos in range(height - fixed_bottom, height):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (26, 26, 26))
+            img_b.putpixel((x_pos, y_pos), (26, 26, 26))
+    for y_pos in range(fixed_top, height - fixed_bottom):
+        for x_pos in range(width):
+            if (y_pos + x_pos) % 17 == 0:
+                img_a.putpixel((x_pos, y_pos), (5, 5, 5))
+            if (y_pos + x_pos + 6) % 17 == 0:
+                img_b.putpixel((x_pos, y_pos), (5, 5, 5))
+
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_b, "screen_region_gdi"),
+        ],
+    )
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=2,
+            scroll_mode="wheel_then_pagedown",
+            frame_region="client_area",
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert captured_heights
+    assert all(height_value <= (height - fixed_top - fixed_bottom) for height_value in captured_heights)
+
+
+def test_auto_trim_keeps_movement_detection_with_fixed_top_and_bottom(monkeypatch) -> None:
+    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+
+    def _diff_score(left: Image.Image, right: Image.Image) -> float:
+        width = min(left.width, right.width)
+        height = min(left.height, right.height)
+        left_px = left.load()
+        right_px = right.load()
+        acc = 0
+        count = 0
+        for y_pos in range(height):
+            for x_pos in range(width):
+                lv = left_px[x_pos, y_pos]
+                rv = right_px[x_pos, y_pos]
+                acc += abs(lv[0] - rv[0]) + abs(lv[1] - rv[1]) + abs(lv[2] - rv[2])
+                count += 3
+        return float(acc) / float(max(1, count))
+
+    monkeypatch.setattr(scroll_capture, "frame_diff_score", _diff_score)
+    monkeypatch.setattr(
+        scroll_capture,
+        "stitch_frames",
+        lambda frames: SimpleNamespace(image=frames[-1]),
+    )
+
+    width = 180
+    height = 220
+    fixed_top = 60
+    fixed_bottom = 60
+    img_a = Image.new("RGB", (width, height), "white")
+    img_b = Image.new("RGB", (width, height), "white")
+    for y_pos in range(fixed_top):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (100, 100, 100))
+            img_b.putpixel((x_pos, y_pos), (100, 100, 100))
+    for y_pos in range(height - fixed_bottom, height):
+        for x_pos in range(width):
+            img_a.putpixel((x_pos, y_pos), (40, 40, 40))
+            img_b.putpixel((x_pos, y_pos), (40, 40, 40))
+    for y_pos in range(fixed_top, height - fixed_bottom):
+        for x_pos in range(width):
+            if (y_pos + x_pos) % 13 == 0:
+                img_a.putpixel((x_pos, y_pos), (12, 12, 12))
+            if (y_pos + x_pos + 4) % 13 == 0:
+                img_b.putpixel((x_pos, y_pos), (12, 12, 12))
+
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_b, "screen_region_gdi"),
+        ],
+    )
+    progress: list[scroll_capture.ScrollCaptureProgress] = []
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=2,
+            scroll_mode="wheel_then_pagedown",
+            frame_region="client_area",
+            repeated_frame_score_threshold=6.0,
+            repeated_frame_stop_count=1,
+            auto_trim_fixed_strips=True,
+        ),
+        stop_requested=lambda: False,
+        progress_callback=progress.append,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert any("captured via" in payload.message.lower() for payload in progress)

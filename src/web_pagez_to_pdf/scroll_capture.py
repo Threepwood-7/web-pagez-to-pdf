@@ -31,6 +31,7 @@ WHEEL_INJECTION_MODES = (
     DEFAULT_WHEEL_INJECTION_MODE,
     "legacy_message_wheel",
 )
+DEFAULT_AUTO_TRIM_FIXED_STRIPS = True
 DEFAULT_CAPTURE_LOG_LEVEL = "DEBUG"
 CAPTURE_LOG_LEVELS = (
     "INFO",
@@ -63,6 +64,7 @@ class ScrollCaptureOptions:
     frame_region: str = DEFAULT_CAPTURE_FRAME_REGION
     include_mouse_cursor: bool = False
     scroll_to_top_on_full: bool = True
+    auto_trim_fixed_strips: bool = DEFAULT_AUTO_TRIM_FIXED_STRIPS
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -100,6 +102,8 @@ class _ScrollStepOutcome:
     diff_score: float | None
     movement_detected: bool
     probe_exhausted: bool
+    estimated_trim_top_px: int = 0
+    estimated_trim_bottom_px: int = 0
 
 
 def run_full_page_capture(
@@ -135,10 +139,11 @@ def run_full_page_capture(
     frame_region = _normalize_frame_region(options.frame_region)
     include_mouse_cursor = bool(options.include_mouse_cursor)
     scroll_to_top_on_full = bool(options.scroll_to_top_on_full)
+    auto_trim_fixed_strips = bool(options.auto_trim_fixed_strips)
     LOGGER.info(
         "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
         "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s include_mouse_cursor=%s "
-        "scroll_to_top=%s max_pages=%s delay_ms=%s",
+        "scroll_to_top=%s auto_trim_fixed_strips=%s max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
@@ -150,6 +155,7 @@ def run_full_page_capture(
         frame_region,
         include_mouse_cursor,
         scroll_to_top_on_full,
+        auto_trim_fixed_strips,
         max_pages,
         delay_ms,
     )
@@ -190,6 +196,13 @@ def run_full_page_capture(
             raise RuntimeError("No frames were captured.")
 
         frames: list[Image.Image] = [first_frame]
+        output_frames: list[Image.Image] = [
+            _prepare_output_frame(first_frame, trim_top_px=0, trim_bottom_px=0)
+        ]
+        trim_top_px = 0
+        trim_bottom_px = 0
+        trim_top_locked = False
+        trim_bottom_locked = False
         repeated_count = 0
         stop_reason = STOP_REASON_RUNNING
         LOGGER.info(
@@ -264,6 +277,13 @@ def run_full_page_capture(
                 cursor_hold_mode=cursor_hold_mode,
                 frame_region=frame_region,
                 include_mouse_cursor=include_mouse_cursor,
+                trim_top_px=trim_top_px,
+                trim_bottom_px=trim_bottom_px,
+                auto_trim_probe=(
+                    auto_trim_fixed_strips
+                    and frame_region == "client_area"
+                    and (not trim_top_locked or not trim_bottom_locked)
+                ),
                 threshold=threshold,
             )
             frame = outcome.frame
@@ -371,7 +391,48 @@ def run_full_page_capture(
                     outcome.backend_used or "unknown",
                 )
 
+                if (
+                    auto_trim_fixed_strips
+                    and frame_region == "client_area"
+                    and (not trim_top_locked or not trim_bottom_locked)
+                ):
+                    trim_changed = False
+                    if not trim_top_locked and outcome.estimated_trim_top_px > 0:
+                        trim_top_px = int(outcome.estimated_trim_top_px)
+                        trim_top_locked = True
+                        trim_changed = True
+                        LOGGER.info(
+                            "[capture-session:%s] auto-trim lock edge=top rows=%s",
+                            session_id,
+                            trim_top_px,
+                        )
+                    if not trim_bottom_locked and outcome.estimated_trim_bottom_px > 0:
+                        trim_bottom_px = int(outcome.estimated_trim_bottom_px)
+                        trim_bottom_locked = True
+                        trim_changed = True
+                        LOGGER.info(
+                            "[capture-session:%s] auto-trim lock edge=bottom rows=%s",
+                            session_id,
+                            trim_bottom_px,
+                        )
+                    if trim_changed:
+                        output_frames = [
+                            _prepare_output_frame(
+                                item,
+                                trim_top_px=trim_top_px,
+                                trim_bottom_px=trim_bottom_px,
+                            )
+                            for item in frames
+                        ]
+
             frames.append(frame)
+            output_frames.append(
+                _prepare_output_frame(
+                    frame,
+                    trim_top_px=trim_top_px,
+                    trim_bottom_px=trim_bottom_px,
+                )
+            )
             _emit_progress(
                 progress_callback,
                 ScrollCaptureProgress(
@@ -390,12 +451,14 @@ def run_full_page_capture(
         if not frames:
             raise RuntimeError("No frames were captured.")
 
-        stitched = stitch_frames(frames).image
+        stitched = stitch_frames(output_frames).image
         LOGGER.info(
-            "[capture-session:%s] full-capture complete stop_reason=%s frames=%s",
+            "[capture-session:%s] full-capture complete stop_reason=%s frames=%s trim_top_px=%s trim_bottom_px=%s",
             session_id,
             stop_reason,
             len(frames),
+            trim_top_px,
+            trim_bottom_px,
         )
         return ScrollCaptureResult(
             image=stitched,
@@ -421,6 +484,9 @@ def _capture_after_scroll_ladder(
     cursor_hold_mode: str,
     frame_region: str,
     include_mouse_cursor: bool,
+    trim_top_px: int,
+    trim_bottom_px: int,
+    auto_trim_probe: bool,
     threshold: float,
 ) -> _ScrollStepOutcome:
     if scroll_mode == "wheel_then_pagedown":
@@ -444,13 +510,8 @@ def _capture_after_scroll_ladder(
             delay_ms=delay_ms,
             frame_region=frame_region,
             include_mouse_cursor=include_mouse_cursor,
-        )
-        LOGGER.debug(
-            "[capture-session:%s] frame=%s stage=wheel_then_pagedown diff=%s backend=%s",
-            session_id,
-            frame_index,
-            _diff_text(diff_after_page),
-            backend_after_page or "unknown",
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -461,7 +522,25 @@ def _capture_after_scroll_ladder(
                 movement_detected=False,
                 probe_exhausted=False,
             )
-        moved = bool(diff_after_page is not None and diff_after_page > threshold)
+        diff_after_page, moved, estimated_top, estimated_bottom = _evaluate_movement(
+            previous_frame=previous_frame,
+            current_frame=frame_after_page,
+            observed_diff=diff_after_page,
+            threshold=threshold,
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
+            auto_trim_probe=auto_trim_probe,
+            session_id=session_id,
+            frame_index=frame_index,
+            stage_name="wheel_then_pagedown",
+        )
+        LOGGER.debug(
+            "[capture-session:%s] frame=%s stage=wheel_then_pagedown diff=%s backend=%s",
+            session_id,
+            frame_index,
+            _diff_text(diff_after_page),
+            backend_after_page or "unknown",
+        )
         return _ScrollStepOutcome(
             frame=frame_after_page,
             backend_used=backend_after_page,
@@ -469,6 +548,8 @@ def _capture_after_scroll_ladder(
             diff_score=diff_after_page,
             movement_detected=moved,
             probe_exhausted=False,
+            estimated_trim_top_px=estimated_top,
+            estimated_trim_bottom_px=estimated_bottom,
         )
 
     wheel_ok = service.wheel_down_at_window_center(
@@ -484,14 +565,8 @@ def _capture_after_scroll_ladder(
         delay_ms=delay_ms,
         frame_region=frame_region,
         include_mouse_cursor=include_mouse_cursor,
-    )
-    LOGGER.debug(
-        "[capture-session:%s] frame=%s stage=wheel_center wheel_ok=%s diff=%s backend=%s",
-        session_id,
-        frame_index,
-        wheel_ok,
-        _diff_text(diff_score),
-        backend or "unknown",
+        trim_top_px=trim_top_px,
+        trim_bottom_px=trim_bottom_px,
     )
     if frame is None:
         return _ScrollStepOutcome(
@@ -502,7 +577,27 @@ def _capture_after_scroll_ladder(
             movement_detected=False,
             probe_exhausted=scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"},
         )
-    if diff_score is not None and diff_score > threshold:
+    diff_score, moved_after_wheel, estimated_top, estimated_bottom = _evaluate_movement(
+        previous_frame=previous_frame,
+        current_frame=frame,
+        observed_diff=diff_score,
+        threshold=threshold,
+        trim_top_px=trim_top_px,
+        trim_bottom_px=trim_bottom_px,
+        auto_trim_probe=auto_trim_probe,
+        session_id=session_id,
+        frame_index=frame_index,
+        stage_name="wheel_center",
+    )
+    LOGGER.debug(
+        "[capture-session:%s] frame=%s stage=wheel_center wheel_ok=%s diff=%s backend=%s",
+        session_id,
+        frame_index,
+        wheel_ok,
+        _diff_text(diff_score),
+        backend or "unknown",
+    )
+    if moved_after_wheel:
         return _ScrollStepOutcome(
             frame=frame,
             backend_used=backend,
@@ -510,6 +605,8 @@ def _capture_after_scroll_ladder(
             diff_score=diff_score,
             movement_detected=True,
             probe_exhausted=False,
+            estimated_trim_top_px=estimated_top,
+            estimated_trim_bottom_px=estimated_bottom,
         )
 
     if scroll_mode in {"wheel_click", "wheel_click_pagedown"}:
@@ -534,16 +631,8 @@ def _capture_after_scroll_ladder(
             delay_ms=delay_ms,
             frame_region=frame_region,
             include_mouse_cursor=include_mouse_cursor,
-        )
-        LOGGER.debug(
-            "[capture-session:%s] frame=%s stage=click_center_then_wheel click_ok=%s "
-            "wheel_ok=%s diff=%s backend=%s",
-            session_id,
-            frame_index,
-            click_ok,
-            wheel_after_click_ok,
-            _diff_text(diff_after_click),
-            backend_after_click or backend or "unknown",
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
         )
         if frame_after_click is None:
             return _ScrollStepOutcome(
@@ -556,8 +645,29 @@ def _capture_after_scroll_ladder(
             )
         frame = frame_after_click
         backend = backend_after_click or backend
-        diff_score = diff_after_click
-        if diff_score is not None and diff_score > threshold:
+        diff_score, moved_after_click, estimated_top, estimated_bottom = _evaluate_movement(
+            previous_frame=previous_frame,
+            current_frame=frame,
+            observed_diff=diff_after_click,
+            threshold=threshold,
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
+            auto_trim_probe=auto_trim_probe,
+            session_id=session_id,
+            frame_index=frame_index,
+            stage_name="click_center_then_wheel",
+        )
+        LOGGER.debug(
+            "[capture-session:%s] frame=%s stage=click_center_then_wheel click_ok=%s "
+            "wheel_ok=%s diff=%s backend=%s",
+            session_id,
+            frame_index,
+            click_ok,
+            wheel_after_click_ok,
+            _diff_text(diff_score),
+            backend_after_click or backend or "unknown",
+        )
+        if moved_after_click:
             return _ScrollStepOutcome(
                 frame=frame,
                 backend_used=backend,
@@ -565,6 +675,8 @@ def _capture_after_scroll_ladder(
                 diff_score=diff_score,
                 movement_detected=True,
                 probe_exhausted=False,
+                estimated_trim_top_px=estimated_top,
+                estimated_trim_bottom_px=estimated_bottom,
             )
         if scroll_mode == "wheel_click":
             return _ScrollStepOutcome(
@@ -574,6 +686,8 @@ def _capture_after_scroll_ladder(
                 diff_score=diff_score,
                 movement_detected=False,
                 probe_exhausted=False,
+                estimated_trim_top_px=estimated_top,
+                estimated_trim_bottom_px=estimated_bottom,
             )
     elif scroll_mode == "wheel_only":
         return _ScrollStepOutcome(
@@ -583,6 +697,8 @@ def _capture_after_scroll_ladder(
             diff_score=diff_score,
             movement_detected=False,
             probe_exhausted=False,
+            estimated_trim_top_px=estimated_top,
+            estimated_trim_bottom_px=estimated_bottom,
         )
 
     if scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"}:
@@ -601,13 +717,8 @@ def _capture_after_scroll_ladder(
             delay_ms=delay_ms,
             frame_region=frame_region,
             include_mouse_cursor=include_mouse_cursor,
-        )
-        LOGGER.debug(
-            "[capture-session:%s] frame=%s stage=pagedown diff=%s backend=%s",
-            session_id,
-            frame_index,
-            _diff_text(diff_after_page),
-            backend_after_page or backend or "unknown",
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -619,7 +730,25 @@ def _capture_after_scroll_ladder(
                 probe_exhausted=True,
             )
         final_backend = backend_after_page or backend
-        moved = bool(diff_after_page is not None and diff_after_page > threshold)
+        diff_after_page, moved, estimated_top, estimated_bottom = _evaluate_movement(
+            previous_frame=previous_frame,
+            current_frame=frame_after_page,
+            observed_diff=diff_after_page,
+            threshold=threshold,
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
+            auto_trim_probe=auto_trim_probe,
+            session_id=session_id,
+            frame_index=frame_index,
+            stage_name="pagedown",
+        )
+        LOGGER.debug(
+            "[capture-session:%s] frame=%s stage=pagedown diff=%s backend=%s",
+            session_id,
+            frame_index,
+            _diff_text(diff_after_page),
+            backend_after_page or backend or "unknown",
+        )
         return _ScrollStepOutcome(
             frame=frame_after_page,
             backend_used=final_backend,
@@ -627,6 +756,8 @@ def _capture_after_scroll_ladder(
             diff_score=diff_after_page,
             movement_detected=moved,
             probe_exhausted=not moved,
+            estimated_trim_top_px=estimated_top,
+            estimated_trim_bottom_px=estimated_bottom,
         )
 
     return _ScrollStepOutcome(
@@ -636,6 +767,8 @@ def _capture_after_scroll_ladder(
         diff_score=diff_score,
         movement_detected=False,
         probe_exhausted=scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"},
+        estimated_trim_top_px=estimated_top,
+        estimated_trim_bottom_px=estimated_bottom,
     )
 
 
@@ -679,6 +812,54 @@ def _run_scroll_to_top_preflight(
         )
 
 
+def _prepare_output_frame(frame: Image.Image, trim_top_px: int, trim_bottom_px: int) -> Image.Image:
+    if trim_top_px <= 0 and trim_bottom_px <= 0:
+        return frame
+    width, height = frame.size
+    safe_top, safe_bottom = _safe_trim_values(height, trim_top_px, trim_bottom_px)
+    if safe_top <= 0 and safe_bottom <= 0:
+        return frame
+    bottom_edge = max(safe_top + 1, height - safe_bottom)
+    if bottom_edge <= safe_top:
+        return frame
+    return frame.crop((0, safe_top, width, bottom_edge))
+
+
+def _estimate_fixed_vertical_strips(
+    previous_frame: Image.Image,
+    current_frame: Image.Image,
+) -> tuple[int, int]:
+    width = min(previous_frame.width, current_frame.width)
+    height = min(previous_frame.height, current_frame.height)
+    if width <= 0 or height <= 0:
+        return (0, 0)
+    max_rows = min(420, max(0, int(height * 0.35)))
+    if max_rows < 24:
+        return (0, 0)
+    x_step = max(1, width // 180)
+    prev_pixels = previous_frame.load()
+    curr_pixels = current_frame.load()
+    top_rows = 0
+    for row in range(max_rows):
+        if _row_delta(prev_pixels, curr_pixels, row, width, x_step) > 6.0:
+            break
+        top_rows += 1
+    if top_rows < 24:
+        top_rows = 0
+
+    bottom_rows = 0
+    for offset in range(max_rows):
+        row = height - 1 - offset
+        if _row_delta(prev_pixels, curr_pixels, row, width, x_step) > 6.0:
+            break
+        bottom_rows += 1
+    if bottom_rows < 24:
+        bottom_rows = 0
+
+    top_rows, bottom_rows = _safe_trim_values(height, top_rows, bottom_rows)
+    return (top_rows, bottom_rows)
+
+
 def _capture_frame(
     service: WindowCaptureService,
     target_hwnd: int,
@@ -707,6 +888,8 @@ def _capture_frame_with_diff(
     delay_ms: int,
     frame_region: str,
     include_mouse_cursor: bool,
+    trim_top_px: int,
+    trim_bottom_px: int,
 ) -> tuple[Image.Image | None, str, float | None]:
     service.wait_after_scroll(delay_ms)
     frame, backend = _capture_frame(
@@ -718,7 +901,16 @@ def _capture_frame_with_diff(
     )
     if frame is None:
         return (None, backend, None)
-    return (frame, backend, frame_diff_score(previous_frame, frame))
+    return (
+        frame,
+        backend,
+        _compute_diff_score(
+            previous_frame,
+            frame,
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
+        ),
+    )
 
 
 def _emit_progress(
@@ -787,3 +979,109 @@ def _diff_text(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.2f}"
+
+
+def _row_delta(
+    prev_pixels,
+    curr_pixels,
+    row: int,
+    width: int,
+    x_step: int,
+) -> float:
+    delta_sum = 0
+    sample_count = 0
+    for col in range(0, width, x_step):
+        prev_rgb = prev_pixels[col, row]
+        curr_rgb = curr_pixels[col, row]
+        delta_sum += (
+            abs(int(prev_rgb[0]) - int(curr_rgb[0]))
+            + abs(int(prev_rgb[1]) - int(curr_rgb[1]))
+            + abs(int(prev_rgb[2]) - int(curr_rgb[2]))
+        )
+        sample_count += 3
+    if sample_count <= 0:
+        return 0.0
+    return float(delta_sum) / float(sample_count)
+
+
+def _safe_trim_values(height: int, trim_top_px: int, trim_bottom_px: int) -> tuple[int, int]:
+    if height <= 2:
+        return (0, 0)
+    max_per_edge = min(420, max(0, int(height * 0.35)))
+    top = max(0, min(int(trim_top_px), max_per_edge))
+    bottom = max(0, min(int(trim_bottom_px), max_per_edge))
+    max_combined = max(0, min(height - 2, int(height * 0.6)))
+    combined = top + bottom
+    if combined > max_combined and combined > 0:
+        ratio = float(max_combined) / float(combined)
+        top = int(top * ratio)
+        bottom = int(bottom * ratio)
+    if top + bottom >= height - 1:
+        return (0, 0)
+    return (top, bottom)
+
+
+def _compute_diff_score(
+    previous_frame: Image.Image,
+    current_frame: Image.Image,
+    *,
+    trim_top_px: int,
+    trim_bottom_px: int,
+) -> float:
+    prepared_previous = _prepare_output_frame(
+        previous_frame,
+        trim_top_px=trim_top_px,
+        trim_bottom_px=trim_bottom_px,
+    )
+    prepared_current = _prepare_output_frame(
+        current_frame,
+        trim_top_px=trim_top_px,
+        trim_bottom_px=trim_bottom_px,
+    )
+    return frame_diff_score(prepared_previous, prepared_current)
+
+
+def _evaluate_movement(
+    *,
+    previous_frame: Image.Image,
+    current_frame: Image.Image,
+    observed_diff: float | None,
+    threshold: float,
+    trim_top_px: int,
+    trim_bottom_px: int,
+    auto_trim_probe: bool,
+    session_id: str,
+    frame_index: int,
+    stage_name: str,
+) -> tuple[float | None, bool, int, int]:
+    diff_score = observed_diff
+    estimated_top = 0
+    estimated_bottom = 0
+    if auto_trim_probe:
+        estimated_top, estimated_bottom = _estimate_fixed_vertical_strips(
+            previous_frame,
+            current_frame,
+        )
+        if estimated_top > 0 or estimated_bottom > 0:
+            probe_top = max(int(trim_top_px), int(estimated_top))
+            probe_bottom = max(int(trim_bottom_px), int(estimated_bottom))
+            probed = _compute_diff_score(
+                previous_frame,
+                current_frame,
+                trim_top_px=probe_top,
+                trim_bottom_px=probe_bottom,
+            )
+            LOGGER.debug(
+                "[capture-session:%s] frame=%s stage=%s auto-trim probe top=%s bottom=%s "
+                "base_diff=%s trimmed_diff=%s",
+                session_id,
+                frame_index,
+                stage_name,
+                estimated_top,
+                estimated_bottom,
+                _diff_text(diff_score),
+                _diff_text(probed),
+            )
+            diff_score = probed
+    moved = bool(diff_score is not None and diff_score > threshold)
+    return (diff_score, moved, estimated_top, estimated_bottom)
