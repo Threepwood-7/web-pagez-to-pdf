@@ -1,0 +1,186 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "web-pagez-to-pdf"
+version = "0.1.0"
+description = "Windows-first PySide app for capturing previous-window screenshots."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "MT0z", email = "mt0z1@pir0z.yxz" }]
+requires-python = ">=3.13"
+keywords = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+
+  "threep-commons @ git+https://github.com/Threepwood-7/threep-commons@v0.1.0",
+
+
+  "PySide6>=6.10.2",
+
+]
+
+[project.urls]
+Homepage = "https://github.com/Threepwood-7/web-pagez-to-pdf"
+Repository = "https://github.com/Threepwood-7/web-pagez-to-pdf"
+Issues = "https://github.com/Threepwood-7/web-pagez-to-pdf/issues"
+
+[tool.hatch.env]
+installer = "uv"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/web_pagez_to_pdf"]
+
+[tool.hatch.envs.default]
+dependencies = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+
+  "pytest-qt>=4.4",
+  "PySide6>=6.10.2",
+
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "pytest --cov=src/web_pagez_to_pdf --cov-report=term-missing --cov-report=xml {args:tests}"
+
+[tool.hatch.envs.lint]
+dependencies = [
+  "ruff>=0.6",
+  "basedpyright>=1.18",
+  "deptry>=0.24",
+  "vulture>=2.15",
+]
+
+[tool.hatch.envs.lint.scripts]
+check = "ruff check ."
+fmt = "ruff format --check ."
+fix = ["ruff check --fix .", "ruff format ."]
+types = "basedpyright src/web_pagez_to_pdf"
+deps = "deptry ."
+deadcode = "vulture src --min-confidence 80"
+complexity = "ruff check src --select C901 --output-format concise"
+policy = "python scripts/policy/check_standard.py"
+all = [
+  "ruff check --fix .",
+  "ruff format .",
+  "basedpyright src/web_pagez_to_pdf",
+  "python scripts/policy/check_standard.py",
+]
+
+[tool.hatch.envs.test]
+dependencies = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+
+  "pytest-qt>=4.4",
+  "PySide6>=6.10.2",
+
+]
+
+[[tool.hatch.envs.test.matrix]]
+python = ["3.13"]
+
+[tool.hatch.envs.test.scripts]
+run = "pytest {args:tests}"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "W",
+  "F",
+  "I",
+  "N",
+  "B",
+  "C4",
+  "UP",
+  "SIM",
+  "TCH",
+  "RUF",
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["web_pagez_to_pdf"]
+
+[tool.ruff.lint.pep8-naming]
+ignore-names = [
+  "activateWindow",
+  "closeEvent",
+  "eventFilter",
+  "filterAcceptsRow",
+  "headerData",
+  "highlightBlock",
+  "isActive",
+  "isRunning",
+  "keyPressEvent",
+  "lessThan",
+  "mouseReleaseEvent",
+  "paintEvent",
+  "requestInterruption",
+  "setApplicationDisplayName",
+  "setApplicationName",
+  "setOrganizationName",
+  "showEvent",
+  "showNormal",
+  "windowState",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.deptry]
+known_first_party = ["web_pagez_to_pdf"]
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+pythonPlatform = "All"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+include = ["src"]
+exclude = ["tests", "**/__pycache__"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+xfail_strict = true
+markers = [
+  "integration: integration tests",
+
+  "gui: GUI/Qt tests",
+
+  "slow: slow tests",
+]
+
+[tool.coverage.run]
+source = ["src/web_pagez_to_pdf"]
+branch = true
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false

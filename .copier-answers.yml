@@ -1,0 +1,12 @@
+_commit: v1.7.2
+_src_path: c:/prj/aidev/py/aatemplate
+project_name: web-pagez-to-pdf
+project_kind: qt_app
+package_name: web_pagez_to_pdf
+description: Windows-first PySide app for capturing previous-window screenshots.
+author_name: MT0z
+author_email: mt0z1@pir0z.yxz
+github_username: Threepwood-7
+project_version: 0.1.0
+runtime_dependencies:
+- PySide6>=6.10.2
