@@ -22,6 +22,13 @@ dependencies = [
 
 
   "PySide6>=6.10.2",
+  "Pillow>=11.3.0",
+  "numpy>=2.4.2",
+  "opencv-python>=4.13.0.92",
+  "python-docx>=1.2.0",
+  "python-pptx>=1.0.2",
+  "pywin32>=311",
+  "reportlab>=4.4.4",
 
 ]
 
@@ -124,6 +131,7 @@ known-first-party = ["web_pagez_to_pdf"]
 ignore-names = [
   "activateWindow",
   "closeEvent",
+  "enterEvent",
   "eventFilter",
   "filterAcceptsRow",
   "headerData",
@@ -131,6 +139,7 @@ ignore-names = [
   "isActive",
   "isRunning",
   "keyPressEvent",
+  "mousePressEvent",
   "lessThan",
   "mouseReleaseEvent",
   "paintEvent",
