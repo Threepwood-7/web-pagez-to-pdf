@@ -19,7 +19,10 @@ HISTORY_LIMIT = 80
 MAX_Z_ORDER_HOPS = 96
 VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
+WM_MOUSEWHEEL = 0x020A
+WHEEL_DELTA = 120
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
 CAPTURE_BACKENDS = ("screen_region_gdi", "qt_grab_window", "print_window")
 DEFAULT_CAPTURE_BACKEND = "screen_region_gdi"
@@ -55,6 +58,8 @@ USER32.SetFocus.argtypes = [wintypes.HWND]
 USER32.SetFocus.restype = wintypes.HWND
 USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 USER32.PrintWindow.restype = wintypes.BOOL
+USER32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+USER32.SendMessageW.restype = LRESULT
 USER32.keybd_event.argtypes = [
     wintypes.BYTE,
     wintypes.BYTE,
@@ -180,11 +185,40 @@ class WindowCaptureService:
         return (True, "")
 
     @staticmethod
+    def is_foreground_window(hwnd: int) -> bool:
+        """Return whether the given hwnd currently owns foreground focus."""
+
+        return hwnd > 0 and int(USER32.GetForegroundWindow()) == int(hwnd)
+
+    def ensure_window_foreground(self, hwnd: int) -> tuple[bool, str]:
+        """Ensure target is in foreground without changing window state."""
+
+        if self.is_foreground_window(hwnd):
+            return (True, "")
+        return self.activate_window(hwnd)
+
+    @staticmethod
     def send_page_down() -> None:
         """Emit a PageDown keyboard event to the current foreground window."""
 
         USER32.keybd_event(VK_NEXT, 0, 0, 0)
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
+
+    def scroll_target_window(self, hwnd: int, strategy: str = "hybrid_wheel_pagedown") -> str:
+        """Inject scroll input toward target window using requested strategy."""
+
+        normalized = str(strategy or "").strip().lower()
+        if normalized in {"pagedown_only", "pagedown", "page_down"}:
+            self.send_page_down()
+            return "pagedown"
+        if normalized in {"wheel_only", "wheel"}:
+            if self._scroll_with_wheel(hwnd):
+                return "wheel"
+            return ""
+        if self._scroll_with_wheel(hwnd):
+            return "wheel"
+        self.send_page_down()
+        return "pagedown"
 
     def capture_window(
         self,
@@ -409,6 +443,27 @@ class WindowCaptureService:
         if pixmap.isNull():
             return None
         return pixmap
+
+    def _scroll_with_wheel(self, hwnd: int) -> bool:
+        rect = self._window_rect(hwnd)
+        if rect is None:
+            return False
+        left, top, width, height = rect
+        x_pos = left + max(10, width // 2)
+        y_pos = top + max(10, min(height - 10, height // 3))
+        wheel_target = self.window_from_point(x_pos, y_pos) or hwnd
+        if wheel_target <= 0:
+            wheel_target = hwnd
+        wheel_delta = (-WHEEL_DELTA) & 0xFFFF
+        wparam = (wheel_delta << 16) | 0
+        lparam = ((y_pos & 0xFFFF) << 16) | (x_pos & 0xFFFF)
+        try:
+            USER32.SendMessageW(wheel_target, WM_MOUSEWHEEL, wparam, lparam)
+            if wheel_target != hwnd:
+                USER32.SendMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam)
+        except Exception:
+            return False
+        return True
 
     @staticmethod
     def _is_blank_like(pixmap: QPixmap) -> bool:

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import widget_naming
+from .scroll_capture import DEFAULT_SCROLL_STRATEGY
 
 
 @dataclass
@@ -156,6 +157,17 @@ class SettingsWindow(QDialog):
             "capture backend gdi qt printwindow",
             self.capture_backend_combo,
         )
+        self.capture_scroll_strategy_combo = QComboBox(self)
+        self.capture_scroll_strategy_combo.addItem("Hybrid Wheel + PageDown", "hybrid_wheel_pagedown")
+        self.capture_scroll_strategy_combo.addItem("PageDown only", "pagedown_only")
+        self.capture_scroll_strategy_combo.addItem("Wheel only", "wheel_only")
+        self._add_row(
+            capture_group,
+            "capture.scroll_strategy",
+            "Scroll Strategy",
+            "capture full scroll strategy wheel pagedown hybrid",
+            self.capture_scroll_strategy_combo,
+        )
         self.auto_pick_second_last_checkbox = QCheckBox(
             "Auto-target second last active window", self
         )
@@ -282,6 +294,10 @@ class SettingsWindow(QDialog):
             self.capture_backend_combo,
             str(values.get("capture.backend_primary", "screen_region_gdi")),
         )
+        self._set_combo_value(
+            self.capture_scroll_strategy_combo,
+            str(values.get("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)),
+        )
         self.auto_pick_second_last_checkbox.setChecked(
             bool(values.get("capture.auto_pick_second_last", True))
         )
@@ -308,6 +324,7 @@ class SettingsWindow(QDialog):
             "capture.max_pages": int(self.capture_max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
+            "capture.scroll_strategy": str(self.capture_scroll_strategy_combo.currentData()),
             "capture.auto_pick_second_last": self.auto_pick_second_last_checkbox.isChecked(),
             "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
             "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),

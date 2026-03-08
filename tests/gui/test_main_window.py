@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction, QPixmap
 from web_pagez_to_pdf.main_window import MainWindow
 from web_pagez_to_pdf.mini_editor import MiniEditorWindow
 from web_pagez_to_pdf.models import CaptureItem, EditAdjustments
+from web_pagez_to_pdf.scroll_capture import ScrollCaptureProgress
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,9 +32,14 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
     )
     assert window.capture_backend_combo.property("widget_id") == "window:main:control:capture_backend_combo"
     assert (
+        window.capture_scroll_strategy_combo.property("widget_id")
+        == "window:main:control:capture_scroll_strategy_combo"
+    )
+    assert (
         window.capture_tab_preview_label.property("widget_id")
         == "window:main:control:capture_tab_preview_label"
     )
+    assert window.capture_log_list.property("widget_id") == "window:main:control:capture_log_list"
 
 
 def test_capture_advanced_group_is_visible_and_not_checkable(qtbot: QtBot) -> None:
@@ -100,6 +106,27 @@ def test_capture_tab_thumbnail_updates_from_selected_queue_item(
     pixmap = window.capture_tab_preview_label.pixmap()
     assert pixmap is not None
     assert not pixmap.isNull()
+
+
+def test_capture_progress_updates_status_and_log(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    payload = ScrollCaptureProgress(
+        frame_index=2,
+        backend_used="screen_region_gdi",
+        scroll_method="wheel",
+        diff_score=3.6,
+        repeated_count=0,
+        stop_reason="running",
+        message="Frame 2 captured via screen_region_gdi (scroll=wheel, diff=3.60).",
+    )
+    window._on_full_capture_progress(payload)
+
+    assert window.capture_log_list.count() == 1
+    assert "frame 2 captured" in window.capture_log_list.item(0).text().lower()
+    assert "full capture frame 2" in window.status_label.text().lower()
 
 
 def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:

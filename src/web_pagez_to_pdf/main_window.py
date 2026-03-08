@@ -63,7 +63,13 @@ from .models import (
     ExportRequest,
     PrintLayout,
 )
-from .scroll_capture import ScrollCaptureOptions, run_full_page_capture
+from .scroll_capture import (
+    DEFAULT_SCROLL_STRATEGY,
+    SCROLL_STRATEGIES,
+    ScrollCaptureOptions,
+    ScrollCaptureProgress,
+    run_full_page_capture,
+)
 from .settings_window import SettingsWindow
 from .stop_overlay import HoverStopOverlay
 from .target_picker import CrosshairPickerOverlay, PickedWindow, WindowPickerDialog
@@ -74,6 +80,7 @@ class FullCaptureWorker(QThread):
 
     capture_succeeded = Signal(object)
     capture_failed = Signal(str)
+    capture_progress = Signal(object)
 
     def __init__(
         self,
@@ -89,12 +96,16 @@ class FullCaptureWorker(QThread):
         self._stop_event = stop_event
 
     def run(self) -> None:
+        def _emit_progress(progress_obj: ScrollCaptureProgress) -> None:
+            self.capture_progress.emit(progress_obj)
+
         try:
             result = run_full_page_capture(
                 service=self._capture_service,
                 target_hwnd=self._target_hwnd,
                 options=self._options,
                 stop_requested=self._stop_event.is_set,
+                progress_callback=_emit_progress,
             )
         except Exception as exc:  # pragma: no cover
             self.capture_failed.emit(str(exc))
@@ -251,16 +262,38 @@ class MainWindow(QMainWindow):
             "capture_backend_combo",
             "capture_backend_combo",
         )
+        self.capture_scroll_strategy_combo = QComboBox()
+        self.capture_scroll_strategy_combo.addItem("Hybrid Wheel + PageDown", "hybrid_wheel_pagedown")
+        self.capture_scroll_strategy_combo.addItem("PageDown only", "pagedown_only")
+        self.capture_scroll_strategy_combo.addItem("Wheel only", "wheel_only")
+        self._assign_control_identity(
+            self.capture_scroll_strategy_combo,
+            "capture_scroll_strategy_combo",
+            "capture_scroll_strategy_combo",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
         cap_grid.addWidget(self.capture_delay_spin, 1, 1)
         cap_grid.addWidget(QLabel("Capture backend"), 2, 0)
         cap_grid.addWidget(self.capture_backend_combo, 2, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 3, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 4, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Scroll strategy"), 3, 0)
+        cap_grid.addWidget(self.capture_scroll_strategy_combo, 3, 1)
+        cap_grid.addWidget(self.auto_target_checkbox, 4, 0, 1, 2)
+        cap_grid.addWidget(self.pick_second_last_button, 5, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
+        right_layout.addWidget(QLabel("Capture Log"))
+        self.capture_log_list = QListWidget(right)
+        self.capture_log_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.capture_log_list.setAlternatingRowColors(True)
+        self.capture_log_list.setMinimumHeight(140)
+        self._assign_control_identity(
+            self.capture_log_list,
+            "capture_log_list",
+            "capture_log_list",
+        )
+        right_layout.addWidget(self.capture_log_list, 1)
         right_layout.addStretch(1)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
@@ -460,6 +493,9 @@ class MainWindow(QMainWindow):
         self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
+        self.capture_scroll_strategy_combo.currentIndexChanged.connect(
+            self._persist_capture_scroll_strategy
+        )
         for checkbox in (
             self.pdf_checkbox,
             self.paged_images_checkbox,
@@ -524,6 +560,9 @@ class MainWindow(QMainWindow):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.auto_pick_second_last": self.auto_target_checkbox.isChecked(),
             "capture.backend_primary": str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND),
+            "capture.scroll_strategy": str(
+                self.capture_scroll_strategy_combo.currentData() or DEFAULT_SCROLL_STRATEGY
+            ),
             "editor.auto_open_mini": self._bool_setting("editor.auto_open_mini", False),
             "editor.show_grid": self._bool_setting("editor.show_grid", False),
             "export.output_dir": self.output_input.text().strip(),
@@ -547,6 +586,10 @@ class MainWindow(QMainWindow):
         self.auto_target_checkbox.setChecked(self._bool_setting("capture.auto_pick_second_last", True))
         backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
         self._set_capture_backend_combo(backend)
+        scroll_strategy = str(
+            self._settings.value("capture.scroll_strategy", DEFAULT_SCROLL_STRATEGY)
+        )
+        self._set_scroll_strategy_combo(scroll_strategy)
         self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
         self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
         self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
@@ -620,6 +663,25 @@ class MainWindow(QMainWindow):
 
     def _persist_capture_backend(self) -> None:
         self._settings.setValue("capture.backend_primary", self._capture_backend_primary())
+
+    def _set_scroll_strategy_combo(self, strategy: str) -> None:
+        normalized = str(strategy or "").strip().lower()
+        if normalized not in SCROLL_STRATEGIES:
+            normalized = DEFAULT_SCROLL_STRATEGY
+        for index in range(self.capture_scroll_strategy_combo.count()):
+            if str(self.capture_scroll_strategy_combo.itemData(index)) == normalized:
+                self.capture_scroll_strategy_combo.setCurrentIndex(index)
+                return
+        self.capture_scroll_strategy_combo.setCurrentIndex(0)
+
+    def _capture_scroll_strategy(self) -> str:
+        value = str(self.capture_scroll_strategy_combo.currentData() or DEFAULT_SCROLL_STRATEGY)
+        if value in SCROLL_STRATEGIES:
+            return value
+        return DEFAULT_SCROLL_STRATEGY
+
+    def _persist_capture_scroll_strategy(self) -> None:
+        self._settings.setValue("capture.scroll_strategy", self._capture_scroll_strategy())
 
     def _sync_quick_formats_from_main(self) -> None:
         if self._format_sync_guard:
@@ -752,12 +814,19 @@ class MainWindow(QMainWindow):
                 max_capture_pages=int(self.max_pages_spin.value()),
                 delay_ms=int(self.capture_delay_spin.value()),
                 capture_backend=self._capture_backend_primary(),
+                scroll_strategy=self._capture_scroll_strategy(),
             ),
             stop_event=self._stop_event,
         )
         self._capture_worker.capture_succeeded.connect(self._full_capture_done)
         self._capture_worker.capture_failed.connect(self._full_capture_failed)
+        self._capture_worker.capture_progress.connect(self._on_full_capture_progress)
         self._capture_worker.finished.connect(self._full_capture_finished)
+        self.capture_log_list.clear()
+        self._append_capture_log(
+            "Full capture started "
+            f"(backend={self._capture_backend_primary()}, strategy={self._capture_scroll_strategy()})."
+        )
         self._stop_overlay.show_top_right()
         self._capture_worker.start()
         self.status_label.setText("Full capture running. Hover red stop badge or press Ctrl+Shift+X.")
@@ -765,24 +834,45 @@ class MainWindow(QMainWindow):
     def _request_stop(self) -> None:
         self._stop_event.set()
         self.status_label.setText("Stop requested...")
+        self._append_capture_log("Stop requested by user.")
+
+    def _on_full_capture_progress(self, progress_obj: object) -> None:
+        if not isinstance(progress_obj, ScrollCaptureProgress):
+            return
+        diff_text = "n/a" if progress_obj.diff_score is None else f"{progress_obj.diff_score:.2f}"
+        status = (
+            f"Full capture frame {progress_obj.frame_index}: "
+            f"scroll={progress_obj.scroll_method}, backend={progress_obj.backend_used or 'unknown'}, "
+            f"diff={diff_text}, repeat={progress_obj.repeated_count}"
+        )
+        if progress_obj.stop_reason != "running":
+            status = f"{status}, stop={progress_obj.stop_reason}"
+        self.status_label.setText(status)
+        self._append_capture_log(progress_obj.message or status)
 
     def _full_capture_done(self, result_obj: object) -> None:
         image = getattr(result_obj, "image", None)
         if image is None:
             self.status_label.setText("Invalid full capture result.")
             return
+        frame_count = int(getattr(result_obj, "captured_frames", 0))
         self._add_capture(
             image=image,
             title=self._selected_target.label if self._selected_target else "capture",
             source_hwnd=self._selected_target.hwnd if self._selected_target else None,
-            frame_count=int(getattr(result_obj, "captured_frames", 0)),
+            frame_count=frame_count,
         )
-        ended_by_repeat = bool(getattr(result_obj, "ended_by_repeat", False))
-        suffix = " (auto-stopped by repeated frame detection)." if ended_by_repeat else "."
-        self.status_label.setText(f"Full capture complete{suffix}")
+        stop_reason = str(getattr(result_obj, "stop_reason", "max_pages"))
+        summary = (
+            f"Full capture complete: {frame_count} frame(s), "
+            f"stop={self._describe_stop_reason(stop_reason)}."
+        )
+        self.status_label.setText(summary)
+        self._append_capture_log(summary)
 
     def _full_capture_failed(self, message: str) -> None:
         self.status_label.setText(f"Full capture failed: {message}")
+        self._append_capture_log(f"Full capture failed: {message}")
 
     def _full_capture_finished(self) -> None:
         self._stop_overlay.hide()
@@ -994,6 +1084,26 @@ class MainWindow(QMainWindow):
     def _refresh_queue_summary(self) -> None:
         selected = self.queue_list.currentRow() + 1 if self.queue_list.currentRow() >= 0 else 0
         self.queue_summary_label.setText(f"Queue: {len(self._queue)} item(s), selected: {selected}")
+
+    def _append_capture_log(self, message: str) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.capture_log_list.addItem(QListWidgetItem(f"[{stamp}] {text}"))
+        self.capture_log_list.scrollToBottom()
+        while self.capture_log_list.count() > 300:
+            self.capture_log_list.takeItem(0)
+
+    @staticmethod
+    def _describe_stop_reason(reason: str) -> str:
+        mapping = {
+            "user_stop": "user-stop",
+            "repeat_detected": "repeated frame detection",
+            "max_pages": "max pages reached",
+            "capture_failed": "capture failure (partial)",
+        }
+        return mapping.get(str(reason or "").strip().lower(), "unknown")
 
     def _collect_layout(self) -> PrintLayout:
         return PrintLayout(
