@@ -33,10 +33,10 @@ CENTER_CLICK_ASSIST_MODES = (
     "off",
     DEFAULT_CENTER_CLICK_ASSIST,
 )
-DEFAULT_CAPTURE_LOG_LEVEL = "INFO"
+DEFAULT_CAPTURE_LOG_LEVEL = "DEBUG"
 CAPTURE_LOG_LEVELS = (
+    "INFO",
     DEFAULT_CAPTURE_LOG_LEVEL,
-    "DEBUG",
 )
 DEFAULT_CURSOR_HOLD_MODE = "keep_at_center"
 CURSOR_HOLD_MODES = (
@@ -668,8 +668,8 @@ def normalize_capture_log_level(level: str) -> str:
     """Normalize capture diagnostics level to one supported value."""
 
     normalized = str(level or "").strip().upper()
-    if normalized == "DEBUG":
-        return "DEBUG"
+    if normalized == "INFO":
+        return "INFO"
     return DEFAULT_CAPTURE_LOG_LEVEL
 
 

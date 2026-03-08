@@ -12,7 +12,11 @@ from threep_commons.paths import configure_qsettings
 
 from .constants import APP_IDENTITY
 from .main_window import MainWindow
-from .scroll_capture import CAPTURE_LOGGER_NAME, normalize_capture_log_level
+from .scroll_capture import (
+    CAPTURE_LOGGER_NAME,
+    DEFAULT_CAPTURE_LOG_LEVEL,
+    normalize_capture_log_level,
+)
 
 
 def main() -> int:
@@ -20,7 +24,9 @@ def main() -> int:
 
     configure_qsettings(APP_IDENTITY)
     settings = QSettings()
-    configured_level = normalize_capture_log_level(str(settings.value("capture.log_level", "INFO")))
+    configured_level = normalize_capture_log_level(
+        str(settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
+    )
     log_path = setup_logging_from_identity(
         APP_IDENTITY,
         level=logging.INFO,

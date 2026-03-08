@@ -174,7 +174,7 @@ def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:
     assert str(window.capture_log_level_combo.currentData()) == "DEBUG"
 
     window._set_capture_log_level_combo("not-a-level")
-    assert str(window.capture_log_level_combo.currentData()) == "INFO"
+    assert str(window.capture_log_level_combo.currentData()) == "DEBUG"
 
 
 def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:

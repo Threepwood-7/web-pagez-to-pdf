@@ -94,6 +94,7 @@ BROWSER_PROCESS_PRIORITY = (
     "vivaldi.exe",
     "arc.exe",
 )
+CAPTURE_UI_LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
 class FullCaptureWorker(QThread):
@@ -120,6 +121,12 @@ class FullCaptureWorker(QThread):
         def _emit_progress(progress_obj: ScrollCaptureProgress) -> None:
             self.capture_progress.emit(progress_obj)
 
+        CAPTURE_UI_LOGGER.info(
+            "worker start target_hwnd=%s backend=%s strategy=%s",
+            self._target_hwnd,
+            self._options.capture_backend,
+            self._options.scroll_strategy,
+        )
         try:
             result = run_full_page_capture(
                 service=self._capture_service,
@@ -129,8 +136,15 @@ class FullCaptureWorker(QThread):
                 progress_callback=_emit_progress,
             )
         except Exception as exc:  # pragma: no cover
+            CAPTURE_UI_LOGGER.exception("worker failure target_hwnd=%s", self._target_hwnd)
             self.capture_failed.emit(str(exc))
             return
+        CAPTURE_UI_LOGGER.info(
+            "worker success target_hwnd=%s frames=%s stop_reason=%s",
+            self._target_hwnd,
+            int(getattr(result, "captured_frames", 0)),
+            str(getattr(result, "stop_reason", "")),
+        )
         self.capture_succeeded.emit(result)
 
 
@@ -163,6 +177,7 @@ class MainWindow(QMainWindow):
         self._load_runtime_settings()
         self._select_default_browser_target()
         self._hotkeys.start()
+        CAPTURE_UI_LOGGER.info("main window initialized hwnd=%s", int(self.winId()))
 
     def _build_ui(self) -> None:
         self._assign_widget_identity(self, widget_naming.window_widget_id(self.window_id), "window")
@@ -1006,8 +1021,10 @@ class MainWindow(QMainWindow):
         )
 
     def _capture_last_selected_window(self) -> None:
+        CAPTURE_UI_LOGGER.info("quick capture requested: capture_last_selected_window")
         hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
         if hwnd is None:
+            CAPTURE_UI_LOGGER.error("quick capture failed: no second-last active window")
             self.status_label.setText("No second-last active window found for quick capture.")
             return
         self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
@@ -1015,19 +1032,33 @@ class MainWindow(QMainWindow):
 
     def _set_target(self, target: PickedWindow) -> None:
         self._selected_target = target
+        CAPTURE_UI_LOGGER.info("target selected hwnd=%s label=%r", target.hwnd, target.label)
         self.target_label.setText(f"Target: {target.label} [hwnd={target.hwnd}]")
         if self.base_input.text().strip() in {"", "capture"}:
             self.base_input.setText(sanitize_basename(target.label))
         self.status_label.setText("Target selected.")
 
     def _capture_selected_viewport(self) -> None:
+        CAPTURE_UI_LOGGER.info("viewport capture requested")
         if self._selected_target is None and self.auto_target_checkbox.isChecked():
             self._pick_second_last_window()
         if self._selected_target is None:
+            CAPTURE_UI_LOGGER.error("viewport capture aborted: no target selected")
             self.status_label.setText("Select a target window first, or enable auto-target.")
             return
+        CAPTURE_UI_LOGGER.info(
+            "viewport capture target hwnd=%s label=%r backend=%s",
+            self._selected_target.hwnd,
+            self._selected_target.label,
+            self._capture_backend_primary(),
+        )
         focused, message = self._capture_service.activate_window(self._selected_target.hwnd)
         if not focused:
+            CAPTURE_UI_LOGGER.error(
+                "viewport capture focus failed hwnd=%s reason=%s",
+                self._selected_target.hwnd,
+                message or "unknown",
+            )
             self.status_label.setText(message)
             return
         pixmap, backend_used = self._capture_service.capture_window(
@@ -1035,25 +1066,53 @@ class MainWindow(QMainWindow):
             primary_backend=self._capture_backend_primary(),
         )
         if pixmap is None:
+            CAPTURE_UI_LOGGER.error(
+                "viewport capture failed hwnd=%s backend=%s",
+                self._selected_target.hwnd,
+                backend_used or self._capture_backend_primary(),
+            )
             self.status_label.setText("Capture failed.")
             return
         image = ImageQt.fromqpixmap(pixmap).convert("RGB")
         self._add_capture(image=image, title=self._selected_target.label, source_hwnd=self._selected_target.hwnd, frame_count=1)
+        CAPTURE_UI_LOGGER.info(
+            "viewport capture complete hwnd=%s backend=%s",
+            self._selected_target.hwnd,
+            backend_used or "unknown",
+        )
         self.status_label.setText(f"Captured selected viewport ({backend_used or 'unknown backend'}).")
 
     def _capture_full_scroll(self) -> None:
+        CAPTURE_UI_LOGGER.info("full capture requested")
         if self._selected_target is None and self.auto_target_checkbox.isChecked():
             self._pick_second_last_window()
         if self._selected_target is None:
+            CAPTURE_UI_LOGGER.error("full capture aborted: no target selected")
             self.status_label.setText("Select a target window first, or enable auto-target.")
             return
         if self._capture_worker is not None and self._capture_worker.isRunning():
+            CAPTURE_UI_LOGGER.warning("full capture ignored: worker already running")
             self.status_label.setText("Capture already running.")
             return
+        CAPTURE_UI_LOGGER.info(
+            "full capture target hwnd=%s label=%r backend=%s strategy=%s wheel=%s click_assist=%s cursor=%s",
+            self._selected_target.hwnd,
+            self._selected_target.label,
+            self._capture_backend_primary(),
+            self._capture_scroll_strategy(),
+            self._capture_wheel_injection_mode(),
+            self._capture_center_click_assist(),
+            self._capture_cursor_hold_mode(),
+        )
         focused, message = self._capture_service.ensure_window_foreground(
             self._selected_target.hwnd
         )
         if not focused:
+            CAPTURE_UI_LOGGER.error(
+                "full capture preflight focus failed hwnd=%s reason=%s",
+                self._selected_target.hwnd,
+                message or "unknown",
+            )
             self.status_label.setText(message or "Could not focus selected target window.")
             self._append_capture_log(
                 f"Failed to focus target before full capture: {message or 'unknown reason'}"
@@ -1090,10 +1149,12 @@ class MainWindow(QMainWindow):
         )
         self._stop_overlay.show_top_right()
         self._capture_worker.start()
+        CAPTURE_UI_LOGGER.info("full capture worker started hwnd=%s", self._selected_target.hwnd)
         self.status_label.setText("Full capture running. Hover red stop badge or press Ctrl+Shift+X.")
 
     def _request_stop(self) -> None:
         self._stop_event.set()
+        CAPTURE_UI_LOGGER.info("stop requested by user")
         self.status_label.setText("Stop requested...")
         self._append_capture_log("Stop requested by user.")
 
@@ -1109,6 +1170,7 @@ class MainWindow(QMainWindow):
         if progress_obj.stop_reason != "running":
             status = f"{status}, stop={progress_obj.stop_reason}"
         self.status_label.setText(status)
+        CAPTURE_UI_LOGGER.debug("progress %s", status)
         self._append_capture_log(progress_obj.message or status)
 
     def _full_capture_done(self, result_obj: object) -> None:
@@ -1128,14 +1190,21 @@ class MainWindow(QMainWindow):
             f"Full capture complete: {frame_count} frame(s), "
             f"stop={self._describe_stop_reason(stop_reason)}."
         )
+        CAPTURE_UI_LOGGER.info(
+            "full capture done frame_count=%s stop_reason=%s",
+            frame_count,
+            stop_reason,
+        )
         self.status_label.setText(summary)
         self._append_capture_log(summary)
 
     def _full_capture_failed(self, message: str) -> None:
+        CAPTURE_UI_LOGGER.error("full capture failed message=%s", message)
         self.status_label.setText(f"Full capture failed: {message}")
         self._append_capture_log(f"Full capture failed: {message}")
 
     def _full_capture_finished(self) -> None:
+        CAPTURE_UI_LOGGER.info("full capture finished cleanup")
         self._stop_overlay.hide()
         self._capture_worker = None
         self._restore_focus_after_full_capture()
@@ -1146,8 +1215,14 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         focused, message = self._capture_service.ensure_window_foreground(own_hwnd)
         if focused:
+            CAPTURE_UI_LOGGER.info("focus restored to app hwnd=%s", own_hwnd)
             self._append_capture_log("Focus returned to web-pagez-to-pdf.")
             return
+        CAPTURE_UI_LOGGER.error(
+            "focus restore failed hwnd=%s reason=%s",
+            own_hwnd,
+            message or "unknown",
+        )
         self._append_capture_log(
             f"Could not restore app focus automatically: {message or 'unknown reason'}"
         )
@@ -1363,6 +1438,7 @@ class MainWindow(QMainWindow):
         text = str(message or "").strip()
         if not text:
             return
+        CAPTURE_UI_LOGGER.info("ui-log %s", text)
         stamp = datetime.now().strftime("%H:%M:%S")
         self.capture_log_list.addItem(QListWidgetItem(f"[{stamp}] {text}"))
         self.capture_log_list.scrollToBottom()
