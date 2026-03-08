@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image, ImageQt
 
+from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
 from .stitching import frame_diff_score, stitch_frames
 
 if TYPE_CHECKING:
@@ -17,9 +18,10 @@ if TYPE_CHECKING:
 
     from .capture_service import WindowCaptureService
 
-DEFAULT_SCROLL_MODE = "wheel_only"
+DEFAULT_SCROLL_MODE = "wheel_then_pagedown"
 SCROLL_MODES = (
     DEFAULT_SCROLL_MODE,
+    "wheel_only",
     "wheel_click",
     "wheel_pagedown",
     "wheel_click_pagedown",
@@ -58,6 +60,8 @@ class ScrollCaptureOptions:
     scroll_mode: str = DEFAULT_SCROLL_MODE
     wheel_injection_mode: str = DEFAULT_WHEEL_INJECTION_MODE
     cursor_hold_mode: str = DEFAULT_CURSOR_HOLD_MODE
+    frame_region: str = DEFAULT_CAPTURE_FRAME_REGION
+    include_mouse_cursor: bool = False
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -127,9 +131,12 @@ def run_full_page_capture(
     scroll_mode = _normalize_scroll_mode(options.scroll_mode)
     wheel_mode = _normalize_wheel_injection_mode(options.wheel_injection_mode)
     cursor_hold_mode = _normalize_cursor_hold_mode(options.cursor_hold_mode)
+    frame_region = _normalize_frame_region(options.frame_region)
+    include_mouse_cursor = bool(options.include_mouse_cursor)
     LOGGER.info(
         "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
-        "scroll_mode=%s wheel=%s cursor_hold=%s max_pages=%s delay_ms=%s",
+        "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s include_mouse_cursor=%s "
+        "max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
@@ -138,6 +145,8 @@ def run_full_page_capture(
         scroll_mode,
         wheel_mode,
         cursor_hold_mode,
+        frame_region,
+        include_mouse_cursor,
         max_pages,
         delay_ms,
     )
@@ -158,6 +167,8 @@ def run_full_page_capture(
             service,
             target_hwnd,
             options.capture_backend,
+            frame_region=frame_region,
+            include_mouse_cursor=include_mouse_cursor,
         )
         if first_frame is None:
             LOGGER.error(
@@ -240,6 +251,8 @@ def run_full_page_capture(
                 scroll_mode=scroll_mode,
                 wheel_mode=wheel_mode,
                 cursor_hold_mode=cursor_hold_mode,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
                 threshold=threshold,
             )
             frame = outcome.frame
@@ -395,8 +408,58 @@ def _capture_after_scroll_ladder(
     scroll_mode: str,
     wheel_mode: str,
     cursor_hold_mode: str,
+    frame_region: str,
+    include_mouse_cursor: bool,
     threshold: float,
 ) -> _ScrollStepOutcome:
+    if scroll_mode == "wheel_then_pagedown":
+        wheel_ok = service.wheel_down_at_window_center(
+            target_hwnd,
+            wheel_injection_mode=wheel_mode,
+            cursor_hold_mode=cursor_hold_mode,
+        )
+        LOGGER.debug(
+            "[capture-session:%s] frame=%s stage=wheel_center_pre_pagedown wheel_ok=%s",
+            session_id,
+            frame_index,
+            wheel_ok,
+        )
+        service.send_page_down()
+        frame_after_page, backend_after_page, diff_after_page = _capture_frame_with_diff(
+            service=service,
+            target_hwnd=target_hwnd,
+            previous_frame=previous_frame,
+            capture_backend=capture_backend,
+            delay_ms=delay_ms,
+            frame_region=frame_region,
+            include_mouse_cursor=include_mouse_cursor,
+        )
+        LOGGER.debug(
+            "[capture-session:%s] frame=%s stage=wheel_then_pagedown diff=%s backend=%s",
+            session_id,
+            frame_index,
+            _diff_text(diff_after_page),
+            backend_after_page or "unknown",
+        )
+        if frame_after_page is None:
+            return _ScrollStepOutcome(
+                frame=None,
+                backend_used=backend_after_page,
+                scroll_method="wheel_then_pagedown",
+                diff_score=None,
+                movement_detected=False,
+                probe_exhausted=False,
+            )
+        moved = bool(diff_after_page is not None and diff_after_page > threshold)
+        return _ScrollStepOutcome(
+            frame=frame_after_page,
+            backend_used=backend_after_page,
+            scroll_method="wheel_then_pagedown",
+            diff_score=diff_after_page,
+            movement_detected=moved,
+            probe_exhausted=False,
+        )
+
     wheel_ok = service.wheel_down_at_window_center(
         target_hwnd,
         wheel_injection_mode=wheel_mode,
@@ -408,6 +471,8 @@ def _capture_after_scroll_ladder(
         previous_frame=previous_frame,
         capture_backend=capture_backend,
         delay_ms=delay_ms,
+        frame_region=frame_region,
+        include_mouse_cursor=include_mouse_cursor,
     )
     LOGGER.debug(
         "[capture-session:%s] frame=%s stage=wheel_center wheel_ok=%s diff=%s backend=%s",
@@ -456,6 +521,8 @@ def _capture_after_scroll_ladder(
             previous_frame=previous_frame,
             capture_backend=capture_backend,
             delay_ms=delay_ms,
+            frame_region=frame_region,
+            include_mouse_cursor=include_mouse_cursor,
         )
         LOGGER.debug(
             "[capture-session:%s] frame=%s stage=click_center_then_wheel click_ok=%s "
@@ -521,6 +588,8 @@ def _capture_after_scroll_ladder(
             previous_frame=previous_frame,
             capture_backend=capture_backend,
             delay_ms=delay_ms,
+            frame_region=frame_region,
+            include_mouse_cursor=include_mouse_cursor,
         )
         LOGGER.debug(
             "[capture-session:%s] frame=%s stage=pagedown diff=%s backend=%s",
@@ -563,10 +632,15 @@ def _capture_frame(
     service: WindowCaptureService,
     target_hwnd: int,
     capture_backend: str,
+    *,
+    frame_region: str,
+    include_mouse_cursor: bool,
 ) -> tuple[Image.Image | None, str]:
     pixmap, backend_used = service.capture_window(
         target_hwnd,
         primary_backend=capture_backend,
+        frame_region=frame_region,
+        include_mouse_cursor=include_mouse_cursor,
     )
     if pixmap is None:
         return (None, backend_used)
@@ -580,9 +654,17 @@ def _capture_frame_with_diff(
     previous_frame: Image.Image,
     capture_backend: str,
     delay_ms: int,
+    frame_region: str,
+    include_mouse_cursor: bool,
 ) -> tuple[Image.Image | None, str, float | None]:
     service.wait_after_scroll(delay_ms)
-    frame, backend = _capture_frame(service, target_hwnd, capture_backend)
+    frame, backend = _capture_frame(
+        service,
+        target_hwnd,
+        capture_backend,
+        frame_region=frame_region,
+        include_mouse_cursor=include_mouse_cursor,
+    )
     if frame is None:
         return (None, backend, None)
     return (frame, backend, frame_diff_score(previous_frame, frame))
@@ -616,6 +698,13 @@ def _normalize_cursor_hold_mode(mode: str) -> str:
     if normalized == "restore_each_step":
         return "restore_each_step"
     return DEFAULT_CURSOR_HOLD_MODE
+
+
+def _normalize_frame_region(frame_region: str) -> str:
+    normalized = str(frame_region or "").strip().lower()
+    if normalized not in CAPTURE_FRAME_REGIONS:
+        return DEFAULT_CAPTURE_FRAME_REGION
+    return normalized
 
 
 def normalize_capture_log_level(level: str) -> str:

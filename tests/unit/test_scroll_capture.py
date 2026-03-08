@@ -31,6 +31,7 @@ class _FakeService:
         self.wait_calls: list[int] = []
         self.started_sessions: list[dict[str, str | int]] = []
         self.ended_sessions = 0
+        self.capture_calls: list[tuple[str, bool]] = []
 
     @staticmethod
     def activate_window(_hwnd: int) -> tuple[bool, str]:
@@ -83,7 +84,10 @@ class _FakeService:
         _hwnd: int,
         *,
         primary_backend: str = "screen_region_gdi",
+        frame_region: str = "client_area",
+        include_mouse_cursor: bool = False,
     ) -> tuple[_FakePixmap | None, str]:
+        self.capture_calls.append((frame_region, bool(include_mouse_cursor)))
         if not self._captures:
             return (None, primary_backend)
         image, backend = self._captures.pop(0)
@@ -340,3 +344,55 @@ def test_scroll_mode_wheel_pagedown_disables_click(monkeypatch) -> None:
     assert result.stop_reason == "capture_failed"
     assert len(service.click_calls) == 0
     assert service.pagedown_calls == 1
+
+
+def test_scroll_mode_wheel_then_pagedown_always_runs_both(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img_a = Image.new("RGB", (8, 8), "red")
+    img_b = Image.new("RGB", (8, 8), "blue")
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_b, "screen_region_gdi"),
+        ],
+    )
+
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=2,
+            scroll_mode="wheel_then_pagedown",
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert len(service.wheel_calls) == 1
+    assert service.pagedown_calls == 1
+    assert len(service.click_calls) == 0
+
+
+def test_frame_region_and_cursor_options_passed_to_capture_window(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img_a = Image.new("RGB", (8, 8), "red")
+    service = _FakeService(captures=[(img_a, "screen_region_gdi")])
+
+    calls = {"count": 0}
+
+    def _stop_requested() -> bool:
+        calls["count"] += 1
+        return calls["count"] >= 1
+
+    scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            frame_region="full_window",
+            include_mouse_cursor=True,
+        ),
+        stop_requested=_stop_requested,
+    )
+
+    assert service.capture_calls
+    assert service.capture_calls[0] == ("full_window", True)

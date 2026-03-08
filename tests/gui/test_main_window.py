@@ -48,6 +48,14 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:capture_log_level_combo"
     )
     assert (
+        window.capture_frame_region_combo.property("widget_id")
+        == "window:main:control:capture_frame_region_combo"
+    )
+    assert (
+        window.capture_include_mouse_checkbox.property("widget_id")
+        == "window:main:control:capture_include_mouse_checkbox"
+    )
+    assert (
         window.capture_tab_preview_label.property("widget_id")
         == "window:main:control:capture_tab_preview_label"
     )
@@ -79,7 +87,11 @@ def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_
         return (True, "")
 
     def _capture_window(
-        _hwnd: int, *, primary_backend: str = "screen_region_gdi"
+        _hwnd: int,
+        *,
+        primary_backend: str = "screen_region_gdi",
+        frame_region: str = "client_area",
+        include_mouse_cursor: bool = False,
     ) -> tuple[QPixmap | None, str]:
         pixmap = QPixmap(240, 120)
         pixmap.fill(Qt.GlobalColor.white)
@@ -147,14 +159,18 @@ def test_capture_input_modes_persist_and_reload(qtbot: QtBot) -> None:
     window.show()
 
     window._set_scroll_mode_combo("wheel_click_pagedown")
+    window._set_capture_frame_region_combo("full_window")
     window._set_wheel_injection_combo("legacy_message_wheel")
     window._set_cursor_hold_combo("restore_each_step")
+    window.capture_include_mouse_checkbox.setChecked(True)
     window._set_capture_log_level_combo("DEBUG")
     payload = window._collect_settings_payload()
 
     assert str(payload["capture.scroll_mode"]) == "wheel_click_pagedown"
+    assert str(payload["capture.frame_region"]) == "full_window"
     assert str(payload["capture.wheel_injection_mode"]) == "legacy_message_wheel"
     assert str(payload["capture.cursor_hold_mode"]) == "restore_each_step"
+    assert bool(payload["capture.include_mouse_cursor"]) is True
     assert str(payload["capture.log_level"]) == "DEBUG"
 
 
@@ -275,6 +291,62 @@ def test_full_capture_requires_focus_before_start(qtbot: QtBot) -> None:
 
     assert window._capture_worker is None
     assert "could not focus" in window.status_label.text().lower()
+
+
+def test_viewport_capture_auto_resolves_target_when_none_selected(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._selected_target = None
+
+    window._capture_service.resolve_second_last_window = lambda _own_hwnd: 5151  # type: ignore[method-assign]
+    window._capture_service.window_title = lambda _hwnd: "auto-target"  # type: ignore[method-assign]
+    window._capture_service.activate_window = lambda _hwnd: (True, "")  # type: ignore[method-assign]
+
+    def _capture_window(
+        _hwnd: int,
+        *,
+        primary_backend: str = "screen_region_gdi",
+        frame_region: str = "client_area",
+        include_mouse_cursor: bool = False,
+    ) -> tuple[QPixmap | None, str]:
+        pixmap = QPixmap(160, 90)
+        pixmap.fill(Qt.GlobalColor.white)
+        return (pixmap, primary_backend)
+
+    window._capture_service.capture_window = _capture_window  # type: ignore[method-assign]
+
+    window._capture_selected_viewport()
+
+    assert window._selected_target is not None
+    assert window._selected_target.hwnd == 5151
+    assert len(window._queue) == 1
+
+
+def test_full_capture_auto_resolves_target_when_none_selected(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._selected_target = None
+
+    window._capture_service.resolve_second_last_window = lambda _own_hwnd: 6262  # type: ignore[method-assign]
+    window._capture_service.window_title = lambda _hwnd: "auto-target-full"  # type: ignore[method-assign]
+    called: dict[str, int] = {"hwnd": 0}
+
+    def _focus_fail(hwnd: int) -> tuple[bool, str]:
+        called["hwnd"] = hwnd
+        return (False, "could not focus")
+
+    window._capture_service.ensure_window_foreground = _focus_fail  # type: ignore[method-assign]
+    window._capture_full_scroll()
+
+    assert window._selected_target is not None
+    assert window._selected_target.hwnd == 6262
+    assert called["hwnd"] == 6262
+    assert window._capture_worker is None
 
 
 def test_full_capture_finished_restores_focus_to_app(qtbot: QtBot) -> None:

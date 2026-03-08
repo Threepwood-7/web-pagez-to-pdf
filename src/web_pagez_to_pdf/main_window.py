@@ -42,8 +42,10 @@ from threep_commons.paths import resolve_app_data_dir
 from . import widget_naming
 from .capture_service import (
     CAPTURE_BACKENDS,
+    CAPTURE_FRAME_REGIONS,
     CAPTURE_LOGGER_NAME,
     DEFAULT_CAPTURE_BACKEND,
+    DEFAULT_CAPTURE_FRAME_REGION,
     WindowCaptureService,
     WindowInfo,
 )
@@ -286,8 +288,6 @@ class MainWindow(QMainWindow):
         self.capture_delay_spin = QSpinBox()
         self.capture_delay_spin.setRange(120, 2000)
         self.capture_delay_spin.setSuffix(" ms")
-        self.auto_target_checkbox = QCheckBox("Auto-pick second last active window")
-        self.pick_second_last_button = QPushButton("Use Second Last Target")
         self.capture_backend_combo = QComboBox()
         self.capture_backend_combo.addItem("Screen Region (GDI)", "screen_region_gdi")
         self.capture_backend_combo.addItem("Qt grabWindow", "qt_grab_window")
@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
             "capture_backend_combo",
         )
         self.capture_scroll_mode_combo = QComboBox()
+        self.capture_scroll_mode_combo.addItem("Wheel then PageDown", "wheel_then_pagedown")
         self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
         self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
         self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
@@ -337,6 +338,20 @@ class MainWindow(QMainWindow):
             "capture_log_level_combo",
             "capture_log_level_combo",
         )
+        self.capture_frame_region_combo = QComboBox()
+        self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
+        self.capture_frame_region_combo.addItem("Full Window (Border + Title Bar)", "full_window")
+        self._assign_control_identity(
+            self.capture_frame_region_combo,
+            "capture_frame_region_combo",
+            "capture_frame_region_combo",
+        )
+        self.capture_include_mouse_checkbox = QCheckBox("Capture mouse cursor")
+        self._assign_control_identity(
+            self.capture_include_mouse_checkbox,
+            "capture_include_mouse_checkbox",
+            "capture_include_mouse_checkbox",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
@@ -345,14 +360,15 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(self.capture_backend_combo, 2, 1)
         cap_grid.addWidget(QLabel("Scroll mode"), 3, 0)
         cap_grid.addWidget(self.capture_scroll_mode_combo, 3, 1)
-        cap_grid.addWidget(QLabel("Wheel injection"), 4, 0)
-        cap_grid.addWidget(self.capture_wheel_injection_combo, 4, 1)
-        cap_grid.addWidget(QLabel("Cursor hold"), 5, 0)
-        cap_grid.addWidget(self.capture_cursor_hold_combo, 5, 1)
-        cap_grid.addWidget(QLabel("Diagnostics log level"), 6, 0)
-        cap_grid.addWidget(self.capture_log_level_combo, 6, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 7, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 8, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Frame region"), 4, 0)
+        cap_grid.addWidget(self.capture_frame_region_combo, 4, 1)
+        cap_grid.addWidget(QLabel("Wheel injection"), 5, 0)
+        cap_grid.addWidget(self.capture_wheel_injection_combo, 5, 1)
+        cap_grid.addWidget(QLabel("Cursor hold"), 6, 0)
+        cap_grid.addWidget(self.capture_cursor_hold_combo, 6, 1)
+        cap_grid.addWidget(QLabel("Diagnostics log level"), 7, 0)
+        cap_grid.addWidget(self.capture_log_level_combo, 7, 1)
+        cap_grid.addWidget(self.capture_include_mouse_checkbox, 8, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -536,7 +552,6 @@ class MainWindow(QMainWindow):
 
     def _bind_events(self) -> None:
         self.pick_target_menu.aboutToShow.connect(self._populate_pick_target_menu)
-        self.pick_second_last_button.clicked.connect(self._pick_second_last_window)
         self.capture_last_selected_button.clicked.connect(self._capture_last_selected_window)
         self.capture_button.clicked.connect(self._capture_selected_viewport)
         self.capture_full_button.clicked.connect(self._capture_full_scroll)
@@ -565,11 +580,15 @@ class MainWindow(QMainWindow):
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
         self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
+        self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
         self.capture_wheel_injection_combo.currentIndexChanged.connect(
             self._persist_capture_wheel_injection_mode
         )
         self.capture_cursor_hold_combo.currentIndexChanged.connect(
             self._persist_capture_cursor_hold_mode
+        )
+        self.capture_include_mouse_checkbox.toggled.connect(
+            self._persist_capture_include_mouse_cursor
         )
         self.capture_log_level_combo.currentIndexChanged.connect(
             self._persist_capture_log_level
@@ -636,10 +655,12 @@ class MainWindow(QMainWindow):
         return {
             "capture.max_pages": int(self.max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
-            "capture.auto_pick_second_last": self.auto_target_checkbox.isChecked(),
             "capture.backend_primary": str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND),
             "capture.scroll_mode": str(
                 self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
+            ),
+            "capture.frame_region": str(
+                self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION
             ),
             "capture.wheel_injection_mode": str(
                 self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
@@ -647,6 +668,7 @@ class MainWindow(QMainWindow):
             "capture.cursor_hold_mode": str(
                 self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
             ),
+            "capture.include_mouse_cursor": self.capture_include_mouse_checkbox.isChecked(),
             "capture.log_level": str(
                 self.capture_log_level_combo.currentData() or DEFAULT_CAPTURE_LOG_LEVEL
             ),
@@ -670,11 +692,14 @@ class MainWindow(QMainWindow):
     def _load_runtime_settings(self) -> None:
         self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 18)))
         self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 380)))
-        self.auto_target_checkbox.setChecked(self._bool_setting("capture.auto_pick_second_last", True))
         backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
         self._set_capture_backend_combo(backend)
         scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
         self._set_scroll_mode_combo(scroll_mode)
+        frame_region = str(
+            self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
+        )
+        self._set_capture_frame_region_combo(frame_region)
         wheel_injection = str(
             self._settings.value(
                 "capture.wheel_injection_mode",
@@ -689,6 +714,9 @@ class MainWindow(QMainWindow):
             )
         )
         self._set_cursor_hold_combo(cursor_hold_mode)
+        self.capture_include_mouse_checkbox.setChecked(
+            self._bool_setting("capture.include_mouse_cursor", False)
+        )
         capture_log_level = normalize_capture_log_level(
             str(self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
         )
@@ -786,6 +814,34 @@ class MainWindow(QMainWindow):
 
     def _persist_capture_scroll_mode(self) -> None:
         self._settings.setValue("capture.scroll_mode", self._capture_scroll_mode())
+
+    def _set_capture_frame_region_combo(self, frame_region: str) -> None:
+        normalized = str(frame_region or "").strip().lower()
+        if normalized not in CAPTURE_FRAME_REGIONS:
+            normalized = DEFAULT_CAPTURE_FRAME_REGION
+        for index in range(self.capture_frame_region_combo.count()):
+            if str(self.capture_frame_region_combo.itemData(index)) == normalized:
+                self.capture_frame_region_combo.setCurrentIndex(index)
+                return
+        self.capture_frame_region_combo.setCurrentIndex(0)
+
+    def _capture_frame_region(self) -> str:
+        value = str(self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION)
+        if value in CAPTURE_FRAME_REGIONS:
+            return value
+        return DEFAULT_CAPTURE_FRAME_REGION
+
+    def _persist_capture_frame_region(self) -> None:
+        self._settings.setValue("capture.frame_region", self._capture_frame_region())
+
+    def _capture_include_mouse_cursor(self) -> bool:
+        return bool(self.capture_include_mouse_checkbox.isChecked())
+
+    def _persist_capture_include_mouse_cursor(self) -> None:
+        self._settings.setValue(
+            "capture.include_mouse_cursor",
+            self._capture_include_mouse_cursor(),
+        )
 
     def _set_wheel_injection_combo(self, mode: str) -> None:
         normalized = str(mode or "").strip().lower()
@@ -948,12 +1004,29 @@ class MainWindow(QMainWindow):
             return
         self._set_target(self._picked_window_from_hwnd(hwnd))
 
-    def _pick_second_last_window(self) -> None:
+    def _pick_second_last_window(self) -> bool:
         hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
         if hwnd is None:
             self.status_label.setText("No second-last active window found.")
-            return
+            return False
         self._set_target(self._picked_window_from_hwnd(hwnd))
+        return True
+
+    def _ensure_capture_target_selected(self, capture_kind: str) -> bool:
+        if self._selected_target is not None:
+            return True
+        CAPTURE_UI_LOGGER.info(
+            "%s requested without target; auto-selecting second-last active window",
+            capture_kind,
+        )
+        if self._pick_second_last_window():
+            return True
+        CAPTURE_UI_LOGGER.error(
+            "%s aborted: no selected target and no second-last active window",
+            capture_kind,
+        )
+        self.status_label.setText("No target selected and no second-last active window found.")
+        return False
 
     def _picked_window_from_hwnd(self, hwnd: int) -> PickedWindow:
         info = self._capture_service.window_info(hwnd)
@@ -1015,17 +1088,15 @@ class MainWindow(QMainWindow):
 
     def _capture_selected_viewport(self) -> None:
         CAPTURE_UI_LOGGER.info("viewport capture requested")
-        if self._selected_target is None and self.auto_target_checkbox.isChecked():
-            self._pick_second_last_window()
-        if self._selected_target is None:
-            CAPTURE_UI_LOGGER.error("viewport capture aborted: no target selected")
-            self.status_label.setText("Select a target window first, or enable auto-target.")
+        if not self._ensure_capture_target_selected("viewport capture"):
             return
         CAPTURE_UI_LOGGER.info(
-            "viewport capture target hwnd=%s label=%r backend=%s",
+            "viewport capture target hwnd=%s label=%r backend=%s frame_region=%s include_cursor=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
+            self._capture_frame_region(),
+            self._capture_include_mouse_cursor(),
         )
         focused, message = self._capture_service.activate_window(self._selected_target.hwnd)
         if not focused:
@@ -1039,6 +1110,8 @@ class MainWindow(QMainWindow):
         pixmap, backend_used = self._capture_service.capture_window(
             self._selected_target.hwnd,
             primary_backend=self._capture_backend_primary(),
+            frame_region=self._capture_frame_region(),
+            include_mouse_cursor=self._capture_include_mouse_cursor(),
         )
         if pixmap is None:
             CAPTURE_UI_LOGGER.error(
@@ -1065,24 +1138,22 @@ class MainWindow(QMainWindow):
 
     def _capture_full_scroll(self) -> None:
         CAPTURE_UI_LOGGER.info("full capture requested")
-        if self._selected_target is None and self.auto_target_checkbox.isChecked():
-            self._pick_second_last_window()
-        if self._selected_target is None:
-            CAPTURE_UI_LOGGER.error("full capture aborted: no target selected")
-            self.status_label.setText("Select a target window first, or enable auto-target.")
+        if not self._ensure_capture_target_selected("full capture"):
             return
         if self._capture_worker is not None and self._capture_worker.isRunning():
             CAPTURE_UI_LOGGER.warning("full capture ignored: worker already running")
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
             self._capture_scroll_mode(),
             self._capture_wheel_injection_mode(),
             self._capture_cursor_hold_mode(),
+            self._capture_frame_region(),
+            self._capture_include_mouse_cursor(),
         )
         effective_wheel_mode = self._capture_wheel_injection_mode()
         if effective_wheel_mode == "legacy_message_wheel":
@@ -1119,6 +1190,8 @@ class MainWindow(QMainWindow):
                 scroll_mode=self._capture_scroll_mode(),
                 wheel_injection_mode=effective_wheel_mode,
                 cursor_hold_mode=self._capture_cursor_hold_mode(),
+                frame_region=self._capture_frame_region(),
+                include_mouse_cursor=self._capture_include_mouse_cursor(),
             ),
             stop_event=self._stop_event,
         )
@@ -1135,7 +1208,9 @@ class MainWindow(QMainWindow):
             "Full capture started "
             f"(backend={self._capture_backend_primary()}, scroll_mode={self._capture_scroll_mode()}, "
             f"wheel={self._capture_wheel_injection_mode()}, "
-            f"cursor={self._capture_cursor_hold_mode()})."
+            f"cursor={self._capture_cursor_hold_mode()}, "
+            f"frame_region={self._capture_frame_region()}, "
+            f"include_cursor={self._capture_include_mouse_cursor()})."
         )
         try:
             CAPTURE_UI_LOGGER.info("full capture show stop overlay")

@@ -36,8 +36,11 @@ LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
 CAPTURE_BACKENDS = ("screen_region_gdi", "qt_grab_window", "print_window")
 DEFAULT_CAPTURE_BACKEND = "screen_region_gdi"
+CAPTURE_FRAME_REGIONS = ("client_area", "full_window")
+DEFAULT_CAPTURE_FRAME_REGION = "client_area"
 CAPTURE_LOGGER_NAME = "web_pagez_to_pdf.capture"
 CURSOR_VERIFY_TOLERANCE_PX = 2
+CURSOR_SHOWING = 0x00000001
 
 USER32 = ctypes.WinDLL("user32", use_last_error=True)
 USER32.GetForegroundWindow.restype = wintypes.HWND
@@ -49,6 +52,10 @@ USER32.IsIconic.argtypes = [wintypes.HWND]
 USER32.IsIconic.restype = wintypes.BOOL
 USER32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 USER32.GetWindowRect.restype = wintypes.BOOL
+USER32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+USER32.GetClientRect.restype = wintypes.BOOL
+USER32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+USER32.ClientToScreen.restype = wintypes.BOOL
 USER32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 USER32.GetWindowTextLengthW.restype = ctypes.c_int
 USER32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -565,6 +572,8 @@ class WindowCaptureService:
         hwnd: int,
         *,
         primary_backend: str = DEFAULT_CAPTURE_BACKEND,
+        frame_region: str = DEFAULT_CAPTURE_FRAME_REGION,
+        include_mouse_cursor: bool = False,
     ) -> tuple[QPixmap | None, str]:
         """Capture one window using selected backend and deterministic fallbacks."""
 
@@ -573,16 +582,25 @@ class WindowCaptureService:
             return (None, "")
 
         ordered_backends = self._ordered_backends(primary_backend)
+        normalized_region = self._normalize_frame_region(frame_region)
+        include_cursor = bool(include_mouse_cursor)
         LOGGER.debug(
-            "%s capture_window start hwnd=%s primary=%s fallback_chain=%s",
+            "%s capture_window start hwnd=%s primary=%s frame_region=%s include_cursor=%s fallback_chain=%s",
             self._session_prefix(),
             hwnd,
             primary_backend,
+            normalized_region,
+            include_cursor,
             ordered_backends,
         )
         for backend in ordered_backends:
             for attempt in range(2):
-                pixmap = self._capture_with_backend(hwnd, backend)
+                pixmap = self._capture_with_backend(
+                    hwnd,
+                    backend,
+                    frame_region=normalized_region,
+                    include_mouse_cursor=include_cursor,
+                )
                 is_blank_or_null = pixmap is None
                 if pixmap is not None:
                     is_blank_or_null = self._is_blank_like(pixmap)
@@ -744,25 +762,81 @@ class WindowCaptureService:
             normalized = DEFAULT_CAPTURE_BACKEND
         return [normalized, *[name for name in CAPTURE_BACKENDS if name != normalized]]
 
-    def _capture_with_backend(self, hwnd: int, backend: str) -> QPixmap | None:
+    def _capture_with_backend(
+        self,
+        hwnd: int,
+        backend: str,
+        *,
+        frame_region: str,
+        include_mouse_cursor: bool,
+    ) -> QPixmap | None:
         if backend == "screen_region_gdi":
-            return self._capture_screen_region_gdi(hwnd)
+            return self._capture_screen_region_gdi(
+                hwnd,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+            )
         if backend == "print_window":
-            return self._capture_print_window(hwnd)
+            return self._capture_print_window(
+                hwnd,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+            )
         if backend == "qt_grab_window":
-            return self._capture_qt_window(hwnd)
+            return self._capture_qt_window(
+                hwnd,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+            )
         LOGGER.error("%s unknown capture backend=%s", self._session_prefix(), backend)
         return None
 
-    def _capture_qt_window(self, hwnd: int) -> QPixmap | None:
+    def _capture_qt_window(
+        self,
+        hwnd: int,
+        *,
+        frame_region: str,
+        include_mouse_cursor: bool,
+    ) -> QPixmap | None:
         screen = self._screen_for_window(hwnd)
         if screen is None:
             LOGGER.debug("%s qt_grab_window no screen hwnd=%s", self._session_prefix(), hwnd)
             return None
-        pixmap = screen.grabWindow(hwnd)
+        normalized_region = self._normalize_frame_region(frame_region)
+        pixmap: QPixmap
+        if normalized_region == "client_area":
+            window_rect = self._window_rect(hwnd)
+            client_rect = self._client_rect(hwnd)
+            if window_rect is None or client_rect is None:
+                LOGGER.debug(
+                    "%s qt_grab_window client-area fallback to full window hwnd=%s",
+                    self._session_prefix(),
+                    hwnd,
+                )
+                pixmap = screen.grabWindow(hwnd)
+            else:
+                window_left, window_top, _window_width, _window_height = window_rect
+                client_left, client_top, client_width, client_height = client_rect
+                offset_x = max(0, client_left - window_left)
+                offset_y = max(0, client_top - window_top)
+                pixmap = screen.grabWindow(
+                    hwnd,
+                    offset_x,
+                    offset_y,
+                    client_width,
+                    client_height,
+                )
+        else:
+            pixmap = screen.grabWindow(hwnd)
         if pixmap.isNull():
             LOGGER.debug("%s qt_grab_window null pixmap hwnd=%s", self._session_prefix(), hwnd)
             return None
+        if include_mouse_cursor:
+            LOGGER.debug(
+                "%s qt_grab_window cursor inclusion not supported; returning frame without cursor hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
         return pixmap
 
     @staticmethod
@@ -776,8 +850,44 @@ class WindowCaptureService:
             return None
         return (int(rect.left), int(rect.top), width, height)
 
-    def _capture_screen_region_gdi(self, hwnd: int) -> QPixmap | None:
-        rect = self._window_rect(hwnd)
+    @staticmethod
+    def _client_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+        client = wintypes.RECT()
+        if not USER32.GetClientRect(hwnd, ctypes.byref(client)):
+            return None
+        top_left = wintypes.POINT(int(client.left), int(client.top))
+        bottom_right = wintypes.POINT(int(client.right), int(client.bottom))
+        if not USER32.ClientToScreen(hwnd, ctypes.byref(top_left)):
+            return None
+        if not USER32.ClientToScreen(hwnd, ctypes.byref(bottom_right)):
+            return None
+        width = max(0, int(bottom_right.x - top_left.x))
+        height = max(0, int(bottom_right.y - top_left.y))
+        if width <= 0 or height <= 0:
+            return None
+        return (int(top_left.x), int(top_left.y), width, height)
+
+    def _capture_rect(self, hwnd: int, frame_region: str) -> tuple[int, int, int, int] | None:
+        normalized = self._normalize_frame_region(frame_region)
+        if normalized == "client_area":
+            client_rect = self._client_rect(hwnd)
+            if client_rect is not None:
+                return client_rect
+            LOGGER.debug(
+                "%s client-area rect unavailable; falling back to full window hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
+        return self._window_rect(hwnd)
+
+    def _capture_screen_region_gdi(
+        self,
+        hwnd: int,
+        *,
+        frame_region: str,
+        include_mouse_cursor: bool,
+    ) -> QPixmap | None:
+        rect = self._capture_rect(hwnd, frame_region)
         if rect is None:
             LOGGER.debug("%s gdi capture no rect hwnd=%s", self._session_prefix(), hwnd)
             return None
@@ -794,6 +904,14 @@ class WindowCaptureService:
         old_obj = mem_dc.SelectObject(bitmap)
         try:
             mem_dc.BitBlt((0, 0), (width, height), src_dc, (left, top), win32con.SRCCOPY)
+            if include_mouse_cursor:
+                self._draw_cursor_on_dc(
+                    mem_dc,
+                    capture_left=left,
+                    capture_top=top,
+                    capture_width=width,
+                    capture_height=height,
+                )
             return self._bitmap_to_pixmap(bitmap)
         except Exception:
             LOGGER.exception("%s gdi capture raised exception hwnd=%s", self._session_prefix(), hwnd)
@@ -805,12 +923,19 @@ class WindowCaptureService:
             src_dc.DeleteDC()
             win32gui.ReleaseDC(desktop_hwnd, desktop_dc)
 
-    def _capture_print_window(self, hwnd: int) -> QPixmap | None:
-        rect = self._window_rect(hwnd)
-        if rect is None:
+    def _capture_print_window(
+        self,
+        hwnd: int,
+        *,
+        frame_region: str,
+        include_mouse_cursor: bool,
+    ) -> QPixmap | None:
+        window_rect = self._window_rect(hwnd)
+        if window_rect is None:
             LOGGER.debug("%s print_window capture no rect hwnd=%s", self._session_prefix(), hwnd)
             return None
-        _left, _top, width, height = rect
+        window_left, window_top, width, height = window_rect
+        normalized_region = self._normalize_frame_region(frame_region)
         hwnd_dc = win32gui.GetWindowDC(hwnd)
         if hwnd_dc == 0:
             LOGGER.debug(
@@ -835,7 +960,34 @@ class WindowCaptureService:
                         hwnd,
                     )
                     return None
-            return self._bitmap_to_pixmap(bitmap)
+            if include_mouse_cursor:
+                self._draw_cursor_on_dc(
+                    mem_dc,
+                    capture_left=window_left,
+                    capture_top=window_top,
+                    capture_width=width,
+                    capture_height=height,
+                )
+            image = self._bitmap_to_image(bitmap)
+            if image is None:
+                return None
+            if normalized_region == "client_area":
+                client_rect = self._client_rect(hwnd)
+                if client_rect is None:
+                    LOGGER.debug(
+                        "%s print_window client-area rect unavailable; using full frame hwnd=%s",
+                        self._session_prefix(),
+                        hwnd,
+                    )
+                else:
+                    client_left, client_top, client_width, client_height = client_rect
+                    offset_x = max(0, client_left - window_left)
+                    offset_y = max(0, client_top - window_top)
+                    max_x = min(width, offset_x + client_width)
+                    max_y = min(height, offset_y + client_height)
+                    if max_x > offset_x and max_y > offset_y:
+                        image = image.crop((offset_x, offset_y, max_x, max_y))
+            return self._image_to_pixmap(image)
         except Exception:
             LOGGER.exception(
                 "%s print_window capture raised exception hwnd=%s",
@@ -851,7 +1003,7 @@ class WindowCaptureService:
             win32gui.ReleaseDC(hwnd, hwnd_dc)
 
     @staticmethod
-    def _bitmap_to_pixmap(bitmap) -> QPixmap | None:
+    def _bitmap_to_image(bitmap) -> Image.Image | None:
         info = bitmap.GetInfo()
         width = int(info.get("bmWidth", 0))
         height = int(info.get("bmHeight", 0))
@@ -860,11 +1012,82 @@ class WindowCaptureService:
         bits = bitmap.GetBitmapBits(True)
         if not bits:
             return None
-        image = Image.frombuffer("RGB", (width, height), bits, "raw", "BGRX", 0, 1)
+        return Image.frombuffer("RGB", (width, height), bits, "raw", "BGRX", 0, 1)
+
+    @staticmethod
+    def _image_to_pixmap(image: Image.Image) -> QPixmap | None:
         pixmap = ImageQt.toqpixmap(image)
         if pixmap.isNull():
             return None
         return pixmap
+
+    @classmethod
+    def _bitmap_to_pixmap(cls, bitmap) -> QPixmap | None:
+        image = cls._bitmap_to_image(bitmap)
+        if image is None:
+            return None
+        return cls._image_to_pixmap(image)
+
+    def _draw_cursor_on_dc(
+        self,
+        mem_dc,
+        *,
+        capture_left: int,
+        capture_top: int,
+        capture_width: int,
+        capture_height: int,
+    ) -> bool:
+        try:
+            flags, cursor_handle, cursor_pos = win32gui.GetCursorInfo()
+        except Exception:
+            LOGGER.exception("%s cursor info query failed", self._session_prefix())
+            return False
+        if int(flags) & CURSOR_SHOWING == 0:
+            return False
+        if not cursor_handle:
+            return False
+        cursor_x, cursor_y = int(cursor_pos[0]), int(cursor_pos[1])
+        if not (
+            capture_left <= cursor_x < capture_left + capture_width
+            and capture_top <= cursor_y < capture_top + capture_height
+        ):
+            return False
+        icon_info: tuple[int, int, int, int, int] | None = None
+        try:
+            icon_info = win32gui.GetIconInfo(cursor_handle)
+            hotspot_x = int(icon_info[1])
+            hotspot_y = int(icon_info[2])
+            draw_x = cursor_x - capture_left - hotspot_x
+            draw_y = cursor_y - capture_top - hotspot_y
+            win32gui.DrawIconEx(
+                mem_dc.GetSafeHdc(),
+                draw_x,
+                draw_y,
+                cursor_handle,
+                0,
+                0,
+                0,
+                0,
+                win32con.DI_NORMAL,
+            )
+            LOGGER.debug(
+                "%s cursor composited into frame at (%s,%s)",
+                self._session_prefix(),
+                draw_x,
+                draw_y,
+            )
+            return True
+        except Exception:
+            LOGGER.exception("%s cursor draw failed", self._session_prefix())
+            return False
+        finally:
+            if icon_info is not None:
+                mask_bmp = int(icon_info[3] or 0)
+                color_bmp = int(icon_info[4] or 0)
+                if mask_bmp:
+                    win32gui.DeleteObject(mask_bmp)
+                if color_bmp:
+                    win32gui.DeleteObject(color_bmp)
 
     def _scroll_with_wheel_message(self, hwnd: int) -> bool:
         rect = self._window_rect(hwnd)
@@ -917,6 +1140,13 @@ class WindowCaptureService:
         if normalized == "restore_each_step":
             return "restore_each_step"
         return "keep_at_center"
+
+    @staticmethod
+    def _normalize_frame_region(frame_region: str) -> str:
+        normalized = str(frame_region or "").strip().lower()
+        if normalized in CAPTURE_FRAME_REGIONS:
+            return normalized
+        return DEFAULT_CAPTURE_FRAME_REGION
 
     @staticmethod
     def _send_mouse_input(flags: int, mouse_data: int = 0) -> tuple[bool, int]:

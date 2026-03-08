@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import widget_naming
+from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
 from .scroll_capture import (
     DEFAULT_CAPTURE_LOG_LEVEL,
     DEFAULT_CURSOR_HOLD_MODE,
@@ -165,6 +166,7 @@ class SettingsWindow(QDialog):
             self.capture_backend_combo,
         )
         self.capture_scroll_mode_combo = QComboBox(self)
+        self.capture_scroll_mode_combo.addItem("Wheel then PageDown", "wheel_then_pagedown")
         self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
         self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
         self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
@@ -175,6 +177,16 @@ class SettingsWindow(QDialog):
             "Scroll Mode",
             "capture full scroll mode wheel click pagedown",
             self.capture_scroll_mode_combo,
+        )
+        self.capture_frame_region_combo = QComboBox(self)
+        self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
+        self.capture_frame_region_combo.addItem("Full Window (Border + Title Bar)", "full_window")
+        self._add_row(
+            capture_group,
+            "capture.frame_region",
+            "Frame Region",
+            "capture frame region client area full window border",
+            self.capture_frame_region_combo,
         )
         self.capture_wheel_injection_combo = QComboBox(self)
         self.capture_wheel_injection_combo.addItem(
@@ -212,15 +224,13 @@ class SettingsWindow(QDialog):
             "capture diagnostics log level info debug",
             self.capture_log_level_combo,
         )
-        self.auto_pick_second_last_checkbox = QCheckBox(
-            "Auto-target second last active window", self
-        )
+        self.capture_include_mouse_checkbox = QCheckBox("Capture mouse cursor", self)
         self._add_row(
             capture_group,
-            "capture.auto_pick_second_last",
-            "Auto Target",
-            "auto target second last active window",
-            self.auto_pick_second_last_checkbox,
+            "capture.include_mouse_cursor",
+            "Include Mouse Cursor",
+            "capture mouse cursor include",
+            self.capture_include_mouse_checkbox,
         )
 
         self.editor_auto_open_checkbox = QCheckBox(
@@ -343,6 +353,10 @@ class SettingsWindow(QDialog):
             str(values.get("capture.scroll_mode", DEFAULT_SCROLL_MODE)),
         )
         self._set_combo_value(
+            self.capture_frame_region_combo,
+            str(values.get("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)),
+        )
+        self._set_combo_value(
             self.capture_wheel_injection_combo,
             str(values.get("capture.wheel_injection_mode", DEFAULT_WHEEL_INJECTION_MODE)),
         )
@@ -356,8 +370,8 @@ class SettingsWindow(QDialog):
                 str(values.get("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
             ),
         )
-        self.auto_pick_second_last_checkbox.setChecked(
-            bool(values.get("capture.auto_pick_second_last", True))
+        self.capture_include_mouse_checkbox.setChecked(
+            bool(values.get("capture.include_mouse_cursor", False))
         )
         self.editor_auto_open_checkbox.setChecked(bool(values.get("editor.auto_open_mini", False)))
         self.editor_show_grid_checkbox.setChecked(bool(values.get("editor.show_grid", False)))
@@ -383,12 +397,13 @@ class SettingsWindow(QDialog):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.scroll_mode": self._scroll_mode_value(),
+            "capture.frame_region": self._frame_region_value(),
             "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
             "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),
             "capture.log_level": normalize_capture_log_level(
                 str(self.capture_log_level_combo.currentData())
             ),
-            "capture.auto_pick_second_last": self.auto_pick_second_last_checkbox.isChecked(),
+            "capture.include_mouse_cursor": self.capture_include_mouse_checkbox.isChecked(),
             "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
             "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),
             "export.output_dir": self.default_output_edit.text().strip(),
@@ -410,6 +425,12 @@ class SettingsWindow(QDialog):
         if value in SCROLL_MODES:
             return value
         return DEFAULT_SCROLL_MODE
+
+    def _frame_region_value(self) -> str:
+        value = str(self.capture_frame_region_combo.currentData())
+        if value in CAPTURE_FRAME_REGIONS:
+            return value
+        return DEFAULT_CAPTURE_FRAME_REGION
 
     def _emit_apply(self) -> None:
         self.settings_applied.emit(self.values())
