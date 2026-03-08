@@ -51,6 +51,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:capture_cursor_hold_combo"
     )
     assert (
+        window.capture_log_level_combo.property("widget_id")
+        == "window:main:control:capture_log_level_combo"
+    )
+    assert (
         window.capture_tab_preview_label.property("widget_id")
         == "window:main:control:capture_tab_preview_label"
     )
@@ -152,11 +156,25 @@ def test_capture_input_modes_persist_and_reload(qtbot: QtBot) -> None:
     window._set_wheel_injection_combo("legacy_message_wheel")
     window._set_center_click_assist_combo("off")
     window._set_cursor_hold_combo("restore_each_step")
+    window._set_capture_log_level_combo("DEBUG")
     payload = window._collect_settings_payload()
 
     assert str(payload["capture.wheel_injection_mode"]) == "legacy_message_wheel"
     assert str(payload["capture.center_click_assist"]) == "off"
     assert str(payload["capture.cursor_hold_mode"]) == "restore_each_step"
+    assert str(payload["capture.log_level"]) == "DEBUG"
+
+
+def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    window._set_capture_log_level_combo("DEBUG")
+    assert str(window.capture_log_level_combo.currentData()) == "DEBUG"
+
+    window._set_capture_log_level_combo("not-a-level")
+    assert str(window.capture_log_level_combo.currentData()) == "INFO"
 
 
 def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:

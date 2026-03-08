@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import uuid
@@ -41,6 +42,7 @@ from threep_commons.paths import resolve_app_data_dir
 from . import widget_naming
 from .capture_service import (
     CAPTURE_BACKENDS,
+    CAPTURE_LOGGER_NAME,
     DEFAULT_CAPTURE_BACKEND,
     WindowCaptureService,
 )
@@ -64,8 +66,10 @@ from .models import (
     PrintLayout,
 )
 from .scroll_capture import (
+    CAPTURE_LOG_LEVELS,
     CENTER_CLICK_ASSIST_MODES,
     CURSOR_HOLD_MODES,
+    DEFAULT_CAPTURE_LOG_LEVEL,
     DEFAULT_CENTER_CLICK_ASSIST,
     DEFAULT_CURSOR_HOLD_MODE,
     DEFAULT_SCROLL_STRATEGY,
@@ -74,6 +78,7 @@ from .scroll_capture import (
     WHEEL_INJECTION_MODES,
     ScrollCaptureOptions,
     ScrollCaptureProgress,
+    normalize_capture_log_level,
     run_full_page_capture,
 )
 from .settings_window import SettingsWindow
@@ -318,6 +323,14 @@ class MainWindow(QMainWindow):
             "capture_cursor_hold_combo",
             "capture_cursor_hold_combo",
         )
+        self.capture_log_level_combo = QComboBox()
+        self.capture_log_level_combo.addItem("INFO", "INFO")
+        self.capture_log_level_combo.addItem("DEBUG", "DEBUG")
+        self._assign_control_identity(
+            self.capture_log_level_combo,
+            "capture_log_level_combo",
+            "capture_log_level_combo",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
@@ -332,8 +345,10 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(self.capture_center_click_assist_combo, 5, 1)
         cap_grid.addWidget(QLabel("Cursor hold"), 6, 0)
         cap_grid.addWidget(self.capture_cursor_hold_combo, 6, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 7, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 8, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Diagnostics log level"), 7, 0)
+        cap_grid.addWidget(self.capture_log_level_combo, 7, 1)
+        cap_grid.addWidget(self.auto_target_checkbox, 8, 0, 1, 2)
+        cap_grid.addWidget(self.pick_second_last_button, 9, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -558,6 +573,9 @@ class MainWindow(QMainWindow):
         self.capture_cursor_hold_combo.currentIndexChanged.connect(
             self._persist_capture_cursor_hold_mode
         )
+        self.capture_log_level_combo.currentIndexChanged.connect(
+            self._persist_capture_log_level
+        )
         for checkbox in (
             self.pdf_checkbox,
             self.paged_images_checkbox,
@@ -634,6 +652,9 @@ class MainWindow(QMainWindow):
             "capture.cursor_hold_mode": str(
                 self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
             ),
+            "capture.log_level": str(
+                self.capture_log_level_combo.currentData() or DEFAULT_CAPTURE_LOG_LEVEL
+            ),
             "editor.auto_open_mini": self._bool_setting("editor.auto_open_mini", False),
             "editor.show_grid": self._bool_setting("editor.show_grid", False),
             "export.output_dir": self.output_input.text().strip(),
@@ -682,6 +703,11 @@ class MainWindow(QMainWindow):
             )
         )
         self._set_cursor_hold_combo(cursor_hold_mode)
+        capture_log_level = normalize_capture_log_level(
+            str(self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
+        )
+        self._set_capture_log_level_combo(capture_log_level)
+        self._apply_capture_logger_level(capture_log_level)
         self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
         self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
         self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
@@ -844,6 +870,33 @@ class MainWindow(QMainWindow):
             "capture.cursor_hold_mode",
             self._capture_cursor_hold_mode(),
         )
+
+    def _set_capture_log_level_combo(self, level: str) -> None:
+        normalized = normalize_capture_log_level(level)
+        for index in range(self.capture_log_level_combo.count()):
+            if str(self.capture_log_level_combo.itemData(index)) == normalized:
+                self.capture_log_level_combo.setCurrentIndex(index)
+                return
+        self.capture_log_level_combo.setCurrentIndex(0)
+
+    def _capture_log_level(self) -> str:
+        value = normalize_capture_log_level(
+            str(self.capture_log_level_combo.currentData() or DEFAULT_CAPTURE_LOG_LEVEL)
+        )
+        if value in CAPTURE_LOG_LEVELS:
+            return value
+        return DEFAULT_CAPTURE_LOG_LEVEL
+
+    def _persist_capture_log_level(self) -> None:
+        level = self._capture_log_level()
+        self._settings.setValue("capture.log_level", level)
+        self._apply_capture_logger_level(level)
+
+    @staticmethod
+    def _apply_capture_logger_level(level: str) -> None:
+        normalized = normalize_capture_log_level(level)
+        capture_level = logging.DEBUG if normalized == "DEBUG" else logging.INFO
+        logging.getLogger(CAPTURE_LOGGER_NAME).setLevel(capture_level)
 
     def _sync_quick_formats_from_main(self) -> None:
         if self._format_sync_guard:

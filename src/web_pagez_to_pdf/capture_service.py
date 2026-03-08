@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -35,8 +36,10 @@ LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
 CAPTURE_BACKENDS = ("screen_region_gdi", "qt_grab_window", "print_window")
 DEFAULT_CAPTURE_BACKEND = "screen_region_gdi"
+CAPTURE_LOGGER_NAME = "web_pagez_to_pdf.capture"
+CURSOR_VERIFY_TOLERANCE_PX = 2
 
-USER32 = ctypes.windll.user32
+USER32 = ctypes.WinDLL("user32", use_last_error=True)
 USER32.GetForegroundWindow.restype = wintypes.HWND
 USER32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
 USER32.GetWindow.restype = wintypes.HWND
@@ -98,7 +101,7 @@ USER32.keybd_event.argtypes = [
     ULONG_PTR,
 ]
 
-KERNEL32 = ctypes.windll.kernel32
+KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
 KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 KERNEL32.OpenProcess.restype = wintypes.HANDLE
 KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -117,6 +120,7 @@ PSAPI.GetModuleBaseNameW.restype = wintypes.DWORD
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
+LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
 class MOUSEINPUT(ctypes.Structure):
@@ -172,6 +176,13 @@ class WindowCaptureService:
         self._scroll_cursor_origin: tuple[int, int] | None = None
         self._scroll_cursor_hold_mode = "keep_at_center"
         self._scroll_session_active = False
+        self._capture_session_id = ""
+        self._capture_session_target = ""
+
+    def _session_prefix(self) -> str:
+        if not self._capture_session_id:
+            return "[capture-session:none]"
+        return f"[capture-session:{self._capture_session_id}]"
 
     def record_foreground_window(self) -> int:
         """Append current foreground window handle into history."""
@@ -237,16 +248,22 @@ class WindowCaptureService:
         """Attempt foreground/focus without changing target window state."""
 
         if hwnd <= 0:
+            LOGGER.error("activate_window invalid hwnd=%s", hwnd)
             return (False, "Target window handle is invalid.")
         if not bool(USER32.IsWindowVisible(hwnd)):
+            LOGGER.error("activate_window target not visible hwnd=%s", hwnd)
             return (False, "Target window is not visible. Bring it on-screen and retry.")
         if bool(USER32.IsIconic(hwnd)):
+            LOGGER.error("activate_window target minimized hwnd=%s", hwnd)
             return (False, "Target window is minimized. Restore it manually, then retry.")
         if WindowCaptureService.is_foreground_window(hwnd):
+            LOGGER.debug("activate_window already foreground hwnd=%s", hwnd)
             return (True, "")
 
+        LOGGER.debug("activate_window focus attempt hwnd=%s", hwnd)
         WindowCaptureService._focus_window(hwnd)
         if WindowCaptureService.is_foreground_window(hwnd):
+            LOGGER.debug("activate_window focus succeeded direct hwnd=%s", hwnd)
             return (True, "")
 
         foreground_hwnd = int(USER32.GetForegroundWindow())
@@ -272,10 +289,12 @@ class WindowCaptureService:
                 USER32.AttachThreadInput(current_thread, foreground_thread, False)
 
         if not WindowCaptureService.is_foreground_window(hwnd):
+            LOGGER.error("activate_window failed hwnd=%s after thread attach focus path", hwnd)
             return (
                 False,
                 "Could not focus target window. Click it once, keep it visible, then retry.",
             )
+        LOGGER.debug("activate_window focus succeeded via thread attach hwnd=%s", hwnd)
         return (True, "")
 
     @staticmethod
@@ -288,8 +307,17 @@ class WindowCaptureService:
         """Ensure target is in foreground without changing window state."""
 
         if self.is_foreground_window(hwnd):
+            LOGGER.debug("%s ensure_foreground already active hwnd=%s", self._session_prefix(), hwnd)
             return (True, "")
-        return self.activate_window(hwnd)
+        focused, reason = self.activate_window(hwnd)
+        LOGGER.debug(
+            "%s ensure_foreground activation_result hwnd=%s focused=%s reason=%s",
+            self._session_prefix(),
+            hwnd,
+            focused,
+            reason or "",
+        )
+        return (focused, reason)
 
     @staticmethod
     def send_page_down() -> None:
@@ -297,18 +325,45 @@ class WindowCaptureService:
 
         USER32.keybd_event(VK_NEXT, 0, 0, 0)
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
+        LOGGER.debug("page_down injected via keybd_event")
 
     def start_full_capture_input_session(
         self,
         target_hwnd: int,
         *,
         cursor_hold_mode: str = "keep_at_center",
+        session_id: str = "",
+        target_label: str = "",
+        target_process: str = "",
+        scroll_strategy: str = "",
+        capture_backend: str = "",
+        wheel_injection_mode: str = "",
+        center_click_assist: str = "",
     ) -> None:
         """Initialize cursor handling for the full-capture loop."""
 
+        self._capture_session_id = str(session_id or "").strip()
+        self._capture_session_target = (
+            f"hwnd={target_hwnd} label={target_label!r} process={target_process!r}"
+        )
         self._scroll_session_active = True
         self._scroll_cursor_hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
         self._scroll_cursor_origin = self._current_cursor_pos()
+        LOGGER.info(
+            "%s input-session start %s strategy=%s backend=%s wheel=%s click_assist=%s cursor_hold=%s",
+            self._session_prefix(),
+            self._capture_session_target,
+            scroll_strategy or "n/a",
+            capture_backend or "n/a",
+            wheel_injection_mode or "n/a",
+            center_click_assist or "n/a",
+            self._scroll_cursor_hold_mode,
+        )
+        LOGGER.debug(
+            "%s cursor-origin=%s",
+            self._session_prefix(),
+            self._scroll_cursor_origin,
+        )
         if self._scroll_cursor_hold_mode == "keep_at_center":
             self._move_cursor_to_window_center(target_hwnd)
 
@@ -322,10 +377,22 @@ class WindowCaptureService:
                 and self._scroll_cursor_origin is not None
             ):
                 USER32.SetCursorPos(self._scroll_cursor_origin[0], self._scroll_cursor_origin[1])
+                LOGGER.debug(
+                    "%s cursor-restored to %s",
+                    self._session_prefix(),
+                    self._scroll_cursor_origin,
+                )
         finally:
+            LOGGER.info(
+                "%s input-session end %s",
+                self._session_prefix(),
+                self._capture_session_target or "target=n/a",
+            )
             self._scroll_cursor_origin = None
             self._scroll_cursor_hold_mode = "keep_at_center"
             self._scroll_session_active = False
+            self._capture_session_id = ""
+            self._capture_session_target = ""
 
     def wheel_down_at_window_center(
         self,
@@ -342,14 +409,42 @@ class WindowCaptureService:
 
         if normalized_mode == "legacy_message_wheel":
             ok = self._scroll_with_wheel_message(hwnd)
+            if not ok:
+                LOGGER.error(
+                    "%s wheel-message failed %s",
+                    self._session_prefix(),
+                    self._capture_session_target or f"hwnd={hwnd}",
+                )
         else:
             moved = self._move_cursor_to_window_center(hwnd)
             if not moved:
+                LOGGER.error(
+                    "%s wheel-center cursor move failed %s",
+                    self._session_prefix(),
+                    self._capture_session_target or f"hwnd={hwnd}",
+                )
                 return False
-            ok = self._send_mouse_wheel_down()
+            ok, error_code = self._send_mouse_wheel_down()
+            if not ok:
+                LOGGER.error(
+                    "%s SendInput wheel failed error_code=%s",
+                    self._session_prefix(),
+                    error_code,
+                )
+            else:
+                LOGGER.debug(
+                    "%s SendInput wheel success cursor=%s",
+                    self._session_prefix(),
+                    self._current_cursor_pos(),
+                )
 
         if hold_mode == "restore_each_step" and original_pos is not None:
             USER32.SetCursorPos(original_pos[0], original_pos[1])
+            LOGGER.debug(
+                "%s cursor restored after wheel step=%s",
+                self._session_prefix(),
+                original_pos,
+            )
         return ok
 
     def click_window_center(
@@ -363,10 +458,32 @@ class WindowCaptureService:
         hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
         original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
         if not self._move_cursor_to_window_center(hwnd):
+            LOGGER.error(
+                "%s click-center cursor move failed %s",
+                self._session_prefix(),
+                self._capture_session_target or f"hwnd={hwnd}",
+            )
             return False
-        clicked = self._send_mouse_left_click()
+        clicked, error_code = self._send_mouse_left_click()
+        if not clicked:
+            LOGGER.error(
+                "%s SendInput click failed error_code=%s",
+                self._session_prefix(),
+                error_code,
+            )
+        else:
+            LOGGER.debug(
+                "%s SendInput click success cursor=%s",
+                self._session_prefix(),
+                self._current_cursor_pos(),
+            )
         if hold_mode == "restore_each_step" and original_pos is not None:
             USER32.SetCursorPos(original_pos[0], original_pos[1])
+            LOGGER.debug(
+                "%s cursor restored after click step=%s",
+                self._session_prefix(),
+                original_pos,
+            )
         return clicked
 
     def scroll_target_window(
@@ -383,12 +500,18 @@ class WindowCaptureService:
         normalized = str(strategy or "").strip().lower()
         if normalized in {"pagedown_only", "pagedown", "page_down"}:
             self.send_page_down()
+            LOGGER.debug("%s scroll_target strategy=%s method=pagedown", self._session_prefix(), normalized)
             return "pagedown"
         if self.wheel_down_at_window_center(
             hwnd,
             wheel_injection_mode=wheel_injection_mode,
             cursor_hold_mode=cursor_hold_mode,
         ):
+            LOGGER.debug(
+                "%s scroll_target strategy=%s method=wheel_center",
+                self._session_prefix(),
+                normalized or "hybrid",
+            )
             return "wheel_center"
         if (
             str(center_click_assist or "").strip().lower() == "on_no_movement"
@@ -399,8 +522,18 @@ class WindowCaptureService:
                 cursor_hold_mode=cursor_hold_mode,
             )
         ):
+            LOGGER.debug(
+                "%s scroll_target strategy=%s method=click_center_then_wheel",
+                self._session_prefix(),
+                normalized or "hybrid",
+            )
             return "click_center_then_wheel"
         self.send_page_down()
+        LOGGER.debug(
+            "%s scroll_target strategy=%s method=pagedown_fallback",
+            self._session_prefix(),
+            normalized or "hybrid",
+        )
         return "pagedown"
 
     def capture_window(
@@ -412,16 +545,46 @@ class WindowCaptureService:
         """Capture one window using selected backend and deterministic fallbacks."""
 
         if hwnd <= 0:
+            LOGGER.error("%s capture_window invalid hwnd=%s", self._session_prefix(), hwnd)
             return (None, "")
 
         ordered_backends = self._ordered_backends(primary_backend)
+        LOGGER.debug(
+            "%s capture_window start hwnd=%s primary=%s fallback_chain=%s",
+            self._session_prefix(),
+            hwnd,
+            primary_backend,
+            ordered_backends,
+        )
         for backend in ordered_backends:
             for attempt in range(2):
                 pixmap = self._capture_with_backend(hwnd, backend)
-                if pixmap is not None and not self._is_blank_like(pixmap):
+                is_blank_or_null = pixmap is None
+                if pixmap is not None:
+                    is_blank_or_null = self._is_blank_like(pixmap)
+                if pixmap is not None and not is_blank_or_null:
+                    LOGGER.debug(
+                        "%s capture_window success backend=%s attempt=%s",
+                        self._session_prefix(),
+                        backend,
+                        attempt + 1,
+                    )
                     return (pixmap, backend)
+                LOGGER.debug(
+                    "%s capture_window rejected backend=%s attempt=%s blank_or_null=%s",
+                    self._session_prefix(),
+                    backend,
+                    attempt + 1,
+                    is_blank_or_null,
+                )
                 if attempt == 0:
                     time.sleep(0.12)
+        LOGGER.error(
+            "%s capture_window failed hwnd=%s primary=%s",
+            self._session_prefix(),
+            hwnd,
+            primary_backend,
+        )
         return (None, "")
 
     @staticmethod
@@ -557,14 +720,17 @@ class WindowCaptureService:
             return self._capture_print_window(hwnd)
         if backend == "qt_grab_window":
             return self._capture_qt_window(hwnd)
+        LOGGER.error("%s unknown capture backend=%s", self._session_prefix(), backend)
         return None
 
     def _capture_qt_window(self, hwnd: int) -> QPixmap | None:
         screen = self._screen_for_window(hwnd)
         if screen is None:
+            LOGGER.debug("%s qt_grab_window no screen hwnd=%s", self._session_prefix(), hwnd)
             return None
         pixmap = screen.grabWindow(hwnd)
         if pixmap.isNull():
+            LOGGER.debug("%s qt_grab_window null pixmap hwnd=%s", self._session_prefix(), hwnd)
             return None
         return pixmap
 
@@ -582,11 +748,13 @@ class WindowCaptureService:
     def _capture_screen_region_gdi(self, hwnd: int) -> QPixmap | None:
         rect = self._window_rect(hwnd)
         if rect is None:
+            LOGGER.debug("%s gdi capture no rect hwnd=%s", self._session_prefix(), hwnd)
             return None
         left, top, width, height = rect
         desktop_hwnd = win32gui.GetDesktopWindow()
         desktop_dc = win32gui.GetWindowDC(desktop_hwnd)
         if desktop_dc == 0:
+            LOGGER.debug("%s gdi capture no desktop dc hwnd=%s", self._session_prefix(), hwnd)
             return None
         src_dc = win32ui.CreateDCFromHandle(desktop_dc)
         mem_dc = src_dc.CreateCompatibleDC()
@@ -597,6 +765,7 @@ class WindowCaptureService:
             mem_dc.BitBlt((0, 0), (width, height), src_dc, (left, top), win32con.SRCCOPY)
             return self._bitmap_to_pixmap(bitmap)
         except Exception:
+            LOGGER.exception("%s gdi capture raised exception hwnd=%s", self._session_prefix(), hwnd)
             return None
         finally:
             mem_dc.SelectObject(old_obj)
@@ -608,10 +777,16 @@ class WindowCaptureService:
     def _capture_print_window(self, hwnd: int) -> QPixmap | None:
         rect = self._window_rect(hwnd)
         if rect is None:
+            LOGGER.debug("%s print_window capture no rect hwnd=%s", self._session_prefix(), hwnd)
             return None
         _left, _top, width, height = rect
         hwnd_dc = win32gui.GetWindowDC(hwnd)
         if hwnd_dc == 0:
+            LOGGER.debug(
+                "%s print_window capture no window dc hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return None
         src_dc = win32ui.CreateDCFromHandle(hwnd_dc)
         mem_dc = src_dc.CreateCompatibleDC()
@@ -623,9 +798,19 @@ class WindowCaptureService:
             if not bool(result):
                 result = USER32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 0)
                 if not bool(result):
+                    LOGGER.debug(
+                        "%s print_window capture returned false hwnd=%s",
+                        self._session_prefix(),
+                        hwnd,
+                    )
                     return None
             return self._bitmap_to_pixmap(bitmap)
         except Exception:
+            LOGGER.exception(
+                "%s print_window capture raised exception hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return None
         finally:
             mem_dc.SelectObject(old_obj)
@@ -653,6 +838,11 @@ class WindowCaptureService:
     def _scroll_with_wheel_message(self, hwnd: int) -> bool:
         rect = self._window_rect(hwnd)
         if rect is None:
+            LOGGER.error(
+                "%s wheel-message failed: no window rect hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return False
         left, top, width, height = rect
         x_pos = left + max(10, width // 2)
@@ -667,7 +857,19 @@ class WindowCaptureService:
             USER32.SendMessageW(wheel_target, WM_MOUSEWHEEL, wparam, lparam)
             if wheel_target != hwnd:
                 USER32.SendMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam)
+            LOGGER.debug(
+                "%s wheel-message sent target=%s cursor_point=(%s,%s)",
+                self._session_prefix(),
+                wheel_target,
+                x_pos,
+                y_pos,
+            )
         except Exception:
+            LOGGER.exception(
+                "%s wheel-message raised exception hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return False
         return True
 
@@ -686,7 +888,8 @@ class WindowCaptureService:
         return "keep_at_center"
 
     @staticmethod
-    def _send_mouse_input(flags: int, mouse_data: int = 0) -> bool:
+    def _send_mouse_input(flags: int, mouse_data: int = 0) -> tuple[bool, int]:
+        ctypes.set_last_error(0)
         input_event = INPUT()
         input_event.type = INPUT_MOUSE
         input_event.union.mi = MOUSEINPUT(
@@ -698,18 +901,23 @@ class WindowCaptureService:
             dwExtraInfo=ULONG_PTR(0),
         )
         sent = int(USER32.SendInput(1, ctypes.byref(input_event), ctypes.sizeof(INPUT)))
-        return sent == 1
+        error_code = int(ctypes.get_last_error())
+        return (sent == 1, error_code)
 
     @staticmethod
-    def _send_mouse_wheel_down() -> bool:
+    def _send_mouse_wheel_down() -> tuple[bool, int]:
         wheel_delta = ctypes.c_uint32((-WHEEL_DELTA) & 0xFFFFFFFF).value
         return WindowCaptureService._send_mouse_input(MOUSEEVENTF_WHEEL, wheel_delta)
 
     @staticmethod
-    def _send_mouse_left_click() -> bool:
-        down_ok = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTDOWN)
-        up_ok = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTUP)
-        return down_ok and up_ok
+    def _send_mouse_left_click() -> tuple[bool, int]:
+        down_ok, down_error = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTDOWN)
+        up_ok, up_error = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTUP)
+        if down_ok and up_ok:
+            return (True, 0)
+        if not down_ok:
+            return (False, down_error)
+        return (False, up_error)
 
     @staticmethod
     def _current_cursor_pos() -> tuple[int, int] | None:
@@ -730,8 +938,42 @@ class WindowCaptureService:
     def _move_cursor_to_window_center(self, hwnd: int) -> bool:
         center = self._window_center_point(hwnd)
         if center is None:
+            LOGGER.error(
+                "%s could not resolve window center for hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return False
-        return bool(USER32.SetCursorPos(center[0], center[1]))
+        moved = bool(USER32.SetCursorPos(center[0], center[1]))
+        actual = self._current_cursor_pos()
+        if not moved:
+            LOGGER.error(
+                "%s SetCursorPos failed target_center=%s error_code=%s",
+                self._session_prefix(),
+                center,
+                int(ctypes.get_last_error()),
+            )
+            return False
+        if actual is None:
+            LOGGER.error(
+                "%s GetCursorPos failed after SetCursorPos target_center=%s",
+                self._session_prefix(),
+                center,
+            )
+            return False
+        x_delta = abs(actual[0] - center[0])
+        y_delta = abs(actual[1] - center[1])
+        ok = x_delta <= CURSOR_VERIFY_TOLERANCE_PX and y_delta <= CURSOR_VERIFY_TOLERANCE_PX
+        LOGGER.debug(
+            "%s cursor-move target=%s actual=%s delta=(%s,%s) ok=%s",
+            self._session_prefix(),
+            center,
+            actual,
+            x_delta,
+            y_delta,
+            ok,
+        )
+        return ok
 
     @staticmethod
     def _is_blank_like(pixmap: QPixmap) -> bool:

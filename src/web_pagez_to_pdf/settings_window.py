@@ -28,10 +28,12 @@ from PySide6.QtWidgets import (
 
 from . import widget_naming
 from .scroll_capture import (
+    DEFAULT_CAPTURE_LOG_LEVEL,
     DEFAULT_CENTER_CLICK_ASSIST,
     DEFAULT_CURSOR_HOLD_MODE,
     DEFAULT_SCROLL_STRATEGY,
     DEFAULT_WHEEL_INJECTION_MODE,
+    normalize_capture_log_level,
 )
 
 
@@ -209,6 +211,16 @@ class SettingsWindow(QDialog):
             "capture cursor hold keep center restore each step",
             self.capture_cursor_hold_combo,
         )
+        self.capture_log_level_combo = QComboBox(self)
+        self.capture_log_level_combo.addItem("INFO", "INFO")
+        self.capture_log_level_combo.addItem("DEBUG", "DEBUG")
+        self._add_row(
+            capture_group,
+            "capture.log_level",
+            "Diagnostics Log Level",
+            "capture diagnostics log level info debug",
+            self.capture_log_level_combo,
+        )
         self.auto_pick_second_last_checkbox = QCheckBox(
             "Auto-target second last active window", self
         )
@@ -351,6 +363,12 @@ class SettingsWindow(QDialog):
             self.capture_cursor_hold_combo,
             str(values.get("capture.cursor_hold_mode", DEFAULT_CURSOR_HOLD_MODE)),
         )
+        self._set_combo_value(
+            self.capture_log_level_combo,
+            normalize_capture_log_level(
+                str(values.get("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
+            ),
+        )
         self.auto_pick_second_last_checkbox.setChecked(
             bool(values.get("capture.auto_pick_second_last", True))
         )
@@ -381,6 +399,9 @@ class SettingsWindow(QDialog):
             "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
             "capture.center_click_assist": str(self.capture_center_click_assist_combo.currentData()),
             "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),
+            "capture.log_level": normalize_capture_log_level(
+                str(self.capture_log_level_combo.currentData())
+            ),
             "capture.auto_pick_second_last": self.auto_pick_second_last_checkbox.isChecked(),
             "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
             "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),

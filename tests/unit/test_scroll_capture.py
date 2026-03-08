@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -28,7 +29,7 @@ class _FakeService:
         self.click_calls: list[str] = []
         self.pagedown_calls = 0
         self.wait_calls: list[int] = []
-        self.started_sessions: list[tuple[int, str]] = []
+        self.started_sessions: list[dict[str, str | int]] = []
         self.ended_sessions = 0
 
     @staticmethod
@@ -44,11 +45,38 @@ class _FakeService:
         target_hwnd: int,
         *,
         cursor_hold_mode: str = "keep_at_center",
+        session_id: str = "",
+        target_label: str = "",
+        target_process: str = "",
+        scroll_strategy: str = "",
+        capture_backend: str = "",
+        wheel_injection_mode: str = "",
+        center_click_assist: str = "",
     ) -> None:
-        self.started_sessions.append((target_hwnd, cursor_hold_mode))
+        self.started_sessions.append(
+            {
+                "target_hwnd": target_hwnd,
+                "cursor_hold_mode": cursor_hold_mode,
+                "session_id": session_id,
+                "target_label": target_label,
+                "target_process": target_process,
+                "scroll_strategy": scroll_strategy,
+                "capture_backend": capture_backend,
+                "wheel_injection_mode": wheel_injection_mode,
+                "center_click_assist": center_click_assist,
+            }
+        )
 
     def end_full_capture_input_session(self) -> None:
         self.ended_sessions += 1
+
+    @staticmethod
+    def window_title(hwnd: int) -> str:
+        return f"title-{hwnd}"
+
+    @staticmethod
+    def window_process_name(_hwnd: int) -> str:
+        return "browser.exe"
 
     def capture_window(
         self,
@@ -163,9 +191,9 @@ def test_run_full_capture_reports_repeat_after_full_ladder(monkeypatch) -> None:
     )
 
     assert result.captured_frames == 1
-    assert result.stop_reason == "repeat_detected"
+    assert result.stop_reason == "capture_failed"
     assert service.pagedown_calls == 1
-    assert progress[-1].stop_reason == "repeat_detected"
+    assert progress[-1].stop_reason == "capture_failed"
     assert progress[-1].scroll_method == "pagedown"
 
 
@@ -192,8 +220,68 @@ def test_run_full_capture_starts_and_ends_cursor_session(monkeypatch) -> None:
 
     assert result.captured_frames == 1
     assert result.stop_reason == "user_stop"
-    assert service.started_sessions == [(4242, "restore_each_step")]
+    assert len(service.started_sessions) == 1
+    assert service.started_sessions[0]["target_hwnd"] == 4242
+    assert service.started_sessions[0]["cursor_hold_mode"] == "restore_each_step"
+    assert str(service.started_sessions[0]["session_id"]) != ""
     assert service.ended_sessions == 1
     assert service.wheel_calls == []
     assert service.click_calls == []
     assert service.pagedown_calls == 0
+
+
+def test_run_full_capture_logs_movement_probe_verdicts(monkeypatch, caplog) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img_a = Image.new("RGB", (8, 8), "red")
+    img_b = Image.new("RGB", (8, 8), "blue")
+    service = _FakeService(
+        captures=[
+            (img_a, "screen_region_gdi"),
+            (img_a, "screen_region_gdi"),
+            (img_a, "screen_region_gdi"),
+            (img_b, "screen_region_gdi"),
+        ],
+    )
+    caplog.set_level(logging.DEBUG, logger=scroll_capture.CAPTURE_LOGGER_NAME)
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(max_capture_pages=2),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert any(
+        "fallback=click_center_then_wheel" in record.message for record in caplog.records
+    )
+    assert any(
+        "movement probe verdict=moved" in record.message for record in caplog.records
+    )
+
+
+def test_capture_logger_info_suppresses_debug(monkeypatch, caplog) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    logger = logging.getLogger(scroll_capture.CAPTURE_LOGGER_NAME)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        img = Image.new("RGB", (8, 8), "red")
+        service = _FakeService(captures=[(img, "screen_region_gdi")])
+        calls = {"count": 0}
+
+        def _stop_requested() -> bool:
+            calls["count"] += 1
+            return calls["count"] >= 1
+
+        caplog.set_level(logging.DEBUG, logger=scroll_capture.CAPTURE_LOGGER_NAME)
+        scroll_capture.run_full_page_capture(
+            service=service,
+            target_hwnd=4242,
+            options=scroll_capture.ScrollCaptureOptions(max_capture_pages=5),
+            stop_requested=_stop_requested,
+        )
+    finally:
+        logger.setLevel(old_level)
+
+    assert any(record.levelno == logging.INFO for record in caplog.records)
+    assert not any(record.levelno == logging.DEBUG for record in caplog.records)
