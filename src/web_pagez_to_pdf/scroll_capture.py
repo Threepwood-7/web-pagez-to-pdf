@@ -62,6 +62,7 @@ class ScrollCaptureOptions:
     cursor_hold_mode: str = DEFAULT_CURSOR_HOLD_MODE
     frame_region: str = DEFAULT_CAPTURE_FRAME_REGION
     include_mouse_cursor: bool = False
+    scroll_to_top_on_full: bool = True
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -133,10 +134,11 @@ def run_full_page_capture(
     cursor_hold_mode = _normalize_cursor_hold_mode(options.cursor_hold_mode)
     frame_region = _normalize_frame_region(options.frame_region)
     include_mouse_cursor = bool(options.include_mouse_cursor)
+    scroll_to_top_on_full = bool(options.scroll_to_top_on_full)
     LOGGER.info(
         "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
         "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s include_mouse_cursor=%s "
-        "max_pages=%s delay_ms=%s",
+        "scroll_to_top=%s max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
@@ -147,6 +149,7 @@ def run_full_page_capture(
         cursor_hold_mode,
         frame_region,
         include_mouse_cursor,
+        scroll_to_top_on_full,
         max_pages,
         delay_ms,
     )
@@ -163,6 +166,14 @@ def run_full_page_capture(
         center_click_assist=scroll_mode,
     )
     try:
+        if scroll_to_top_on_full:
+            _run_scroll_to_top_preflight(
+                service=service,
+                target_hwnd=target_hwnd,
+                session_id=session_id,
+                wheel_mode=wheel_mode,
+                cursor_hold_mode=cursor_hold_mode,
+            )
         first_frame, first_backend = _capture_frame(
             service,
             target_hwnd,
@@ -626,6 +637,46 @@ def _capture_after_scroll_ladder(
         movement_detected=False,
         probe_exhausted=scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"},
     )
+
+
+def _run_scroll_to_top_preflight(
+    *,
+    service: WindowCaptureService,
+    target_hwnd: int,
+    session_id: str,
+    wheel_mode: str,
+    cursor_hold_mode: str,
+) -> None:
+    focused, reason = service.ensure_window_foreground(target_hwnd)
+    LOGGER.info(
+        "[capture-session:%s] scroll-to-top preflight focus_ok=%s reason=%s",
+        session_id,
+        focused,
+        reason or "",
+    )
+    if not focused:
+        LOGGER.warning(
+            "[capture-session:%s] scroll-to-top preflight skipped due to focus failure",
+            session_id,
+        )
+        return
+    wheel_ok = service.wheel_up_at_window_center(
+        target_hwnd,
+        wheel_injection_mode=wheel_mode,
+        cursor_hold_mode=cursor_hold_mode,
+    )
+    home_sent = service.send_home()
+    LOGGER.info(
+        "[capture-session:%s] scroll-to-top preflight wheel_up_ok=%s home_sent=%s",
+        session_id,
+        wheel_ok,
+        home_sent,
+    )
+    if not wheel_ok or not home_sent:
+        LOGGER.warning(
+            "[capture-session:%s] scroll-to-top preflight partial failure (non-fatal)",
+            session_id,
+        )
 
 
 def _capture_frame(

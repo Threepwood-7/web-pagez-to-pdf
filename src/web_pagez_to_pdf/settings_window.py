@@ -178,6 +178,17 @@ class SettingsWindow(QDialog):
             "capture full scroll mode wheel click pagedown",
             self.capture_scroll_mode_combo,
         )
+        self.capture_scroll_to_top_checkbox = QCheckBox(
+            "Scroll to Top before full capture",
+            self,
+        )
+        self._add_row(
+            capture_group,
+            "capture.scroll_to_top_on_full",
+            "Scroll To Top",
+            "capture scroll to top before full capture wheel up home",
+            self.capture_scroll_to_top_checkbox,
+        )
         self.capture_frame_region_combo = QComboBox(self)
         self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
         self.capture_frame_region_combo.addItem("Full Window (Border + Title Bar)", "full_window")
@@ -352,6 +363,9 @@ class SettingsWindow(QDialog):
             self.capture_scroll_mode_combo,
             str(values.get("capture.scroll_mode", DEFAULT_SCROLL_MODE)),
         )
+        self.capture_scroll_to_top_checkbox.setChecked(
+            bool(values.get("capture.scroll_to_top_on_full", True))
+        )
         self._set_combo_value(
             self.capture_frame_region_combo,
             str(values.get("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)),
@@ -397,6 +411,7 @@ class SettingsWindow(QDialog):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.scroll_mode": self._scroll_mode_value(),
+            "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
             "capture.frame_region": self._frame_region_value(),
             "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
             "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),

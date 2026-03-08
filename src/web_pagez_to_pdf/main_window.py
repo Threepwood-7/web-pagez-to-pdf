@@ -95,6 +95,7 @@ BROWSER_PROCESS_PRIORITY = (
     "vivaldi.exe",
     "arc.exe",
 )
+DEFAULT_SCROLL_TO_TOP_ON_FULL = True
 CAPTURE_UI_LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
@@ -352,6 +353,12 @@ class MainWindow(QMainWindow):
             "capture_include_mouse_checkbox",
             "capture_include_mouse_checkbox",
         )
+        self.capture_scroll_to_top_checkbox = QCheckBox("Scroll to Top before full capture")
+        self._assign_control_identity(
+            self.capture_scroll_to_top_checkbox,
+            "capture_scroll_to_top_checkbox",
+            "capture_scroll_to_top_checkbox",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
@@ -360,15 +367,16 @@ class MainWindow(QMainWindow):
         cap_grid.addWidget(self.capture_backend_combo, 2, 1)
         cap_grid.addWidget(QLabel("Scroll mode"), 3, 0)
         cap_grid.addWidget(self.capture_scroll_mode_combo, 3, 1)
-        cap_grid.addWidget(QLabel("Frame region"), 4, 0)
-        cap_grid.addWidget(self.capture_frame_region_combo, 4, 1)
-        cap_grid.addWidget(QLabel("Wheel injection"), 5, 0)
-        cap_grid.addWidget(self.capture_wheel_injection_combo, 5, 1)
-        cap_grid.addWidget(QLabel("Cursor hold"), 6, 0)
-        cap_grid.addWidget(self.capture_cursor_hold_combo, 6, 1)
-        cap_grid.addWidget(QLabel("Diagnostics log level"), 7, 0)
-        cap_grid.addWidget(self.capture_log_level_combo, 7, 1)
-        cap_grid.addWidget(self.capture_include_mouse_checkbox, 8, 0, 1, 2)
+        cap_grid.addWidget(self.capture_scroll_to_top_checkbox, 4, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Frame region"), 5, 0)
+        cap_grid.addWidget(self.capture_frame_region_combo, 5, 1)
+        cap_grid.addWidget(QLabel("Wheel injection"), 6, 0)
+        cap_grid.addWidget(self.capture_wheel_injection_combo, 6, 1)
+        cap_grid.addWidget(QLabel("Cursor hold"), 7, 0)
+        cap_grid.addWidget(self.capture_cursor_hold_combo, 7, 1)
+        cap_grid.addWidget(QLabel("Diagnostics log level"), 8, 0)
+        cap_grid.addWidget(self.capture_log_level_combo, 8, 1)
+        cap_grid.addWidget(self.capture_include_mouse_checkbox, 9, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addWidget(QLabel("Capture Log"))
@@ -581,6 +589,7 @@ class MainWindow(QMainWindow):
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
         self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
         self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
+        self.capture_scroll_to_top_checkbox.toggled.connect(self._persist_capture_scroll_to_top_on_full)
         self.capture_wheel_injection_combo.currentIndexChanged.connect(
             self._persist_capture_wheel_injection_mode
         )
@@ -659,6 +668,7 @@ class MainWindow(QMainWindow):
             "capture.scroll_mode": str(
                 self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
             ),
+            "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
             "capture.frame_region": str(
                 self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION
             ),
@@ -696,6 +706,9 @@ class MainWindow(QMainWindow):
         self._set_capture_backend_combo(backend)
         scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
         self._set_scroll_mode_combo(scroll_mode)
+        self.capture_scroll_to_top_checkbox.setChecked(
+            self._bool_setting("capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL)
+        )
         frame_region = str(
             self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
         )
@@ -836,6 +849,15 @@ class MainWindow(QMainWindow):
 
     def _capture_include_mouse_cursor(self) -> bool:
         return bool(self.capture_include_mouse_checkbox.isChecked())
+
+    def _capture_scroll_to_top_on_full(self) -> bool:
+        return bool(self.capture_scroll_to_top_checkbox.isChecked())
+
+    def _persist_capture_scroll_to_top_on_full(self) -> None:
+        self._settings.setValue(
+            "capture.scroll_to_top_on_full",
+            self._capture_scroll_to_top_on_full(),
+        )
 
     def _persist_capture_include_mouse_cursor(self) -> None:
         self._settings.setValue(
@@ -1145,7 +1167,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
@@ -1154,6 +1176,7 @@ class MainWindow(QMainWindow):
             self._capture_cursor_hold_mode(),
             self._capture_frame_region(),
             self._capture_include_mouse_cursor(),
+            self._capture_scroll_to_top_on_full(),
         )
         effective_wheel_mode = self._capture_wheel_injection_mode()
         if effective_wheel_mode == "legacy_message_wheel":
@@ -1192,6 +1215,7 @@ class MainWindow(QMainWindow):
                 cursor_hold_mode=self._capture_cursor_hold_mode(),
                 frame_region=self._capture_frame_region(),
                 include_mouse_cursor=self._capture_include_mouse_cursor(),
+                scroll_to_top_on_full=self._capture_scroll_to_top_on_full(),
             ),
             stop_event=self._stop_event,
         )
@@ -1210,7 +1234,8 @@ class MainWindow(QMainWindow):
             f"wheel={self._capture_wheel_injection_mode()}, "
             f"cursor={self._capture_cursor_hold_mode()}, "
             f"frame_region={self._capture_frame_region()}, "
-            f"include_cursor={self._capture_include_mouse_cursor()})."
+            f"include_cursor={self._capture_include_mouse_cursor()}, "
+            f"scroll_to_top={self._capture_scroll_to_top_on_full()})."
         )
         try:
             CAPTURE_UI_LOGGER.info("full capture show stop overlay")

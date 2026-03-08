@@ -26,8 +26,10 @@ class _FakeService:
         self._wheel_success = wheel_success[:] if wheel_success is not None else []
         self._click_success = click_success
         self.wheel_calls: list[tuple[str, str]] = []
+        self.wheel_up_calls: list[tuple[str, str]] = []
         self.click_calls: list[str] = []
         self.pagedown_calls = 0
+        self.home_calls = 0
         self.wait_calls: list[int] = []
         self.started_sessions: list[dict[str, str | int]] = []
         self.ended_sessions = 0
@@ -105,6 +107,16 @@ class _FakeService:
             return bool(self._wheel_success.pop(0))
         return True
 
+    def wheel_up_at_window_center(
+        self,
+        _hwnd: int,
+        *,
+        wheel_injection_mode: str = "physical_center_sendinput",
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> bool:
+        self.wheel_up_calls.append((wheel_injection_mode, cursor_hold_mode))
+        return True
+
     def click_window_center(
         self,
         _hwnd: int,
@@ -116,6 +128,10 @@ class _FakeService:
 
     def send_page_down(self) -> None:
         self.pagedown_calls += 1
+
+    def send_home(self) -> bool:
+        self.home_calls += 1
+        return True
 
     def wait_after_scroll(self, delay_ms: int) -> None:
         self.wait_calls.append(delay_ms)
@@ -396,3 +412,53 @@ def test_frame_region_and_cursor_options_passed_to_capture_window(monkeypatch) -
 
     assert service.capture_calls
     assert service.capture_calls[0] == ("full_window", True)
+
+
+def test_scroll_to_top_preflight_runs_when_enabled(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img = Image.new("RGB", (8, 8), "red")
+    service = _FakeService(captures=[(img, "screen_region_gdi")])
+
+    calls = {"count": 0}
+
+    def _stop_requested() -> bool:
+        calls["count"] += 1
+        return calls["count"] >= 1
+
+    scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=5,
+            scroll_to_top_on_full=True,
+        ),
+        stop_requested=_stop_requested,
+    )
+
+    assert len(service.wheel_up_calls) == 1
+    assert service.home_calls == 1
+
+
+def test_scroll_to_top_preflight_skipped_when_disabled(monkeypatch) -> None:
+    _monkeypatch_image_pipeline(monkeypatch)
+    img = Image.new("RGB", (8, 8), "red")
+    service = _FakeService(captures=[(img, "screen_region_gdi")])
+
+    calls = {"count": 0}
+
+    def _stop_requested() -> bool:
+        calls["count"] += 1
+        return calls["count"] >= 1
+
+    scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=5,
+            scroll_to_top_on_full=False,
+        ),
+        stop_requested=_stop_requested,
+    )
+
+    assert len(service.wheel_up_calls) == 0
+    assert service.home_calls == 0

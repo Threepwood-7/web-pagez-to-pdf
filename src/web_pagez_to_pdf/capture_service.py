@@ -20,6 +20,7 @@ GW_HWNDPREV = 3
 HISTORY_LIMIT = 80
 MAX_Z_ORDER_HOPS = 96
 VK_NEXT = 0x22
+VK_HOME = 0x24
 KEYEVENTF_KEYUP = 0x0002
 WM_MOUSEWHEEL = 0x020A
 WHEEL_DELTA = 120
@@ -358,6 +359,19 @@ class WindowCaptureService:
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
         LOGGER.debug("page_down injected via keybd_event")
 
+    @staticmethod
+    def send_home() -> bool:
+        """Emit a Home keyboard event to the current foreground window."""
+
+        try:
+            USER32.keybd_event(VK_HOME, 0, 0, 0)
+            USER32.keybd_event(VK_HOME, 0, KEYEVENTF_KEYUP, 0)
+            LOGGER.debug("home injected via keybd_event")
+            return True
+        except Exception:
+            LOGGER.exception("home injection failed")
+            return False
+
     def start_full_capture_input_session(
         self,
         target_hwnd: int,
@@ -434,16 +448,51 @@ class WindowCaptureService:
     ) -> bool:
         """Move cursor to target center and emit WheelDown via selected backend."""
 
+        return self._wheel_at_window_center(
+            hwnd,
+            direction="down",
+            wheel_injection_mode=wheel_injection_mode,
+            cursor_hold_mode=cursor_hold_mode,
+        )
+
+    def wheel_up_at_window_center(
+        self,
+        hwnd: int,
+        *,
+        wheel_injection_mode: str = "physical_center_sendinput",
+        cursor_hold_mode: str = "keep_at_center",
+    ) -> bool:
+        """Move cursor to target center and emit WheelUp via selected backend."""
+
+        return self._wheel_at_window_center(
+            hwnd,
+            direction="up",
+            wheel_injection_mode=wheel_injection_mode,
+            cursor_hold_mode=cursor_hold_mode,
+        )
+
+    def _wheel_at_window_center(
+        self,
+        hwnd: int,
+        *,
+        direction: str,
+        wheel_injection_mode: str,
+        cursor_hold_mode: str,
+    ) -> bool:
+        """Move cursor to target center and emit wheel input in chosen direction."""
+
         normalized_mode = self._normalize_wheel_injection_mode(wheel_injection_mode)
         hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
         original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+        normalized_direction = "up" if str(direction).strip().lower() == "up" else "down"
 
         if normalized_mode == "legacy_message_wheel":
-            ok = self._scroll_with_wheel_message(hwnd)
+            ok = self._scroll_with_wheel_message(hwnd, direction=normalized_direction)
             if not ok:
                 LOGGER.error(
-                    "%s wheel-message failed %s",
+                    "%s wheel-message failed direction=%s %s",
                     self._session_prefix(),
+                    normalized_direction,
                     self._capture_session_target or f"hwnd={hwnd}",
                 )
         else:
@@ -455,25 +504,31 @@ class WindowCaptureService:
                     self._capture_session_target or f"hwnd={hwnd}",
                 )
                 return False
-            ok, error_code = self._send_mouse_wheel_down()
+            if normalized_direction == "up":
+                ok, error_code = self._send_mouse_wheel_up()
+            else:
+                ok, error_code = self._send_mouse_wheel_down()
             if not ok:
                 LOGGER.error(
-                    "%s SendInput wheel failed error_code=%s",
+                    "%s SendInput wheel failed direction=%s error_code=%s",
                     self._session_prefix(),
+                    normalized_direction,
                     error_code,
                 )
             else:
                 LOGGER.debug(
-                    "%s SendInput wheel success cursor=%s",
+                    "%s SendInput wheel success direction=%s cursor=%s",
                     self._session_prefix(),
+                    normalized_direction,
                     self._current_cursor_pos(),
                 )
 
         if hold_mode == "restore_each_step" and original_pos is not None:
             USER32.SetCursorPos(original_pos[0], original_pos[1])
             LOGGER.debug(
-                "%s cursor restored after wheel step=%s",
+                "%s cursor restored after wheel direction=%s step=%s",
                 self._session_prefix(),
+                normalized_direction,
                 original_pos,
             )
         return ok
@@ -1089,7 +1144,7 @@ class WindowCaptureService:
                 if color_bmp:
                     win32gui.DeleteObject(color_bmp)
 
-    def _scroll_with_wheel_message(self, hwnd: int) -> bool:
+    def _scroll_with_wheel_message(self, hwnd: int, *, direction: str = "down") -> bool:
         rect = self._window_rect(hwnd)
         if rect is None:
             LOGGER.error(
@@ -1104,7 +1159,9 @@ class WindowCaptureService:
         wheel_target = self.window_from_point(x_pos, y_pos) or hwnd
         if wheel_target <= 0:
             wheel_target = hwnd
-        wheel_delta = (-WHEEL_DELTA) & 0xFFFF
+        normalized_direction = "up" if str(direction).strip().lower() == "up" else "down"
+        signed_delta = WHEEL_DELTA if normalized_direction == "up" else -WHEEL_DELTA
+        wheel_delta = signed_delta & 0xFFFF
         wparam = (wheel_delta << 16) | 0
         lparam = ((y_pos & 0xFFFF) << 16) | (x_pos & 0xFFFF)
         try:
@@ -1112,8 +1169,9 @@ class WindowCaptureService:
             if wheel_target != hwnd:
                 USER32.SendMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam)
             LOGGER.debug(
-                "%s wheel-message sent target=%s cursor_point=(%s,%s)",
+                "%s wheel-message sent direction=%s target=%s cursor_point=(%s,%s)",
                 self._session_prefix(),
+                normalized_direction,
                 wheel_target,
                 x_pos,
                 y_pos,
@@ -1168,6 +1226,11 @@ class WindowCaptureService:
     @staticmethod
     def _send_mouse_wheel_down() -> tuple[bool, int]:
         wheel_delta = ctypes.c_uint32((-WHEEL_DELTA) & 0xFFFFFFFF).value
+        return WindowCaptureService._send_mouse_input(MOUSEEVENTF_WHEEL, wheel_delta)
+
+    @staticmethod
+    def _send_mouse_wheel_up() -> tuple[bool, int]:
+        wheel_delta = ctypes.c_uint32(WHEEL_DELTA & 0xFFFFFFFF).value
         return WindowCaptureService._send_mouse_input(MOUSEEVENTF_WHEEL, wheel_delta)
 
     @staticmethod
