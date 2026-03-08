@@ -1158,22 +1158,37 @@ class MainWindow(QMainWindow):
             f"wheel={self._capture_wheel_injection_mode()}, click_assist={self._capture_center_click_assist()}, "
             f"cursor={self._capture_cursor_hold_mode()})."
         )
-        self._stop_overlay.show_top_right()
         try:
-            CAPTURE_UI_LOGGER.info("full capture worker start() call hwnd=%s", self._selected_target.hwnd)
+            CAPTURE_UI_LOGGER.info("full capture show stop overlay")
+            self._stop_overlay.show_top_right()
+            CAPTURE_UI_LOGGER.info(
+                "full capture worker start() call hwnd=%s",
+                self._selected_target.hwnd,
+            )
             self._capture_worker.start()
+            running_now = self._capture_worker.isRunning()
+            CAPTURE_UI_LOGGER.info(
+                "full capture worker start returned isRunning=%s",
+                running_now,
+            )
+            if not running_now:
+                CAPTURE_UI_LOGGER.error(
+                    "full capture worker did not start; falling back to inline run()"
+                )
+                self._append_capture_log(
+                    "Worker thread did not start; falling back to inline capture run."
+                )
+                self._capture_worker.run()
+                self._full_capture_finished()
+                return
+            QTimer.singleShot(400, self._probe_full_capture_worker_state)
         except Exception:  # pragma: no cover
-            CAPTURE_UI_LOGGER.exception("full capture worker start failed")
-            self._append_capture_log("Failed to start full capture worker thread.")
-            self.status_label.setText("Full capture failed to start worker.")
+            CAPTURE_UI_LOGGER.exception("full capture launch failed before worker run")
+            self._append_capture_log("Full capture launch failed before worker start.")
+            self.status_label.setText("Full capture launch failed.")
             self._stop_overlay.hide()
             self._capture_worker = None
             return
-        CAPTURE_UI_LOGGER.info(
-            "full capture worker start returned isRunning=%s",
-            self._capture_worker.isRunning(),
-        )
-        QTimer.singleShot(400, self._probe_full_capture_worker_state)
         self.status_label.setText("Full capture running. Hover red stop badge or press Ctrl+Shift+X.")
 
     def _request_stop(self) -> None:
