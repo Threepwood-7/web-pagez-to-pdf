@@ -1,6 +1,6 @@
 # web-pagez-to-pdf
 
-Windows-first PySide app for capturing the second last active window to PNG.
+Windows-first PySide app for browser-window capture, full-page scroll stitching, and multi-format document export.
 
 ## Table of Contents
 
@@ -20,9 +20,26 @@ Windows-first PySide app for capturing the second last active window to PNG.
 
 ## Features
 
-- Captures the second last active window screenshot to PNG.
-- Supports both button trigger and `Ctrl+Shift+S` shortcut.
-- Automatically opens the saved PNG in the default image viewer.
+- Select capture targets using a window list picker or crosshair picker.
+- Global shortcuts:
+  - `Ctrl+Shift+C` capture selected viewport
+  - `Ctrl+Shift+S` full-page auto-scroll capture
+  - `Ctrl+Shift+X` stop active full capture
+- Floating always-on-top stop badge: hovering mouse over it requests stop.
+- Full-page capture includes repeated-frame end detection and max-page safety cap.
+- Session queue supports import, reorder, remove, combine export mode, and single-item mode.
+- Editor controls include zoom, rotate, crop, split markers, and navigation auto-crop suggestion.
+- Export targets in one run:
+  - PDF
+  - Paged PNG images (`..._p001.png`, `..._p002.png`, ...)
+  - Long PNG
+  - Multipage TIFF
+  - DOCX
+  - PPTX
+- Pro print controls:
+  - full paper set, orientation, margins, gutter
+  - blank-row split threshold/search window
+  - rich header/footer templates with tokens
 - Runtime configuration path support through `threep-commons`.
 
 ## Requirements
@@ -60,6 +77,14 @@ pyw scripts\windows\run_app_gui.pyw
 ```bat
 python -m web_pagez_to_pdf
 ```
+
+### Typical Workflow
+
+1. Pick a browser target window (list or crosshair).
+2. Capture viewport (`Ctrl+Shift+C`) or full scroll (`Ctrl+Shift+S`).
+3. Optional: hover red stop badge or press `Ctrl+Shift+X` to stop long capture.
+4. Refine image in editor controls (crop/splits/zoom/rotate).
+5. Select output formats and export.
 
 ## Configuration
 
@@ -143,7 +168,8 @@ hatch build
 
 ## Troubleshooting
 
-- If capture fails, ensure there is another visible, non-minimized app window active before returning to this app.
+- For full-scroll capture, ensure selected target is a visible browser window and can receive PageDown input.
+- If capture does not stop on page end soon enough, lower `max_capture_pages` or use `Ctrl+Shift+X`.
 
 ---
 
