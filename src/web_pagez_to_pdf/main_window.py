@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageQt
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtCore import QEvent, QSettings, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,7 +39,11 @@ from PySide6.QtWidgets import (
 from threep_commons.paths import resolve_app_data_dir
 
 from . import widget_naming
-from .capture_service import WindowCaptureService
+from .capture_service import (
+    CAPTURE_BACKENDS,
+    DEFAULT_CAPTURE_BACKEND,
+    WindowCaptureService,
+)
 from .constants import APP_DISPLAY_NAME, APP_IDENTITY
 from .exporters import run_export, sanitize_basename
 from .hotkeys import GlobalHotkeyPoller
@@ -118,6 +122,8 @@ class MainWindow(QMainWindow):
         self._settings_window: SettingsWindow | None = None
         self._editor_sync_guard = False
         self._format_sync_guard = False
+        self._editor_zoom_mode = "fit_height"
+        self._editor_manual_zoom_percent = 100
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -145,6 +151,7 @@ class MainWindow(QMainWindow):
         self.pick_crosshair_button = QPushButton("Crosshair")
         self.capture_button = QPushButton("Capture (Ctrl+Shift+C)")
         self.capture_full_button = QPushButton("Capture Full (Ctrl+Shift+S)")
+        self.capture_last_selected_button = QPushButton("Capture Last Selected Window")
         self.stop_button = QPushButton("Stop (Ctrl+Shift+X)")
         self.import_button = QPushButton("Import")
         for widget, control in (
@@ -153,6 +160,7 @@ class MainWindow(QMainWindow):
             (self.pick_crosshair_button, "pick_crosshair_button"),
             (self.capture_button, "capture_button"),
             (self.capture_full_button, "capture_full_button"),
+            (self.capture_last_selected_button, "capture_last_selected_button"),
             (self.stop_button, "stop_button"),
             (self.import_button, "import_button"),
         ):
@@ -162,6 +170,7 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.pick_crosshair_button)
         top_row.addWidget(self.capture_button)
         top_row.addWidget(self.capture_full_button)
+        top_row.addWidget(self.capture_last_selected_button)
         top_row.addWidget(self.stop_button)
         top_row.addWidget(self.import_button)
         self.quick_pdf_checkbox = QCheckBox("PDF")
@@ -208,11 +217,22 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.queue_summary_label)
         right = QWidget(split)
         right_layout = QVBoxLayout(right)
-        self.capture_advanced_group, cap_adv_layout = self._new_collapsible_group(
-            "Advanced Capture",
-            expanded=not self._bool_setting("ui.capture_adv_collapsed", True),
-            parent=right,
+        right_layout.addWidget(QLabel("Latest / Selected Thumbnail"))
+        self.capture_tab_preview_label = QLabel("No capture selected", right)
+        self.capture_tab_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.capture_tab_preview_label.setMinimumHeight(220)
+        self.capture_tab_preview_label.setStyleSheet(
+            "border: 1px solid rgba(130,130,130,0.6); background: rgba(20,20,20,0.05);"
         )
+        self._assign_control_identity(
+            self.capture_tab_preview_label,
+            "capture_tab_preview_label",
+            "capture_tab_preview_label",
+        )
+        right_layout.addWidget(self.capture_tab_preview_label)
+
+        self.capture_advanced_group = QGroupBox("Advanced Capture", right)
+        cap_adv_layout = QVBoxLayout(self.capture_advanced_group)
         cap_grid = QGridLayout()
         self.max_pages_spin = QSpinBox()
         self.max_pages_spin.setRange(2, 300)
@@ -222,12 +242,23 @@ class MainWindow(QMainWindow):
         self.capture_delay_spin.setSuffix(" ms")
         self.auto_target_checkbox = QCheckBox("Auto-pick second last active window")
         self.pick_second_last_button = QPushButton("Use Second Last Target")
+        self.capture_backend_combo = QComboBox()
+        self.capture_backend_combo.addItem("Screen Region (GDI)", "screen_region_gdi")
+        self.capture_backend_combo.addItem("Qt grabWindow", "qt_grab_window")
+        self.capture_backend_combo.addItem("PrintWindow", "print_window")
+        self._assign_control_identity(
+            self.capture_backend_combo,
+            "capture_backend_combo",
+            "capture_backend_combo",
+        )
         cap_grid.addWidget(QLabel("Max pages"), 0, 0)
         cap_grid.addWidget(self.max_pages_spin, 0, 1)
         cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
         cap_grid.addWidget(self.capture_delay_spin, 1, 1)
-        cap_grid.addWidget(self.auto_target_checkbox, 2, 0, 1, 2)
-        cap_grid.addWidget(self.pick_second_last_button, 3, 0, 1, 2)
+        cap_grid.addWidget(QLabel("Capture backend"), 2, 0)
+        cap_grid.addWidget(self.capture_backend_combo, 2, 1)
+        cap_grid.addWidget(self.auto_target_checkbox, 3, 0, 1, 2)
+        cap_grid.addWidget(self.pick_second_last_button, 4, 0, 1, 2)
         cap_adv_layout.addLayout(cap_grid)
         right_layout.addWidget(self.capture_advanced_group)
         right_layout.addStretch(1)
@@ -244,6 +275,32 @@ class MainWindow(QMainWindow):
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_scroll.setWidget(self.preview_label)
         editor_layout.addWidget(self.preview_scroll, stretch=1)
+        self.preview_scroll.viewport().installEventFilter(self)
+
+        zoom_row = QHBoxLayout()
+        self.zoom_fit_height_button = QPushButton("Fit Height")
+        self.zoom_fit_width_button = QPushButton("Fit Width")
+        self.zoom_100_button = QPushButton("100%")
+        self.zoom_out_button = QPushButton("-")
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_status_label = QLabel("Fit Height")
+        for widget, control in (
+            (self.zoom_fit_height_button, "zoom_fit_height_button"),
+            (self.zoom_fit_width_button, "zoom_fit_width_button"),
+            (self.zoom_100_button, "zoom_100_button"),
+            (self.zoom_out_button, "zoom_out_button"),
+            (self.zoom_in_button, "zoom_in_button"),
+            (self.zoom_status_label, "zoom_status_label"),
+        ):
+            self._assign_control_identity(widget, control, control)
+        zoom_row.addWidget(self.zoom_fit_height_button)
+        zoom_row.addWidget(self.zoom_fit_width_button)
+        zoom_row.addWidget(self.zoom_100_button)
+        zoom_row.addWidget(self.zoom_out_button)
+        zoom_row.addWidget(self.zoom_in_button)
+        zoom_row.addWidget(self.zoom_status_label, 1)
+        editor_layout.addLayout(zoom_row)
+
         form = QFormLayout()
         self.zoom_spin = QDoubleSpinBox()
         self.zoom_spin.setRange(10.0, 400.0)
@@ -332,9 +389,7 @@ class MainWindow(QMainWindow):
         self.header_input = QTextEdit()
         self.footer_input = QTextEdit()
         self.export_button = QPushButton("Export")
-        self.status_label = QLabel("Ready.")
         self._assign_control_identity(self.export_button, "export_button", "export_button")
-        self._assign_control_identity(self.status_label, "status_label", "status_label")
 
         export_grid.addWidget(self.combine_checkbox, 0, 0)
         export_grid.addWidget(self.pdf_checkbox, 0, 1)
@@ -378,6 +433,7 @@ class MainWindow(QMainWindow):
         self.pick_list_button.clicked.connect(self._pick_window_from_list)
         self.pick_crosshair_button.clicked.connect(self._pick_window_crosshair)
         self.pick_second_last_button.clicked.connect(self._pick_second_last_window)
+        self.capture_last_selected_button.clicked.connect(self._capture_last_selected_window)
         self.capture_button.clicked.connect(self._capture_selected_viewport)
         self.capture_full_button.clicked.connect(self._capture_full_scroll)
         self.stop_button.clicked.connect(self._request_stop)
@@ -398,6 +454,12 @@ class MainWindow(QMainWindow):
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
+        self.zoom_fit_height_button.clicked.connect(lambda: self._set_editor_zoom_mode("fit_height"))
+        self.zoom_fit_width_button.clicked.connect(lambda: self._set_editor_zoom_mode("fit_width"))
+        self.zoom_100_button.clicked.connect(lambda: self._set_editor_zoom_mode("manual", 100))
+        self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
+        self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
+        self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
         for checkbox in (
             self.pdf_checkbox,
             self.paged_images_checkbox,
@@ -422,6 +484,17 @@ class MainWindow(QMainWindow):
         self._stop_overlay.stop_requested.connect(self._request_stop)
 
     def _build_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("File")
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcuts(
+            [
+                QKeySequence("Ctrl+Q"),
+                QKeySequence("Alt+X"),
+            ]
+        )
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
         view_menu = self.menuBar().addMenu("View")
         settings_action = QAction("Settings", self)
         settings_action.setShortcut("Ctrl+,")
@@ -450,6 +523,7 @@ class MainWindow(QMainWindow):
             "capture.max_pages": int(self.max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.auto_pick_second_last": self.auto_target_checkbox.isChecked(),
+            "capture.backend_primary": str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND),
             "editor.auto_open_mini": self._bool_setting("editor.auto_open_mini", False),
             "editor.show_grid": self._bool_setting("editor.show_grid", False),
             "export.output_dir": self.output_input.text().strip(),
@@ -463,7 +537,6 @@ class MainWindow(QMainWindow):
             "export.pptx": self.pptx_checkbox.isChecked(),
             "export.docx_mode": str(self.docx_mode_combo.currentData()),
             "ui.start_tab": ["capture", "editor", "export"][self.tabs.currentIndex()],
-            "ui.capture_adv_collapsed": not self.capture_advanced_group.isChecked(),
             "ui.editor_adv_collapsed": not self.editor_advanced_group.isChecked(),
             "ui.export_adv_collapsed": not self.export_advanced_group.isChecked(),
         }
@@ -472,6 +545,8 @@ class MainWindow(QMainWindow):
         self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 18)))
         self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 380)))
         self.auto_target_checkbox.setChecked(self._bool_setting("capture.auto_pick_second_last", True))
+        backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
+        self._set_capture_backend_combo(backend)
         self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
         self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
         self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
@@ -490,10 +565,10 @@ class MainWindow(QMainWindow):
             self.output_input.setText(output_dir)
         tab_name = str(self._settings.value("ui.start_tab", "capture"))
         self.tabs.setCurrentIndex({"capture": 0, "editor": 1, "export": 2}.get(tab_name, 0))
-        self.capture_advanced_group.setChecked(not self._bool_setting("ui.capture_adv_collapsed", True))
         self.editor_advanced_group.setChecked(not self._bool_setting("ui.editor_adv_collapsed", True))
         self.export_advanced_group.setChecked(not self._bool_setting("ui.export_adv_collapsed", True))
         self._sync_quick_formats_from_main()
+        self._set_editor_zoom_mode("fit_height")
 
     @staticmethod
     def _row_widget(widgets: list[QWidget]) -> QWidget:
@@ -526,6 +601,25 @@ class MainWindow(QMainWindow):
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _set_capture_backend_combo(self, backend: str) -> None:
+        normalized = str(backend or "").strip().lower()
+        if normalized not in CAPTURE_BACKENDS:
+            normalized = DEFAULT_CAPTURE_BACKEND
+        for index in range(self.capture_backend_combo.count()):
+            if str(self.capture_backend_combo.itemData(index)) == normalized:
+                self.capture_backend_combo.setCurrentIndex(index)
+                return
+        self.capture_backend_combo.setCurrentIndex(0)
+
+    def _capture_backend_primary(self) -> str:
+        value = str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND)
+        if value in CAPTURE_BACKENDS:
+            return value
+        return DEFAULT_CAPTURE_BACKEND
+
+    def _persist_capture_backend(self) -> None:
+        self._settings.setValue("capture.backend_primary", self._capture_backend_primary())
 
     def _sync_quick_formats_from_main(self) -> None:
         if self._format_sync_guard:
@@ -605,6 +699,14 @@ class MainWindow(QMainWindow):
             return
         self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
 
+    def _capture_last_selected_window(self) -> None:
+        hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
+        if hwnd is None:
+            self.status_label.setText("No second-last active window found for quick capture.")
+            return
+        self._set_target(PickedWindow(hwnd=hwnd, label=self._capture_service.window_title(hwnd)))
+        self._capture_selected_viewport()
+
     def _set_target(self, target: PickedWindow) -> None:
         self._selected_target = target
         self.target_label.setText(f"Target: {target.label} [hwnd={target.hwnd}]")
@@ -622,13 +724,16 @@ class MainWindow(QMainWindow):
         if not focused:
             self.status_label.setText(message)
             return
-        pixmap = self._capture_service.capture_window(self._selected_target.hwnd)
+        pixmap, backend_used = self._capture_service.capture_window(
+            self._selected_target.hwnd,
+            primary_backend=self._capture_backend_primary(),
+        )
         if pixmap is None:
             self.status_label.setText("Capture failed.")
             return
         image = ImageQt.fromqpixmap(pixmap).convert("RGB")
         self._add_capture(image=image, title=self._selected_target.label, source_hwnd=self._selected_target.hwnd, frame_count=1)
-        self.status_label.setText("Captured selected viewport.")
+        self.status_label.setText(f"Captured selected viewport ({backend_used or 'unknown backend'}).")
 
     def _capture_full_scroll(self) -> None:
         if self._selected_target is None and self.auto_target_checkbox.isChecked():
@@ -646,6 +751,7 @@ class MainWindow(QMainWindow):
             options=ScrollCaptureOptions(
                 max_capture_pages=int(self.max_pages_spin.value()),
                 delay_ms=int(self.capture_delay_spin.value()),
+                capture_backend=self._capture_backend_primary(),
             ),
             stop_event=self._stop_event,
         )
@@ -768,6 +874,7 @@ class MainWindow(QMainWindow):
         return self._queue[row]
 
     def _on_queue_selection_changed(self, *_args: object) -> None:
+        self._set_editor_zoom_mode("fit_height")
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
@@ -905,15 +1012,80 @@ class MainWindow(QMainWindow):
             footer_rich_text=self.footer_input.toHtml(),
         )
 
+    def _set_editor_zoom_mode(self, mode: str, manual_percent: int | None = None) -> None:
+        normalized = str(mode or "fit_height").strip().lower()
+        if normalized not in {"fit_height", "fit_width", "manual"}:
+            normalized = "fit_height"
+        self._editor_zoom_mode = normalized
+        if manual_percent is not None:
+            self._editor_manual_zoom_percent = max(10, min(400, int(manual_percent)))
+        if self._editor_zoom_mode == "fit_height":
+            self.zoom_status_label.setText("Fit Height")
+        elif self._editor_zoom_mode == "fit_width":
+            self.zoom_status_label.setText("Fit Width")
+        else:
+            self.zoom_status_label.setText(f"{self._editor_manual_zoom_percent}%")
+        self._refresh_preview()
+
+    def _adjust_editor_zoom(self, delta_percent: int) -> None:
+        if self._editor_zoom_mode != "manual":
+            self._editor_manual_zoom_percent = 100
+        self._set_editor_zoom_mode("manual", self._editor_manual_zoom_percent + int(delta_percent))
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        if (
+            obj is self.preview_scroll.viewport()
+            and event.type() == QEvent.Type.Resize
+            and self._editor_zoom_mode in {"fit_height", "fit_width"}
+        ):
+            self._refresh_preview()
+        return super().eventFilter(obj, event)
+
+    def _scaled_for_editor_view(self, pixmap: QPixmap) -> QPixmap:
+        if pixmap.isNull():
+            return pixmap
+        viewport = self.preview_scroll.viewport().size()
+        target_width = max(1, viewport.width() - 10)
+        target_height = max(1, viewport.height() - 10)
+        if self._editor_zoom_mode == "fit_height":
+            factor = target_height / max(1, pixmap.height())
+            target_size = (
+                max(1, round(pixmap.width() * factor)),
+                max(1, round(pixmap.height() * factor)),
+            )
+        elif self._editor_zoom_mode == "fit_width":
+            factor = target_width / max(1, pixmap.width())
+            target_size = (
+                max(1, round(pixmap.width() * factor)),
+                max(1, round(pixmap.height() * factor)),
+            )
+        else:
+            factor = max(0.1, float(self._editor_manual_zoom_percent) / 100.0)
+            target_size = (
+                max(1, round(pixmap.width() * factor)),
+                max(1, round(pixmap.height() * factor)),
+            )
+            self.zoom_status_label.setText(f"{self._editor_manual_zoom_percent}%")
+        return pixmap.scaled(
+            target_size[0],
+            target_size[1],
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
     def _refresh_preview(self, *_args: object) -> None:
         item = self._current_item()
         if item is None:
-            self.preview_label.setPixmap(None)
+            self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText("No capture selected")
+            self.capture_tab_preview_label.setPixmap(QPixmap())
+            self.capture_tab_preview_label.setText("No capture selected")
             return
         if not item.image_path.exists():
-            self.preview_label.setPixmap(None)
+            self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText("Capture file missing")
+            self.capture_tab_preview_label.setPixmap(QPixmap())
+            self.capture_tab_preview_label.setText("Capture file missing")
             return
         image = Image.open(item.image_path).convert("RGB")
         edits = self._session_for_item(item.item_id)
@@ -922,8 +1094,17 @@ class MainWindow(QMainWindow):
             PrintLayout(zoom_percent=100.0, rotate_degrees=0),
             edits,
         )
-        self.preview_label.setPixmap(pil_to_qpixmap(preview))
+        full_pixmap = pil_to_qpixmap(preview)
+        self.preview_label.setPixmap(self._scaled_for_editor_view(full_pixmap))
         self.preview_label.setText("")
+        thumb = full_pixmap.scaled(
+            max(1, self.capture_tab_preview_label.width() - 8),
+            max(1, self.capture_tab_preview_label.height() - 8),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.capture_tab_preview_label.setPixmap(thumb)
+        self.capture_tab_preview_label.setText("")
 
     def _apply_auto_crop(self) -> None:
         item = self._current_item()

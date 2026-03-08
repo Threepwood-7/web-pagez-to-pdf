@@ -58,7 +58,8 @@ class _EditorCanvas(QGraphicsView):
         self._rect_item: QGraphicsRectItem | None = None
         self._free_points: list[QPointF] = []
         self._free_path_item: QGraphicsPathItem | None = None
-        self._zoom_steps = 0
+        self._zoom_mode = "fit_height"
+        self._manual_zoom_percent = 100
 
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setRenderHints(self.renderHints())
@@ -70,10 +71,35 @@ class _EditorCanvas(QGraphicsView):
         self._pixmap_item.setPixmap(pixmap)
         rect = QRectF(pixmap.rect())
         self._scene.setSceneRect(rect)
-        self.resetTransform()
-        self._zoom_steps = 0
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._apply_zoom()
         self._clear_overlay()
+
+    def set_zoom_mode(self, mode: str, *, manual_percent: int | None = None) -> None:
+        """Switch zoom mode and redraw view scaling."""
+
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"fit_height", "fit_width", "manual"}:
+            normalized = "fit_height"
+        self._zoom_mode = normalized
+        if manual_percent is not None:
+            self._manual_zoom_percent = max(10, min(400, int(manual_percent)))
+        self._apply_zoom()
+
+    def adjust_manual_zoom(self, delta_percent: int) -> None:
+        """Adjust manual zoom by a relative percent step."""
+
+        if self._zoom_mode != "manual":
+            self._manual_zoom_percent = 100
+        self.set_zoom_mode("manual", manual_percent=self._manual_zoom_percent + int(delta_percent))
+
+    def zoom_label_text(self) -> str:
+        """Human-readable zoom label for side controls."""
+
+        if self._zoom_mode == "fit_height":
+            return "Fit Height"
+        if self._zoom_mode == "fit_width":
+            return "Fit Width"
+        return f"{self._manual_zoom_percent}%"
 
     def set_tool(self, tool: str) -> None:
         """Set active editing mode."""
@@ -89,9 +115,8 @@ class _EditorCanvas(QGraphicsView):
         delta = event.angleDelta().y()
         if delta == 0:
             return
-        factor = 1.15 if delta > 0 else 1 / 1.15
-        self.scale(factor, factor)
-        self._zoom_steps += 1 if delta > 0 else -1
+        self.adjust_manual_zoom(10 if delta > 0 else -10)
+        event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton or self._tool == "pan":
@@ -144,6 +169,11 @@ class _EditorCanvas(QGraphicsView):
             return
         super().mouseDoubleClickEvent(event)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        if self._zoom_mode in {"fit_height", "fit_width"}:
+            self._apply_zoom()
+        super().resizeEvent(event)
+
     def _clear_overlay(self) -> None:
         if self._rect_item is not None:
             self._scene.removeItem(self._rect_item)
@@ -165,6 +195,23 @@ class _EditorCanvas(QGraphicsView):
         self._free_path_item = QGraphicsPathItem(path)
         self._free_path_item.setPen(QPen(Qt.GlobalColor.cyan, 2))
         self._scene.addItem(self._free_path_item)
+
+    def _apply_zoom(self) -> None:
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull():
+            self.resetTransform()
+            return
+        self.resetTransform()
+        if self._zoom_mode == "fit_height":
+            viewport_height = max(1, self.viewport().height() - 4)
+            factor = viewport_height / max(1, pixmap.height())
+        elif self._zoom_mode == "fit_width":
+            viewport_width = max(1, self.viewport().width() - 4)
+            factor = viewport_width / max(1, pixmap.width())
+        else:
+            factor = max(0.1, float(self._manual_zoom_percent) / 100.0)
+        self.scale(factor, factor)
+        self.centerOn(self._pixmap_item)
 
 
 class MiniEditorWindow(QMainWindow):
@@ -204,6 +251,22 @@ class MiniEditorWindow(QMainWindow):
 
         self.item_label = QLabel("No queue item selected.", side)
         side_layout.addWidget(self.item_label)
+
+        view_group = QGroupBox("View", side)
+        view_layout = QHBoxLayout(view_group)
+        self.zoom_fit_height_button = QPushButton("Fit Height", view_group)
+        self.zoom_fit_width_button = QPushButton("Fit Width", view_group)
+        self.zoom_100_button = QPushButton("100%", view_group)
+        self.zoom_out_button = QPushButton("-", view_group)
+        self.zoom_in_button = QPushButton("+", view_group)
+        self.zoom_status_label = QLabel("Fit Height", view_group)
+        view_layout.addWidget(self.zoom_fit_height_button)
+        view_layout.addWidget(self.zoom_fit_width_button)
+        view_layout.addWidget(self.zoom_100_button)
+        view_layout.addWidget(self.zoom_out_button)
+        view_layout.addWidget(self.zoom_in_button)
+        view_layout.addWidget(self.zoom_status_label, 1)
+        side_layout.addWidget(view_group)
 
         tool_group = QGroupBox("Tools", side)
         tools_layout = QHBoxLayout(tool_group)
@@ -274,6 +337,11 @@ class MiniEditorWindow(QMainWindow):
 
     def _bind_events(self) -> None:
         self.tool_buttons.buttonClicked.connect(self._on_tool_changed)
+        self.zoom_fit_height_button.clicked.connect(lambda: self._set_zoom_mode("fit_height"))
+        self.zoom_fit_width_button.clicked.connect(lambda: self._set_zoom_mode("fit_width"))
+        self.zoom_100_button.clicked.connect(lambda: self._set_zoom_mode("manual", 100))
+        self.zoom_out_button.clicked.connect(lambda: self._adjust_zoom(-10))
+        self.zoom_in_button.clicked.connect(lambda: self._adjust_zoom(10))
         self.rotate_spin.valueChanged.connect(self._on_transform_changed)
         self.scale_spin.valueChanged.connect(self._on_transform_changed)
         self.straighten_spin.valueChanged.connect(self._on_transform_changed)
@@ -297,6 +365,7 @@ class MiniEditorWindow(QMainWindow):
             self._base_image = None
             self.item_label.setText(f"Editing: {item.title} [image missing]")
         self._sync_controls_from_session()
+        self._set_zoom_mode("fit_height")
         self._refresh_preview()
 
     def update_session(self, item_id: str, session: EditAdjustments) -> None:
@@ -311,6 +380,14 @@ class MiniEditorWindow(QMainWindow):
     def _on_tool_changed(self, button: QToolButton) -> None:
         tool = str(button.property("tool") or "pan")
         self.canvas.set_tool(tool)
+
+    def _set_zoom_mode(self, mode: str, manual_percent: int | None = None) -> None:
+        self.canvas.set_zoom_mode(mode, manual_percent=manual_percent)
+        self.zoom_status_label.setText(self.canvas.zoom_label_text())
+
+    def _adjust_zoom(self, delta_percent: int) -> None:
+        self.canvas.adjust_manual_zoom(delta_percent)
+        self.zoom_status_label.setText(self.canvas.zoom_label_text())
 
     def _on_transform_changed(self, *_args: object) -> None:
         if self._loading:
@@ -447,10 +524,12 @@ class MiniEditorWindow(QMainWindow):
     def _refresh_preview(self) -> None:
         if self._base_image is None:
             self.canvas.set_image(QPixmap())
+            self.zoom_status_label.setText(self.canvas.zoom_label_text())
             return
         layout = PrintLayout(zoom_percent=100.0, rotate_degrees=0)
         preview = apply_edit_transform(self._base_image, layout, self._session)
         self.canvas.set_image(pil_to_qpixmap(preview))
+        self.zoom_status_label.setText(self.canvas.zoom_label_text())
 
     def _emit_session_changed(self) -> None:
         if self._item is None:

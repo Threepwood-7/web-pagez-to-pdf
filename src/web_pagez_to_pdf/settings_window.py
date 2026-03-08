@@ -145,6 +145,17 @@ class SettingsWindow(QDialog):
             "capture delay ms page-down wait",
             self.capture_delay_spin,
         )
+        self.capture_backend_combo = QComboBox(self)
+        self.capture_backend_combo.addItem("Screen Region (GDI)", "screen_region_gdi")
+        self.capture_backend_combo.addItem("Qt grabWindow", "qt_grab_window")
+        self.capture_backend_combo.addItem("PrintWindow", "print_window")
+        self._add_row(
+            capture_group,
+            "capture.backend_primary",
+            "Capture Backend",
+            "capture backend gdi qt printwindow",
+            self.capture_backend_combo,
+        )
         self.auto_pick_second_last_checkbox = QCheckBox(
             "Auto-target second last active window", self
         )
@@ -246,14 +257,12 @@ class SettingsWindow(QDialog):
             "start tab capture editor export",
             self.start_tab_combo,
         )
-        self.capture_adv_collapsed = QCheckBox("Capture advanced collapsed", self)
         self.editor_adv_collapsed = QCheckBox("Editor advanced collapsed", self)
         self.export_adv_collapsed = QCheckBox("Export print collapsed", self)
         collapse_row = QWidget(self)
         collapse_layout = QHBoxLayout(collapse_row)
         collapse_layout.setContentsMargins(0, 0, 0, 0)
         collapse_layout.setSpacing(6)
-        collapse_layout.addWidget(self.capture_adv_collapsed)
         collapse_layout.addWidget(self.editor_adv_collapsed)
         collapse_layout.addWidget(self.export_adv_collapsed)
         self._add_row(
@@ -269,6 +278,10 @@ class SettingsWindow(QDialog):
 
         self.capture_max_pages_spin.setValue(int(values.get("capture.max_pages", 18)))
         self.capture_delay_spin.setValue(int(values.get("capture.delay_ms", 380)))
+        self._set_combo_value(
+            self.capture_backend_combo,
+            str(values.get("capture.backend_primary", "screen_region_gdi")),
+        )
         self.auto_pick_second_last_checkbox.setChecked(
             bool(values.get("capture.auto_pick_second_last", True))
         )
@@ -285,7 +298,6 @@ class SettingsWindow(QDialog):
         self.default_pptx_checkbox.setChecked(bool(values.get("export.pptx", False)))
         start_tab = str(values.get("ui.start_tab", "capture"))
         self._set_combo_value(self.start_tab_combo, start_tab)
-        self.capture_adv_collapsed.setChecked(bool(values.get("ui.capture_adv_collapsed", True)))
         self.editor_adv_collapsed.setChecked(bool(values.get("ui.editor_adv_collapsed", True)))
         self.export_adv_collapsed.setChecked(bool(values.get("ui.export_adv_collapsed", True)))
 
@@ -295,6 +307,7 @@ class SettingsWindow(QDialog):
         return {
             "capture.max_pages": int(self.capture_max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
+            "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.auto_pick_second_last": self.auto_pick_second_last_checkbox.isChecked(),
             "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
             "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),
@@ -308,7 +321,6 @@ class SettingsWindow(QDialog):
             "export.docx": self.default_docx_checkbox.isChecked(),
             "export.pptx": self.default_pptx_checkbox.isChecked(),
             "ui.start_tab": str(self.start_tab_combo.currentData()),
-            "ui.capture_adv_collapsed": self.capture_adv_collapsed.isChecked(),
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }

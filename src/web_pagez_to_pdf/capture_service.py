@@ -7,8 +7,12 @@ import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint
-from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
+import win32con
+import win32gui
+import win32ui
+from PIL import Image, ImageQt
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QScreen
 
 GW_HWNDPREV = 3
 HISTORY_LIMIT = 80
@@ -16,6 +20,9 @@ MAX_Z_ORDER_HOPS = 96
 VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+PW_RENDERFULLCONTENT = 0x00000002
+CAPTURE_BACKENDS = ("screen_region_gdi", "qt_grab_window", "print_window")
+DEFAULT_CAPTURE_BACKEND = "screen_region_gdi"
 
 USER32 = ctypes.windll.user32
 USER32.GetForegroundWindow.restype = wintypes.HWND
@@ -46,6 +53,8 @@ USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
 USER32.SetForegroundWindow.restype = wintypes.BOOL
 USER32.SetFocus.argtypes = [wintypes.HWND]
 USER32.SetFocus.restype = wintypes.HWND
+USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+USER32.PrintWindow.restype = wintypes.BOOL
 USER32.keybd_event.argtypes = [
     wintypes.BYTE,
     wintypes.BYTE,
@@ -177,18 +186,26 @@ class WindowCaptureService:
         USER32.keybd_event(VK_NEXT, 0, 0, 0)
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
 
-    def capture_window(self, hwnd: int) -> QPixmap | None:
-        """Capture screenshot pixmap of a specific native window."""
+    def capture_window(
+        self,
+        hwnd: int,
+        *,
+        primary_backend: str = DEFAULT_CAPTURE_BACKEND,
+    ) -> tuple[QPixmap | None, str]:
+        """Capture one window using selected backend and deterministic fallbacks."""
 
         if hwnd <= 0:
-            return None
-        screen = self._screen_for_window(hwnd)
-        if screen is None:
-            return None
-        pixmap = screen.grabWindow(hwnd)
-        if pixmap.isNull():
-            return None
-        return pixmap
+            return (None, "")
+
+        ordered_backends = self._ordered_backends(primary_backend)
+        for backend in ordered_backends:
+            for attempt in range(2):
+                pixmap = self._capture_with_backend(hwnd, backend)
+                if pixmap is not None and not self._is_blank_like(pixmap):
+                    return (pixmap, backend)
+                if attempt == 0:
+                    time.sleep(0.12)
+        return (None, "")
 
     @staticmethod
     def window_title(hwnd: int) -> str:
@@ -286,6 +303,140 @@ class WindowCaptureService:
             hwnd = int(USER32.GetWindow(hwnd, GW_HWNDPREV))
             hop_count += 1
         return None
+
+    def _ordered_backends(self, primary_backend: str) -> list[str]:
+        normalized = str(primary_backend or "").strip().lower()
+        if normalized not in CAPTURE_BACKENDS:
+            normalized = DEFAULT_CAPTURE_BACKEND
+        return [normalized, *[name for name in CAPTURE_BACKENDS if name != normalized]]
+
+    def _capture_with_backend(self, hwnd: int, backend: str) -> QPixmap | None:
+        if backend == "screen_region_gdi":
+            return self._capture_screen_region_gdi(hwnd)
+        if backend == "print_window":
+            return self._capture_print_window(hwnd)
+        if backend == "qt_grab_window":
+            return self._capture_qt_window(hwnd)
+        return None
+
+    def _capture_qt_window(self, hwnd: int) -> QPixmap | None:
+        screen = self._screen_for_window(hwnd)
+        if screen is None:
+            return None
+        pixmap = screen.grabWindow(hwnd)
+        if pixmap.isNull():
+            return None
+        return pixmap
+
+    @staticmethod
+    def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+        rect = wintypes.RECT()
+        if not USER32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        width = max(0, int(rect.right - rect.left))
+        height = max(0, int(rect.bottom - rect.top))
+        if width <= 0 or height <= 0:
+            return None
+        return (int(rect.left), int(rect.top), width, height)
+
+    def _capture_screen_region_gdi(self, hwnd: int) -> QPixmap | None:
+        rect = self._window_rect(hwnd)
+        if rect is None:
+            return None
+        left, top, width, height = rect
+        desktop_hwnd = win32gui.GetDesktopWindow()
+        desktop_dc = win32gui.GetWindowDC(desktop_hwnd)
+        if desktop_dc == 0:
+            return None
+        src_dc = win32ui.CreateDCFromHandle(desktop_dc)
+        mem_dc = src_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(src_dc, width, height)
+        old_obj = mem_dc.SelectObject(bitmap)
+        try:
+            mem_dc.BitBlt((0, 0), (width, height), src_dc, (left, top), win32con.SRCCOPY)
+            return self._bitmap_to_pixmap(bitmap)
+        except Exception:
+            return None
+        finally:
+            mem_dc.SelectObject(old_obj)
+            win32gui.DeleteObject(bitmap.GetHandle())
+            mem_dc.DeleteDC()
+            src_dc.DeleteDC()
+            win32gui.ReleaseDC(desktop_hwnd, desktop_dc)
+
+    def _capture_print_window(self, hwnd: int) -> QPixmap | None:
+        rect = self._window_rect(hwnd)
+        if rect is None:
+            return None
+        _left, _top, width, height = rect
+        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        if hwnd_dc == 0:
+            return None
+        src_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        mem_dc = src_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(src_dc, width, height)
+        old_obj = mem_dc.SelectObject(bitmap)
+        try:
+            result = USER32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), PW_RENDERFULLCONTENT)
+            if not bool(result):
+                result = USER32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 0)
+                if not bool(result):
+                    return None
+            return self._bitmap_to_pixmap(bitmap)
+        except Exception:
+            return None
+        finally:
+            mem_dc.SelectObject(old_obj)
+            win32gui.DeleteObject(bitmap.GetHandle())
+            mem_dc.DeleteDC()
+            src_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+    @staticmethod
+    def _bitmap_to_pixmap(bitmap) -> QPixmap | None:
+        info = bitmap.GetInfo()
+        width = int(info.get("bmWidth", 0))
+        height = int(info.get("bmHeight", 0))
+        if width <= 0 or height <= 0:
+            return None
+        bits = bitmap.GetBitmapBits(True)
+        if not bits:
+            return None
+        image = Image.frombuffer("RGB", (width, height), bits, "raw", "BGRX", 0, 1)
+        pixmap = ImageQt.toqpixmap(image)
+        if pixmap.isNull():
+            return None
+        return pixmap
+
+    @staticmethod
+    def _is_blank_like(pixmap: QPixmap) -> bool:
+        if pixmap.isNull():
+            return True
+        image = pixmap.toImage()
+        if image.isNull():
+            return True
+        sample = image.scaled(
+            64,
+            64,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        ).convertToFormat(QImage.Format.Format_RGB32)
+        colors: set[tuple[int, int, int]] = set()
+        luminance_min = 255
+        luminance_max = 0
+        for y_pos in range(0, sample.height(), 4):
+            for x_pos in range(0, sample.width(), 4):
+                color = sample.pixelColor(x_pos, y_pos)
+                rgb = (color.red(), color.green(), color.blue())
+                colors.add(rgb)
+                lum = int((rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000)
+                luminance_min = min(luminance_min, lum)
+                luminance_max = max(luminance_max, lum)
+        if len(colors) <= 1:
+            return True
+        return (luminance_max - luminance_min) <= 3
 
     @staticmethod
     def _screen_for_window(hwnd: int) -> QScreen | None:

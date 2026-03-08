@@ -21,6 +21,7 @@ class ScrollCaptureOptions:
 
     delay_ms: int = 380
     max_capture_pages: int = 18
+    capture_backend: str = "screen_region_gdi"
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -54,7 +55,10 @@ def run_full_page_capture(
         if stop_requested():
             break
 
-        pixmap = service.capture_window(target_hwnd)
+        pixmap, _backend = service.capture_window(
+            target_hwnd,
+            primary_backend=options.capture_backend,
+        )
         if pixmap is None:
             break
         frame = ImageQt.fromqpixmap(pixmap).convert("RGB")
