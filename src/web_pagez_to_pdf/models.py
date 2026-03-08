@@ -101,12 +101,12 @@ class EditAdjustments:
         """Replace operation of given type with provided payload."""
 
         key = op_type.strip().lower()
-        self.operations = [
-            operation
-            for operation in self.operations
-            if operation.op_type.strip().lower() != key
-        ]
-        self.operations.append(EditOperation(op_type=key, params=deepcopy(params)))
+        replacement = EditOperation(op_type=key, params=deepcopy(params))
+        for index, operation in enumerate(self.operations):
+            if operation.op_type.strip().lower() == key:
+                self.operations[index] = replacement
+                return
+        self.operations.append(replacement)
 
     def remove_operation(self, op_type: str) -> None:
         """Remove operation of given type if it exists."""
