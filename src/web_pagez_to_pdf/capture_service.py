@@ -16,6 +16,7 @@ MAX_Z_ORDER_HOPS = 96
 SW_RESTORE = 9
 VK_NEXT = 0x22
 KEYEVENTF_KEYUP = 0x0002
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
 USER32 = ctypes.windll.user32
 USER32.GetForegroundWindow.restype = wintypes.HWND
@@ -52,7 +53,7 @@ USER32.keybd_event.argtypes = [
     wintypes.BYTE,
     wintypes.BYTE,
     wintypes.DWORD,
-    wintypes.ULONG_PTR,
+    ULONG_PTR,
 ]
 
 KERNEL32 = ctypes.windll.kernel32
