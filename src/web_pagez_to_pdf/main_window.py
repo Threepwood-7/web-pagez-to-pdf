@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageQt
-from PySide6.QtCore import QEvent, QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -1104,6 +1104,16 @@ class MainWindow(QMainWindow):
             self._capture_center_click_assist(),
             self._capture_cursor_hold_mode(),
         )
+        effective_wheel_mode = self._capture_wheel_injection_mode()
+        if effective_wheel_mode == "legacy_message_wheel":
+            effective_wheel_mode = DEFAULT_WHEEL_INJECTION_MODE
+            CAPTURE_UI_LOGGER.warning(
+                "legacy wheel mode overridden for full capture; using %s",
+                effective_wheel_mode,
+            )
+            self._append_capture_log(
+                "Legacy wheel mode overridden to Physical Center (SendInput) for full capture."
+            )
         focused, message = self._capture_service.ensure_window_foreground(
             self._selected_target.hwnd
         )
@@ -1127,12 +1137,13 @@ class MainWindow(QMainWindow):
                 delay_ms=int(self.capture_delay_spin.value()),
                 capture_backend=self._capture_backend_primary(),
                 scroll_strategy=self._capture_scroll_strategy(),
-                wheel_injection_mode=self._capture_wheel_injection_mode(),
+                wheel_injection_mode=effective_wheel_mode,
                 center_click_assist=self._capture_center_click_assist(),
                 cursor_hold_mode=self._capture_cursor_hold_mode(),
             ),
             stop_event=self._stop_event,
         )
+        self._capture_worker.started.connect(self._on_full_capture_worker_started)
         self._capture_worker.capture_succeeded.connect(self._full_capture_done)
         self._capture_worker.capture_failed.connect(self._full_capture_failed)
         self._capture_worker.capture_progress.connect(self._on_full_capture_progress)
@@ -1148,8 +1159,21 @@ class MainWindow(QMainWindow):
             f"cursor={self._capture_cursor_hold_mode()})."
         )
         self._stop_overlay.show_top_right()
-        self._capture_worker.start()
-        CAPTURE_UI_LOGGER.info("full capture worker started hwnd=%s", self._selected_target.hwnd)
+        try:
+            CAPTURE_UI_LOGGER.info("full capture worker start() call hwnd=%s", self._selected_target.hwnd)
+            self._capture_worker.start()
+        except Exception:  # pragma: no cover
+            CAPTURE_UI_LOGGER.exception("full capture worker start failed")
+            self._append_capture_log("Failed to start full capture worker thread.")
+            self.status_label.setText("Full capture failed to start worker.")
+            self._stop_overlay.hide()
+            self._capture_worker = None
+            return
+        CAPTURE_UI_LOGGER.info(
+            "full capture worker start returned isRunning=%s",
+            self._capture_worker.isRunning(),
+        )
+        QTimer.singleShot(400, self._probe_full_capture_worker_state)
         self.status_label.setText("Full capture running. Hover red stop badge or press Ctrl+Shift+X.")
 
     def _request_stop(self) -> None:
@@ -1208,6 +1232,16 @@ class MainWindow(QMainWindow):
         self._stop_overlay.hide()
         self._capture_worker = None
         self._restore_focus_after_full_capture()
+
+    def _on_full_capture_worker_started(self) -> None:
+        CAPTURE_UI_LOGGER.info("full capture worker started signal received")
+        self._append_capture_log("Full capture worker thread started.")
+
+    def _probe_full_capture_worker_state(self) -> None:
+        running = self._capture_worker is not None and self._capture_worker.isRunning()
+        CAPTURE_UI_LOGGER.info("full capture worker probe running=%s", running)
+        if not running:
+            self._append_capture_log("Full capture worker is not running after start.")
 
     def _restore_focus_after_full_capture(self) -> None:
         own_hwnd = int(self.winId())
