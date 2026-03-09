@@ -1,4 +1,4 @@
-"""Export writers for PDF/images/TIFF/DOCX/PPTX from capture session data."""
+"""Export writers for PDF/images/TIFF/DOCX/PPTX/XLSX from capture session data."""
 
 from __future__ import annotations
 
@@ -42,6 +42,11 @@ try:
 except ImportError:  # pragma: no cover
     Presentation = None  # type: ignore[assignment]
     Inches = None  # type: ignore[assignment]
+
+try:
+    import xlsxwriter
+except ImportError:  # pragma: no cover
+    xlsxwriter = None  # type: ignore[assignment]
 
 EXPORT_LOGGER = logging.getLogger("web_pagez_to_pdf.export")
 
@@ -99,6 +104,16 @@ class ExportResult:
     generated_paths: list[Path]
 
 
+@dataclass(slots=True)
+class _XlsxExportRow:
+    title: str
+    item_id: str
+    source_image_path: str
+    page_index: int
+    page_count: int
+    image: Image.Image
+
+
 def run_export(request: ExportRequest) -> ExportResult:
     """Export selected capture queue into requested output formats."""
 
@@ -111,6 +126,7 @@ def run_export(request: ExportRequest) -> ExportResult:
             ("tiff", request.formats.tiff),
             ("docx", request.formats.docx),
             ("pptx", request.formats.pptx),
+            ("xlsx", request.formats.xlsx),
         )
         if enabled
     ]
@@ -153,6 +169,10 @@ def run_export(request: ExportRequest) -> ExportResult:
         EXPORT_LOGGER.info("writer start format=pptx")
         generated.append(export_pptx(request, frames, transformed_images))
         EXPORT_LOGGER.info("writer done format=pptx path=%s", generated[-1])
+    if request.formats.xlsx:
+        EXPORT_LOGGER.info("writer start format=xlsx")
+        generated.append(export_xlsx(request, frames, transformed_images))
+        EXPORT_LOGGER.info("writer done format=xlsx path=%s", generated[-1])
     EXPORT_LOGGER.info(
         "run_export done generated=%s paths=%s",
         len(generated),
@@ -370,6 +390,112 @@ def export_pptx(
             slide.shapes.add_picture(buffer, Inches(0.3), Inches(0.3), width=Inches(12.7))
     presentation.save(output)
     return output
+
+
+def export_xlsx(
+    request: ExportRequest,
+    frames: list[PageFrame],
+    transformed: list[tuple[CaptureItem, Image.Image]],
+) -> Path:
+    """Export split pages/captures into one XLSX sheet with metadata and previews."""
+
+    if xlsxwriter is None:  # pragma: no cover
+        raise RuntimeError("xlsxwriter dependency is required for XLSX export.")
+    output = request.output_dir / f"{request.basename}.xlsx"
+    mode = request.docx_pptx_mode.strip().lower()
+    rows = _xlsx_export_rows(mode, frames, transformed)
+    workbook = xlsxwriter.Workbook(str(output))
+    image_streams: list[BytesIO] = []
+    try:
+        worksheet = workbook.add_worksheet("captures")
+        header_format = workbook.add_format({"bold": True})
+        body_format = workbook.add_format({"valign": "top"})
+        headers = [
+            "title",
+            "item_id",
+            "source_image_path",
+            "page_index",
+            "page_count",
+            "image_pixel_size",
+            "preview_image",
+        ]
+        for column, header in enumerate(headers):
+            worksheet.write(0, column, header, header_format)
+        worksheet.freeze_panes(1, 0)
+        worksheet.set_column(0, 0, 28)
+        worksheet.set_column(1, 1, 20)
+        worksheet.set_column(2, 2, 56)
+        worksheet.set_column(3, 4, 11)
+        worksheet.set_column(5, 5, 16)
+        worksheet.set_column(6, 6, 46)
+
+        max_preview_width_px = 320
+        for row_index, row in enumerate(rows, start=1):
+            worksheet.write(row_index, 0, row.title, body_format)
+            worksheet.write(row_index, 1, row.item_id, body_format)
+            worksheet.write(row_index, 2, row.source_image_path, body_format)
+            worksheet.write_number(row_index, 3, float(row.page_index), body_format)
+            worksheet.write_number(row_index, 4, float(row.page_count), body_format)
+            worksheet.write(
+                row_index,
+                5,
+                f"{row.image.width}x{row.image.height}",
+                body_format,
+            )
+            scale = 1.0
+            if row.image.width > max_preview_width_px:
+                scale = float(max_preview_width_px) / float(row.image.width)
+            preview_height_px = max(1.0, float(row.image.height) * scale)
+            worksheet.set_row(row_index, max(20.0, preview_height_px * 0.75 + 4.0))
+            stream = BytesIO()
+            row.image.save(stream, format="PNG")
+            stream.seek(0)
+            image_streams.append(stream)
+            worksheet.insert_image(
+                row_index,
+                6,
+                "preview.png",
+                {
+                    "image_data": stream,
+                    "x_scale": scale,
+                    "y_scale": scale,
+                    "x_offset": 2,
+                    "y_offset": 2,
+                },
+            )
+    finally:
+        workbook.close()
+    return output
+
+
+def _xlsx_export_rows(
+    mode: str,
+    frames: list[PageFrame],
+    transformed: list[tuple[CaptureItem, Image.Image]],
+) -> list[_XlsxExportRow]:
+    if mode == "per_capture":
+        return [
+            _XlsxExportRow(
+                title=item.title,
+                item_id=item.item_id,
+                source_image_path=str(item.image_path),
+                page_index=1,
+                page_count=1,
+                image=image,
+            )
+            for item, image in transformed
+        ]
+    return [
+        _XlsxExportRow(
+            title=frame.title,
+            item_id=frame.source_item.item_id,
+            source_image_path=str(frame.source_item.image_path),
+            page_index=frame.page_index_in_item,
+            page_count=frame.page_count_in_item,
+            image=frame.image,
+        )
+        for frame in frames
+    ]
 
 
 def sanitize_basename(value: str) -> str:

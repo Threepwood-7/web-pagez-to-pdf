@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zipfile
 from typing import TYPE_CHECKING
 
 from PIL import Image
@@ -109,6 +110,28 @@ def test_run_export_respects_selected_formats_without_implicit_pdf(tmp_path: Pat
 
     assert len(result.generated_paths) == 1
     assert result.generated_paths[0].name == "long-only_long.png"
+
+
+def test_run_export_xlsx_only_writes_sheet_and_embedded_image(tmp_path: Path) -> None:
+    image_path = tmp_path / "input.png"
+    Image.new("RGB", (720, 500), "white").save(image_path, format="PNG")
+    request = _request_for_image(
+        image_path=image_path,
+        output_dir=tmp_path,
+        basename="xlsx-only",
+        formats=ExportFormats(pdf=False, xlsx=True),
+    )
+
+    result = run_export(request)
+
+    assert len(result.generated_paths) == 1
+    output = tmp_path / "xlsx-only.xlsx"
+    assert result.generated_paths[0] == output
+    assert output.exists()
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+    assert "xl/worksheets/sheet1.xml" in names
+    assert any(name.startswith("xl/media/") for name in names)
 
 
 def test_meaningful_rich_text_filter_treats_css_only_html_as_blank() -> None:

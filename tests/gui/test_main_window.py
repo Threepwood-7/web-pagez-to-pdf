@@ -1201,19 +1201,22 @@ def test_run_export_single_format_updates_status_without_crash(
         frame_count=1,
     )
     window.queue_list.setCurrentRow(0)
-    window.pdf_checkbox.setChecked(True)
+    window.pdf_checkbox.setChecked(False)
     window.paged_images_checkbox.setChecked(False)
     window.long_image_checkbox.setChecked(False)
     window.tiff_checkbox.setChecked(False)
     window.docx_checkbox.setChecked(False)
     window.pptx_checkbox.setChecked(False)
+    window.xlsx_checkbox.setChecked(True)
 
     called: dict[str, int] = {"count": 0}
 
-    def _fake_run_export(_request) -> ExportResult:
+    def _fake_run_export(request) -> ExportResult:
         called["count"] += 1
-        out = tmp_path / "fake.pdf"
-        out.write_bytes(b"%PDF-1.4\n")
+        assert request.formats.xlsx is True
+        assert request.formats.pdf is False
+        out = tmp_path / "fake.xlsx"
+        out.write_bytes(b"PK\x03\x04")
         return ExportResult(generated_paths=[out])
 
     monkeypatch.setattr("web_pagez_to_pdf.main_window.run_export", _fake_run_export)
@@ -1287,6 +1290,37 @@ def test_window_geometry_and_splitter_sizes_restore(qtbot: QtBot) -> None:
     _clear_window_state_settings()
 
 
+def test_export_xlsx_setting_persists_and_defaults_false(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._settings = QSettings(
+        "web-pagez-to-pdf-tests",
+        "test_export_xlsx_setting_persists_and_defaults_false",
+    )
+    window._settings.clear()
+    window._settings.sync()
+
+    window._settings.remove("export.xlsx")
+    window._settings.sync()
+    window._load_runtime_settings()
+    assert not window.xlsx_checkbox.isChecked()
+
+    window.xlsx_checkbox.setChecked(True)
+    payload = window._collect_settings_payload()
+    assert bool(payload["export.xlsx"]) is True
+
+    window._settings.setValue("export.xlsx", True)
+    window._settings.sync()
+    window._load_runtime_settings()
+    assert window.xlsx_checkbox.isChecked()
+    payload_after_apply = window._collect_settings_payload()
+    assert bool(payload_after_apply["export.xlsx"]) is True
+
+    window._settings.clear()
+    window._settings.sync()
+
+
 def test_split_edit_signals_update_manual_markers(qtbot: QtBot, tmp_path: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1353,6 +1387,7 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.combine_checkbox,
         window.pdf_checkbox,
         window.tiff_checkbox,
+        window.xlsx_checkbox,
         window.docx_mode_combo,
         window.base_input,
         window.output_input,

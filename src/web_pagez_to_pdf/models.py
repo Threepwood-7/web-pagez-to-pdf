@@ -32,6 +32,7 @@ class ExportFormats:
     tiff: bool = False
     docx: bool = False
     pptx: bool = False
+    xlsx: bool = False
 
 
 @dataclass(slots=True)

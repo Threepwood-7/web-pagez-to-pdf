@@ -36,6 +36,7 @@ Windows-first PySide app for browser-window capture, full-page scroll stitching,
   - Multipage TIFF
   - DOCX
   - PPTX
+  - XLSX
 - Pro print controls:
   - full paper set, orientation, margins, gutter
   - blank-row split threshold/search window

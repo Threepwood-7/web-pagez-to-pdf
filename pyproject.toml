@@ -27,6 +27,7 @@ dependencies = [
   "opencv-python>=4.13.0.92",
   "python-docx>=1.2.0",
   "python-pptx>=1.0.2",
+  "xlsxwriter>=3.2.9",
   "pywin32>=311",
   "reportlab>=4.4.4",
 

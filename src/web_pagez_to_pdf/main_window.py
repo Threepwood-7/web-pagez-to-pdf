@@ -764,6 +764,7 @@ class MainWindow(QMainWindow):
         self.tiff_checkbox = QCheckBox("TIFF")
         self.docx_checkbox = QCheckBox("DOCX")
         self.pptx_checkbox = QCheckBox("PPTX")
+        self.xlsx_checkbox = QCheckBox("Excel (XLSX)")
         self.docx_mode_combo = QComboBox()
         self.docx_mode_combo.addItem("Per split-page", "per_split_page")
         self.docx_mode_combo.addItem("Per capture", "per_capture")
@@ -786,8 +787,9 @@ class MainWindow(QMainWindow):
         export_formats_layout.addWidget(self.tiff_checkbox, 2, 0)
         export_formats_layout.addWidget(self.docx_checkbox, 2, 1)
         export_formats_layout.addWidget(self.pptx_checkbox, 2, 2)
-        export_formats_layout.addWidget(QLabel("DOCX/PPTX mode"), 3, 0)
-        export_formats_layout.addWidget(self.docx_mode_combo, 3, 1, 1, 2)
+        export_formats_layout.addWidget(self.xlsx_checkbox, 3, 0)
+        export_formats_layout.addWidget(QLabel("DOCX/PPTX/XLSX mode"), 4, 0)
+        export_formats_layout.addWidget(self.docx_mode_combo, 4, 1, 1, 2)
         export_layout.addWidget(self.export_formats_group)
 
         self.export_output_group = QGroupBox("Output", export_tab)
@@ -1030,7 +1032,8 @@ class MainWindow(QMainWindow):
             (self.tiff_checkbox, "Export one multi-page TIFF."),
             (self.docx_checkbox, "Export DOCX output."),
             (self.pptx_checkbox, "Export PPTX output."),
-            (self.docx_mode_combo, "Choose whether DOCX/PPTX uses split pages or per-capture images."),
+            (self.xlsx_checkbox, "Export XLSX output with metadata and image previews."),
+            (self.docx_mode_combo, "Choose whether DOCX/PPTX/XLSX uses split pages or per-capture images."),
             (self.base_input, "Base filename used for exported files."),
             (self.output_input, "Destination folder for exported files."),
             (self.output_browse_button, "Choose destination folder."),
@@ -1125,6 +1128,7 @@ class MainWindow(QMainWindow):
             "export.tiff": self.tiff_checkbox.isChecked(),
             "export.docx": self.docx_checkbox.isChecked(),
             "export.pptx": self.pptx_checkbox.isChecked(),
+            "export.xlsx": self.xlsx_checkbox.isChecked(),
             "export.docx_mode": str(self.docx_mode_combo.currentData()),
             "layout.paper_name": self.paper_combo.currentText(),
             "layout.orientation": self.orientation_combo.currentText(),
@@ -1200,6 +1204,7 @@ class MainWindow(QMainWindow):
             self.tiff_checkbox.setChecked(self._bool_setting("export.tiff", False))
             self.docx_checkbox.setChecked(self._bool_setting("export.docx", False))
             self.pptx_checkbox.setChecked(self._bool_setting("export.pptx", False))
+            self.xlsx_checkbox.setChecked(self._bool_setting("export.xlsx", False))
             mode = str(self._settings.value("export.docx_mode", "per_split_page"))
             if mode == "per_capture":
                 self.docx_mode_combo.setCurrentIndex(1)
@@ -2895,6 +2900,7 @@ class MainWindow(QMainWindow):
                 tiff=self.tiff_checkbox.isChecked(),
                 docx=self.docx_checkbox.isChecked(),
                 pptx=self.pptx_checkbox.isChecked(),
+                xlsx=self.xlsx_checkbox.isChecked(),
             ),
             output_dir=Path(self.output_input.text().strip()),
             basename=sanitize_basename(f"{self.base_input.text().strip()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"),
@@ -2914,6 +2920,7 @@ class MainWindow(QMainWindow):
                 ("tiff", request.formats.tiff),
                 ("docx", request.formats.docx),
                 ("pptx", request.formats.pptx),
+                ("xlsx", request.formats.xlsx),
             )
             if enabled
         ]

@@ -133,7 +133,7 @@ class SettingsWindow(QDialog):
     def _build_sections(self) -> None:
         capture_group = self._add_section("capture", "Capture", "capture target stop scroll")
         editor_group = self._add_section("editor", "Editor", "editor crop rotate split redact")
-        export_group = self._add_section("export", "Export", "export pdf tiff docx pptx")
+        export_group = self._add_section("export", "Export", "export pdf tiff docx pptx xlsx")
         ui_group = self._add_section("ui", "UI", "ui tab collapse")
 
         self.capture_max_pages_spin = QSpinBox(self)
@@ -307,6 +307,7 @@ class SettingsWindow(QDialog):
         self.default_tiff_checkbox = QCheckBox("TIFF", self)
         self.default_docx_checkbox = QCheckBox("DOCX", self)
         self.default_pptx_checkbox = QCheckBox("PPTX", self)
+        self.default_xlsx_checkbox = QCheckBox("Excel (XLSX)", self)
         formats_row = QWidget(self)
         formats_layout = QHBoxLayout(formats_row)
         formats_layout.setContentsMargins(0, 0, 0, 0)
@@ -318,13 +319,14 @@ class SettingsWindow(QDialog):
             self.default_tiff_checkbox,
             self.default_docx_checkbox,
             self.default_pptx_checkbox,
+            self.default_xlsx_checkbox,
         ):
             formats_layout.addWidget(checkbox)
         self._add_row(
             export_group,
             "export.formats",
             "Default Formats",
-            "pdf paged long tiff docx pptx formats",
+            "pdf paged long tiff docx pptx xlsx formats",
             formats_row,
         )
 
@@ -398,6 +400,7 @@ class SettingsWindow(QDialog):
         self.default_tiff_checkbox.setChecked(bool(values.get("export.tiff", False)))
         self.default_docx_checkbox.setChecked(bool(values.get("export.docx", False)))
         self.default_pptx_checkbox.setChecked(bool(values.get("export.pptx", False)))
+        self.default_xlsx_checkbox.setChecked(bool(values.get("export.xlsx", False)))
         self.editor_adv_collapsed.setChecked(bool(values.get("ui.editor_adv_collapsed", True)))
         self.export_adv_collapsed.setChecked(bool(values.get("ui.export_adv_collapsed", True)))
 
@@ -427,6 +430,7 @@ class SettingsWindow(QDialog):
             "export.tiff": self.default_tiff_checkbox.isChecked(),
             "export.docx": self.default_docx_checkbox.isChecked(),
             "export.pptx": self.default_pptx_checkbox.isChecked(),
+            "export.xlsx": self.default_xlsx_checkbox.isChecked(),
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }
