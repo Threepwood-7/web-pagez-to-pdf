@@ -76,7 +76,7 @@ from .image_processing import (
     apply_edit_transform,
     compute_page_slices,
     pil_to_qpixmap,
-    suggest_navigation_crop_with_confidence,
+    suggest_auto_vertical_border_crop_with_confidence,
     suggest_scrollbar_trim_with_confidence,
     suggest_window_border_trim_with_confidence,
 )
@@ -202,11 +202,20 @@ class MainWindow(QMainWindow):
         self._history_limit = 200
         self._undo_action: QAction | None = None
         self._redo_action: QAction | None = None
+        self._editor_scroll_to_top_pending = False
+        self._editor_preview_debounce_ms = 333
+        self._preview_update_pending_transform = False
+        self._preview_update_pending_layout = False
+        self._pending_transform_item_id: str | None = None
+        self._pending_transform_values: tuple[int, int, int] | None = None
         self._window_state_restore_in_progress = False
         self._window_state_timer = QTimer(self)
         self._window_state_timer.setSingleShot(True)
         self._window_state_timer.setInterval(300)
         self._window_state_timer.timeout.connect(self._persist_window_state_snapshot)
+        self._preview_update_timer = QTimer(self)
+        self._preview_update_timer.setSingleShot(True)
+        self._preview_update_timer.timeout.connect(self._flush_debounced_preview_update)
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -708,7 +717,7 @@ class MainWindow(QMainWindow):
         wizardry_layout = QVBoxLayout(self.wizardry_group)
         self.wizard_apply_queue_checkbox = QCheckBox("Apply to whole queue")
         self.wizard_apply_queue_checkbox.setChecked(False)
-        self.wizard_auto_vertical_clip_button = QPushButton("Auto Vertical Clip")
+        self.wizard_auto_vertical_border_crop_button = QPushButton("Auto Vertical Border Crop")
         self.wizard_remove_scrollbar_button = QPushButton("Remove Vertical Scrollbar")
         self.wizard_remove_border_button = QPushButton("Remove Window Border")
         self.wizard_undo_button = QPushButton("Undo")
@@ -716,7 +725,10 @@ class MainWindow(QMainWindow):
         for widget, control in (
             (self.wizardry_group, "wizardry_group"),
             (self.wizard_apply_queue_checkbox, "wizard_apply_queue_checkbox"),
-            (self.wizard_auto_vertical_clip_button, "wizard_auto_vertical_clip_button"),
+            (
+                self.wizard_auto_vertical_border_crop_button,
+                "wizard_auto_vertical_border_crop_button",
+            ),
             (self.wizard_remove_scrollbar_button, "wizard_remove_scrollbar_button"),
             (self.wizard_remove_border_button, "wizard_remove_border_button"),
             (self.wizard_undo_button, "wizard_undo_button"),
@@ -724,7 +736,7 @@ class MainWindow(QMainWindow):
         ):
             self._assign_control_identity(widget, control, control)
         wizardry_layout.addWidget(self.wizard_apply_queue_checkbox)
-        wizardry_layout.addWidget(self.wizard_auto_vertical_clip_button)
+        wizardry_layout.addWidget(self.wizard_auto_vertical_border_crop_button)
         wizardry_layout.addWidget(self.wizard_remove_scrollbar_button)
         wizardry_layout.addWidget(self.wizard_remove_border_button)
         wizardry_actions_row = QHBoxLayout()
@@ -765,6 +777,13 @@ class MainWindow(QMainWindow):
         self.docx_checkbox = QCheckBox("DOCX")
         self.pptx_checkbox = QCheckBox("PPTX")
         self.xlsx_checkbox = QCheckBox("Excel (XLSX)")
+        self.open_after_export_checkbox = QCheckBox("Open file after export")
+        self.open_after_export_checkbox.setChecked(True)
+        self._assign_control_identity(
+            self.open_after_export_checkbox,
+            "open_after_export_checkbox",
+            "open_after_export_checkbox",
+        )
         self.docx_mode_combo = QComboBox()
         self.docx_mode_combo.addItem("Per split-page", "per_split_page")
         self.docx_mode_combo.addItem("Per capture", "per_capture")
@@ -788,6 +807,7 @@ class MainWindow(QMainWindow):
         export_formats_layout.addWidget(self.docx_checkbox, 2, 1)
         export_formats_layout.addWidget(self.pptx_checkbox, 2, 2)
         export_formats_layout.addWidget(self.xlsx_checkbox, 3, 0)
+        export_formats_layout.addWidget(self.open_after_export_checkbox, 3, 1, 1, 2)
         export_formats_layout.addWidget(QLabel("DOCX/PPTX/XLSX mode"), 4, 0)
         export_formats_layout.addWidget(self.docx_mode_combo, 4, 1, 1, 2)
         export_layout.addWidget(self.export_formats_group)
@@ -845,7 +865,9 @@ class MainWindow(QMainWindow):
         self.up_button.clicked.connect(self._queue_move_up)
         self.down_button.clicked.connect(self._queue_move_down)
         self.remove_button.clicked.connect(self._queue_remove)
-        self.wizard_auto_vertical_clip_button.clicked.connect(self._run_wizard_auto_vertical_clip)
+        self.wizard_auto_vertical_border_crop_button.clicked.connect(
+            self._run_wizard_auto_vertical_border_crop
+        )
         self.wizard_remove_scrollbar_button.clicked.connect(self._run_wizard_remove_scrollbar)
         self.wizard_remove_border_button.clicked.connect(self._run_wizard_remove_window_border)
         self.wizard_undo_button.clicked.connect(self._undo_editor_change)
@@ -885,6 +907,7 @@ class MainWindow(QMainWindow):
         self.footer_input.textChanged.connect(self._on_layout_controls_changed)
         self.editor_overlay_toggle.toggled.connect(self._on_overlay_visibility_changed)
         self.page_preview_list.currentRowChanged.connect(self._on_page_preview_selected)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.capture_splitter.splitterMoved.connect(self._persist_splitter_sizes)
         self.editor_splitter.splitterMoved.connect(self._persist_splitter_sizes)
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
@@ -1010,8 +1033,8 @@ class MainWindow(QMainWindow):
                 "Apply Wizardry actions to all queue items instead of only the selected item.",
             ),
             (
-                self.wizard_auto_vertical_clip_button,
-                "Auto Vertical Clip: suggest left/right nav crop using edge heuristics.",
+                self.wizard_auto_vertical_border_crop_button,
+                "Auto Vertical Border Crop: detect left/right content bounds from center to border.",
             ),
             (
                 self.wizard_remove_scrollbar_button,
@@ -1033,6 +1056,10 @@ class MainWindow(QMainWindow):
             (self.docx_checkbox, "Export DOCX output."),
             (self.pptx_checkbox, "Export PPTX output."),
             (self.xlsx_checkbox, "Export XLSX output with metadata and image previews."),
+            (
+                self.open_after_export_checkbox,
+                "Open output file (or folder when multiple files are generated) after export.",
+            ),
             (self.docx_mode_combo, "Choose whether DOCX/PPTX/XLSX uses split pages or per-capture images."),
             (self.base_input, "Base filename used for exported files."),
             (self.output_input, "Destination folder for exported files."),
@@ -1078,6 +1105,9 @@ class MainWindow(QMainWindow):
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self._open_settings_window)
         view_menu.addAction(settings_action)
+        reset_view_action = QAction("Reset View", self)
+        reset_view_action.triggered.connect(self._reset_view_state)
+        view_menu.addAction(reset_view_action)
 
     def _open_settings_window(self) -> None:
         if self._settings_window is None:
@@ -1089,6 +1119,7 @@ class MainWindow(QMainWindow):
         self._settings_window.activateWindow()
 
     def _apply_settings_payload(self, payload_obj: object) -> None:
+        self._flush_debounced_preview_update()
         payload = payload_obj if isinstance(payload_obj, dict) else {}
         for key, value in payload.items():
             self._settings.setValue(key, value)
@@ -1129,6 +1160,7 @@ class MainWindow(QMainWindow):
             "export.docx": self.docx_checkbox.isChecked(),
             "export.pptx": self.pptx_checkbox.isChecked(),
             "export.xlsx": self.xlsx_checkbox.isChecked(),
+            "export.open_after_export": self.open_after_export_checkbox.isChecked(),
             "export.docx_mode": str(self.docx_mode_combo.currentData()),
             "layout.paper_name": self.paper_combo.currentText(),
             "layout.orientation": self.orientation_combo.currentText(),
@@ -1144,6 +1176,7 @@ class MainWindow(QMainWindow):
             "ui.editor_adv_collapsed": not self.editor_advanced_group.isChecked(),
             "ui.export_adv_collapsed": not self.export_advanced_group.isChecked(),
             "ui.editor_overlay_visible": self.editor_overlay_toggle.isChecked(),
+            "editor.preview_debounce_ms": int(self._editor_preview_debounce_ms),
             "ui.window_geometry": self.saveGeometry(),
             "ui.window_is_maximized": self.isMaximized(),
             "ui.capture_splitter_sizes": self.capture_splitter.sizes(),
@@ -1205,6 +1238,9 @@ class MainWindow(QMainWindow):
             self.docx_checkbox.setChecked(self._bool_setting("export.docx", False))
             self.pptx_checkbox.setChecked(self._bool_setting("export.pptx", False))
             self.xlsx_checkbox.setChecked(self._bool_setting("export.xlsx", False))
+            self.open_after_export_checkbox.setChecked(
+                self._bool_setting("export.open_after_export", True)
+            )
             mode = str(self._settings.value("export.docx_mode", "per_split_page"))
             if mode == "per_capture":
                 self.docx_mode_combo.setCurrentIndex(1)
@@ -1241,6 +1277,10 @@ class MainWindow(QMainWindow):
             overlay_visible = self._bool_setting("ui.editor_overlay_visible", True)
             self.editor_overlay_toggle.setChecked(overlay_visible)
             self.editor_canvas.set_overlay_visibility(overlay_visible)
+            self._editor_preview_debounce_ms = self._clamp_preview_debounce_ms(
+                self._settings.value("editor.preview_debounce_ms", 333)
+            )
+            self._preview_update_timer.setInterval(self._editor_preview_debounce_ms)
             self._restore_splitter_sizes()
 
             self.tabs.setCurrentIndex(0)
@@ -1306,6 +1346,14 @@ class MainWindow(QMainWindow):
                 parsed.append(number)
         return parsed
 
+    @staticmethod
+    def _clamp_preview_debounce_ms(value: object) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            parsed = 333
+        return max(0, min(2000, parsed))
+
     def _persist_splitter_sizes(self, *_args: object) -> None:
         self._settings.setValue("ui.capture_splitter_sizes", self.capture_splitter.sizes())
         self._settings.setValue("ui.editor_splitter_sizes", self.editor_splitter.sizes())
@@ -1322,6 +1370,27 @@ class MainWindow(QMainWindow):
             self.editor_splitter.setSizes(editor_sizes)
         else:
             self.editor_splitter.setSizes([980, 360])
+
+    def _reset_view_state(self) -> None:
+        keys = (
+            "ui.window_geometry",
+            "ui.window_is_maximized",
+            "ui.capture_splitter_sizes",
+            "ui.editor_splitter_sizes",
+        )
+        for key in keys:
+            self._settings.remove(key)
+        self._settings.sync()
+        self._window_state_restore_in_progress = True
+        try:
+            self.showNormal()
+            self.capture_splitter.setSizes([560, 420])
+            self.editor_splitter.setSizes([980, 360])
+            self.showMaximized()
+        finally:
+            self._window_state_restore_in_progress = False
+        self._persist_window_state_snapshot()
+        self.status_label.setText("View reset to defaults.")
 
     def _set_capture_backend_combo(self, backend: str) -> None:
         normalized = str(backend or "").strip().lower()
@@ -1541,13 +1610,17 @@ class MainWindow(QMainWindow):
         crosshair_action.triggered.connect(self._pick_window_crosshair)
         menu.addSeparator()
 
-        windows = self._capture_service.list_top_windows(int(self.winId()))
+        windows = self._capture_service.list_top_windows(
+            int(self.winId()),
+            include_minimized=True,
+        )
         if not windows:
             empty_action = menu.addAction("No visible windows")
             empty_action.setEnabled(False)
             return
         for info in sorted(windows, key=lambda item: item.sort_key):
-            action = menu.addAction(info.label)
+            display = f"{info.label} (minimized)" if info.is_minimized else info.label
+            action = menu.addAction(display)
             action.setData(info.hwnd)
             action.triggered.connect(self._pick_window_from_menu_action)
 
@@ -1950,6 +2023,7 @@ class MainWindow(QMainWindow):
         list_item = QListWidgetItem(f"{item.title} [{item.image_path.name}]")
         self.queue_list.addItem(list_item)
         self.queue_list.setCurrentRow(self.queue_list.count() - 1)
+        self._editor_scroll_to_top_pending = True
         self._refresh_queue_summary()
 
     def _import_images(self) -> None:
@@ -2015,6 +2089,12 @@ class MainWindow(QMainWindow):
         self._sync_split_marker_list()
         self._refresh_preview()
         self._refresh_queue_summary()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index != 1 or not self._editor_scroll_to_top_pending:
+            return
+        self._editor_scroll_to_top_pending = False
+        QTimer.singleShot(0, self.editor_canvas.scroll_to_top)
 
     def _session_for_item(self, item_id: str) -> EditAdjustments:
         existing = self._sessions.edits_by_item_id.get(item_id)
@@ -2115,20 +2195,80 @@ class MainWindow(QMainWindow):
     def _editor_controls_changed(self, *_args: object) -> None:
         if self._editor_loading:
             return
-        edits = self._current_session()
-        if edits is None:
+        item = self._current_item()
+        if item is None:
             return
-        before = self._snapshot_history_entry()
-        self._set_scalar_operation(edits, "scale", "percent", int(self.zoom_spin.value()), 100)
-        self._set_scalar_operation(edits, "rotate", "degrees", int(self.rotate_spin.value()), 0)
-        self._set_scalar_operation(
-            edits,
-            "straighten",
-            "degrees",
+        self._pending_transform_item_id = item.item_id
+        self._pending_transform_values = (
+            int(self.zoom_spin.value()),
+            int(self.rotate_spin.value()),
             int(self.straighten_spin.value()),
-            0,
         )
-        self._push_history_if_changed(before)
+        self._schedule_debounced_preview_update(transform_changed=True)
+
+    def _schedule_debounced_preview_update(
+        self,
+        *,
+        transform_changed: bool = False,
+        layout_changed: bool = False,
+    ) -> None:
+        self._preview_update_pending_transform = (
+            self._preview_update_pending_transform or bool(transform_changed)
+        )
+        self._preview_update_pending_layout = (
+            self._preview_update_pending_layout or bool(layout_changed)
+        )
+        if not self._preview_update_pending_transform and not self._preview_update_pending_layout:
+            return
+        if self._editor_preview_debounce_ms <= 0:
+            self._flush_debounced_preview_update()
+            return
+        self._preview_update_timer.start(self._editor_preview_debounce_ms)
+
+    def _flush_debounced_preview_update(self) -> None:
+        self._preview_update_timer.stop()
+        pending_transform = self._preview_update_pending_transform
+        pending_layout = self._preview_update_pending_layout
+        self._preview_update_pending_transform = False
+        self._preview_update_pending_layout = False
+        if not pending_transform and not pending_layout:
+            return
+
+        if pending_transform:
+            item_id = self._pending_transform_item_id
+            transform_values = self._pending_transform_values
+            self._pending_transform_item_id = None
+            self._pending_transform_values = None
+            if item_id and transform_values:
+                edits = self._sessions.edits_by_item_id.get(item_id)
+            else:
+                edits = None
+            if edits is not None and transform_values is not None:
+                zoom_percent, rotate_degrees, straighten_degrees = transform_values
+                before = self._snapshot_history_entry()
+                self._set_scalar_operation(
+                    edits,
+                    "scale",
+                    "percent",
+                    int(zoom_percent),
+                    100,
+                )
+                self._set_scalar_operation(
+                    edits,
+                    "rotate",
+                    "degrees",
+                    int(rotate_degrees),
+                    0,
+                )
+                self._set_scalar_operation(
+                    edits,
+                    "straighten",
+                    "degrees",
+                    int(straighten_degrees),
+                    0,
+                )
+                self._push_history_if_changed(before)
+
         self._refresh_preview()
 
     def _set_scalar_operation(
@@ -2209,6 +2349,7 @@ class MainWindow(QMainWindow):
         *,
         selected_marker: int | None = None,
     ) -> None:
+        self._flush_debounced_preview_update()
         edits = self._current_session()
         if edits is None:
             return
@@ -2220,6 +2361,7 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
 
     def _reset_item_edits(self) -> None:
+        self._flush_debounced_preview_update()
         item = self._current_item()
         if item is None:
             return
@@ -2298,7 +2440,7 @@ class MainWindow(QMainWindow):
     def _on_layout_controls_changed(self, *_args: object) -> None:
         if self._editor_loading:
             return
-        self._refresh_preview()
+        self._schedule_debounced_preview_update(layout_changed=True)
 
     def _on_overlay_visibility_changed(self, checked: bool) -> None:
         self.editor_canvas.set_overlay_visibility(bool(checked))
@@ -2358,11 +2500,18 @@ class MainWindow(QMainWindow):
 
     def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
         keep_normalized = str(keep or "").strip().lower()
-        for op_type in ("crop_rect", "crop_free", "crop_vertical_band", "nav_auto_crop"):
+        for op_type in (
+            "crop_rect",
+            "crop_free",
+            "crop_vertical_band",
+            "nav_auto_crop",
+            "auto_vertical_border_crop",
+        ):
             if op_type != keep_normalized:
                 edits.remove_operation(op_type)
 
     def _on_editor_rect_drawn(self, tool: str, rect_obj: object) -> None:
+        self._flush_debounced_preview_update()
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
@@ -2407,6 +2556,7 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
 
     def _on_editor_free_crop(self, points_obj: object) -> None:
+        self._flush_debounced_preview_update()
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
@@ -2482,13 +2632,15 @@ class MainWindow(QMainWindow):
     def _queue_confidence_minimum(total_items: int) -> int:
         return max(2, math.ceil(0.6 * total_items))
 
-    def _run_wizard_auto_vertical_clip(self, *_args: object) -> None:
+    def _run_wizard_auto_vertical_border_crop(self, *_args: object) -> None:
+        self._flush_debounced_preview_update()
         if self._wizard_apply_to_queue():
-            self._apply_auto_crop_queue()
+            self._apply_auto_vertical_border_crop_queue()
             return
-        self._apply_auto_crop_item()
+        self._apply_auto_vertical_border_crop_item()
 
     def _run_wizard_remove_scrollbar(self, *_args: object) -> None:
+        self._flush_debounced_preview_update()
         if self._wizard_apply_to_queue():
             if not self._queue:
                 self.status_label.setText("Queue is empty.")
@@ -2671,6 +2823,7 @@ class MainWindow(QMainWindow):
         return (True, True)
 
     def _run_wizard_remove_window_border(self, *_args: object) -> None:
+        self._flush_debounced_preview_update()
         if self._wizard_apply_to_queue():
             if not self._queue:
                 self.status_label.setText("Queue is empty.")
@@ -2718,75 +2871,75 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText("No deeper border confidently detected.")
 
-    def _apply_auto_crop_item(self) -> None:
+    def _apply_auto_vertical_border_crop_item(self) -> None:
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
             return
         image = Image.open(item.image_path).convert("RGB")
-        left_px, right_px, left_ok, right_ok = suggest_navigation_crop_with_confidence(image)
+        left_px, right_px, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
+            image
+        )
         before = self._snapshot_history_entry()
         edits = self._session_for_item(item.item_id)
         if (left_ok and left_px > 0) or (right_ok and right_px > 0):
-            edits.set_operation("nav_auto_crop", {"left": int(left_px), "right": int(right_px)})
+            edits.remove_operation("nav_auto_crop")
+            edits.set_operation(
+                "auto_vertical_border_crop",
+                {"left": int(left_px), "right": int(right_px)},
+            )
             self.status_label.setText(
-                f"Auto vertical clip applied (left={int(left_px)}px right={int(right_px)}px)."
+                "Auto vertical border crop applied "
+                f"(left={int(left_px)}px right={int(right_px)}px)."
             )
         else:
+            edits.remove_operation("auto_vertical_border_crop")
             edits.remove_operation("nav_auto_crop")
-            self.status_label.setText("Auto vertical clip has insufficient confidence.")
+            self.status_label.setText(
+                "Auto vertical border crop has insufficient confidence."
+            )
         self._push_history_if_changed(before)
         self._refresh_preview()
 
-    def _apply_auto_crop_queue(self) -> None:
+    def _apply_auto_vertical_border_crop_queue(self) -> None:
         if not self._queue:
             self.status_label.setText("Queue is empty.")
             return
-        left_ratios: list[float] = []
-        right_ratios: list[float] = []
-        for item in self._queue:
-            if not item.image_path.exists():
-                continue
-            image = Image.open(item.image_path).convert("RGB")
-            left_px, right_px, left_ok, right_ok = suggest_navigation_crop_with_confidence(image)
-            width = max(1, image.width)
-            if left_ok and left_px > 0:
-                left_ratios.append(float(left_px) / float(width))
-            if right_ok and right_px > 0:
-                right_ratios.append(float(right_px) / float(width))
-        minimum_count = self._queue_confidence_minimum(len(self._queue))
-        left_ratio = (
-            float(np.median(np.asarray(left_ratios, dtype=np.float32)))
-            if len(left_ratios) >= minimum_count
-            else 0.0
-        )
-        right_ratio = (
-            float(np.median(np.asarray(right_ratios, dtype=np.float32)))
-            if len(right_ratios) >= minimum_count
-            else 0.0
-        )
-        if left_ratio <= 0.0 and right_ratio <= 0.0:
-            self.status_label.setText("Queue auto vertical clip has insufficient confidence.")
-            return
         before = self._snapshot_history_entry()
+        applied_items = 0
         for item in self._queue:
             if not item.image_path.exists():
                 continue
             image = Image.open(item.image_path).convert("RGB")
-            left_px = round(left_ratio * image.width)
-            right_px = round(right_ratio * image.width)
+            left_px, right_px, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
+                image
+            )
             edits = self._session_for_item(item.item_id)
-            if left_px <= 0 and right_px <= 0:
+            if (left_ok and left_px > 0) or (right_ok and right_px > 0):
                 edits.remove_operation("nav_auto_crop")
-            else:
-                edits.set_operation("nav_auto_crop", {"left": int(left_px), "right": int(right_px)})
-        self._push_history_if_changed(before)
+                edits.set_operation(
+                    "auto_vertical_border_crop",
+                    {"left": int(left_px), "right": int(right_px)},
+                )
+                applied_items += 1
+                continue
+            edits.remove_operation("auto_vertical_border_crop")
+            edits.remove_operation("nav_auto_crop")
+        changed = self._push_history_if_changed(before)
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
-        self.status_label.setText("Queue auto vertical clip applied.")
+        if changed and applied_items > 0:
+            self.status_label.setText(
+                f"Queue auto vertical border crop applied to {applied_items} item(s)."
+            )
+        else:
+            self.status_label.setText(
+                "Queue auto vertical border crop has insufficient confidence."
+            )
 
     def _clear_redactions(self) -> None:
+        self._flush_debounced_preview_update()
         edits = self._current_session()
         if edits is None:
             self.status_label.setText("Select queue item first.")
@@ -2872,6 +3025,7 @@ class MainWindow(QMainWindow):
             self.output_input.setText(selected)
 
     def _run_export(self) -> None:
+        self._flush_debounced_preview_update()
         if not self._queue:
             self.status_label.setText("Queue is empty.")
             return
@@ -2953,9 +3107,14 @@ class MainWindow(QMainWindow):
             len(result.generated_paths),
             result.generated_paths[0] if result.generated_paths else "n/a",
         )
-        if result.generated_paths:
+        if self.open_after_export_checkbox.isChecked() and result.generated_paths:
+            launch_path = (
+                result.generated_paths[0]
+                if len(result.generated_paths) == 1
+                else Path(self.output_input.text().strip())
+            )
             with suppress(OSError):
-                os.startfile(str(result.generated_paths[0]))
+                os.startfile(str(launch_path))
 
     def _assign_control_identity(self, widget: QWidget, control: str, alias: str) -> None:
         widget_id = widget_naming.control_widget_id(self.window_id, control)
@@ -2968,6 +3127,7 @@ class MainWindow(QMainWindow):
         widget.setProperty("widget_alias", alias)
 
     def closeEvent(self, event) -> None:
+        self._flush_debounced_preview_update()
         self._request_stop()
         self._window_state_timer.stop()
         self._persist_window_state_snapshot()

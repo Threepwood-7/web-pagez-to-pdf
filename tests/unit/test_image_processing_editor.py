@@ -4,6 +4,7 @@ from PIL import Image
 
 from web_pagez_to_pdf.image_processing import (
     apply_edit_transform,
+    suggest_auto_vertical_border_crop_with_confidence,
     suggest_navigation_crop,
     suggest_navigation_crop_with_confidence,
     suggest_scrollbar_trim_with_confidence,
@@ -47,6 +48,33 @@ def test_navigation_crop_confidence_on_blank_image_is_false() -> None:
     assert not right_confident
 
 
+def test_auto_vertical_border_crop_detects_side_borders() -> None:
+    image = Image.new("RGB", (320, 220), (230, 230, 230))
+    for y_pos in range(image.height):
+        for x_pos in range(34, 286):
+            image.putpixel((x_pos, y_pos), (255, 255, 255))
+        if y_pos % 6 == 0:
+            for x_pos in range(70, 250, 14):
+                image.putpixel((x_pos, y_pos), (30, 30, 30))
+
+    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(image)
+
+    assert left_ok and right_ok
+    assert left >= 20
+    assert right >= 20
+
+
+def test_auto_vertical_border_crop_blank_image_is_noop() -> None:
+    image = Image.new("RGB", (320, 240), "white")
+
+    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(image)
+
+    assert left == 0
+    assert right == 0
+    assert not left_ok
+    assert not right_ok
+
+
 def test_wizard_scrollbar_trim_operation_reduces_width() -> None:
     image = Image.new("RGB", (180, 80), "white")
     edits = EditAdjustments()
@@ -78,6 +106,21 @@ def test_wizard_border_trim_operation_reduces_width_and_height() -> None:
 
     assert transformed.width == 188
     assert transformed.height == 113
+
+
+def test_legacy_nav_auto_crop_operation_still_applies() -> None:
+    image = Image.new("RGB", (180, 120), "white")
+    edits = EditAdjustments()
+    edits.set_operation("nav_auto_crop", {"left": 12, "right": 18})
+
+    transformed = apply_edit_transform(
+        image,
+        PrintLayout(zoom_percent=100.0, rotate_degrees=0),
+        edits,
+    )
+
+    assert transformed.width == 150
+    assert transformed.height == 120
 
 
 def test_suggest_scrollbar_trim_with_confidence_detects_right_band() -> None:

@@ -115,6 +115,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:export_run_group"
     )
     assert (
+        window.open_after_export_checkbox.property("widget_id")
+        == "window:main:control:open_after_export_checkbox"
+    )
+    assert (
         window.editor_overlay_toggle.property("widget_id")
         == "window:main:control:editor_overlay_toggle"
     )
@@ -132,8 +136,8 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:wizard_apply_queue_checkbox"
     )
     assert (
-        window.wizard_auto_vertical_clip_button.property("widget_id")
-        == "window:main:control:wizard_auto_vertical_clip_button"
+        window.wizard_auto_vertical_border_crop_button.property("widget_id")
+        == "window:main:control:wizard_auto_vertical_border_crop_button"
     )
     assert (
         window.wizard_remove_scrollbar_button.property("widget_id")
@@ -442,12 +446,17 @@ def test_pick_menu_sorted_and_target_label_format(
             process_name="firefox.exe",
             class_name="MozillaWindowClass",
             process_id=333,
+            is_minimized=True,
         ),
     ]
 
     monkeypatch.setattr(
         "web_pagez_to_pdf.capture_service.WindowCaptureService.list_top_windows",
-        lambda _self, _own_hwnd: windows,
+        lambda _self, _own_hwnd, include_minimized=False: (
+            windows
+            if include_minimized
+            else [item for item in windows if not item.is_minimized]
+        ),
     )
     monkeypatch.setattr(
         "web_pagez_to_pdf.capture_service.WindowCaptureService.window_info",
@@ -463,7 +472,7 @@ def test_pick_menu_sorted_and_target_label_format(
     assert actions[0].text() == "Pick with Crosshair..."
     assert actions[1].text() == "chrome - A Site [111, 4001]"
     assert actions[2].text() == "chrome - B Site [222, 4002]"
-    assert actions[3].text() == "firefox - Main [333, 3000]"
+    assert actions[3].text() == "firefox - Main [333, 3000] (minimized)"
 
     actions[2].trigger()
     assert window._selected_target is not None
@@ -471,7 +480,13 @@ def test_pick_menu_sorted_and_target_label_format(
 
 
 def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:
-    def _list_top_windows(_self, _own_hwnd: int) -> list[WindowInfo]:
+    def _list_top_windows(
+        _self,
+        _own_hwnd: int,
+        *,
+        include_minimized: bool = False,
+    ) -> list[WindowInfo]:
+        _unused = include_minimized
         return [
             WindowInfo(
                 hwnd=1111,
@@ -741,7 +756,7 @@ def test_editor_has_no_mini_editor_entry_point(qtbot: QtBot) -> None:
     assert not hasattr(window, "open_mini_editor_button")
 
 
-def test_wizard_vertical_clip_is_additive_with_existing_crop(
+def test_wizard_vertical_border_crop_is_additive_with_existing_crop(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -759,20 +774,20 @@ def test_wizard_vertical_clip_is_additive_with_existing_crop(
     edits = window._session_for_item(item.item_id)
     edits.set_operation("crop_rect", {"left": 10, "top": 10, "width": 100, "height": 100})
     monkeypatch.setattr(
-        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
+        "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
         lambda _image: (14, 12, True, True),
     )
 
-    window._run_wizard_auto_vertical_clip()
+    window._run_wizard_auto_vertical_border_crop()
 
     assert edits.get_operation("crop_rect") is not None
-    nav_crop = edits.get_operation("nav_auto_crop")
+    nav_crop = edits.get_operation("auto_vertical_border_crop")
     assert nav_crop is not None
     assert int(nav_crop.params.get("left", 0)) == 14
     assert int(nav_crop.params.get("right", 0)) == 12
 
 
-def test_wizard_vertical_clip_queue_mode_applies_consensus_to_all_items(
+def test_wizard_vertical_border_crop_queue_mode_applies_per_item_to_all_items(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -787,22 +802,39 @@ def test_wizard_vertical_clip_queue_mode_applies_consensus_to_all_items(
             frame_count=1,
         )
 
+    def _fake_border_crop(image: Image.Image) -> tuple[int, int, bool, bool]:
+        if image.width == 200:
+            return (12, 7, True, True)
+        if image.width == 220:
+            return (24, 15, True, True)
+        return (0, 0, False, False)
+
     monkeypatch.setattr(
-        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
-        lambda image: (int(image.width * 0.1), int(image.width * 0.08), True, True),
+        "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
+        _fake_border_crop,
     )
     window.wizard_apply_queue_checkbox.setChecked(True)
-    window._run_wizard_auto_vertical_clip()
+    window._run_wizard_auto_vertical_border_crop()
 
-    for item in window._queue:
-        edits = window._session_for_item(item.item_id)
-        nav_crop = edits.get_operation("nav_auto_crop")
-        assert nav_crop is not None
-        assert int(nav_crop.params.get("left", 0)) > 0
-        assert int(nav_crop.params.get("right", 0)) > 0
+    first = window._session_for_item(window._queue[0].item_id).get_operation(
+        "auto_vertical_border_crop"
+    )
+    second = window._session_for_item(window._queue[1].item_id).get_operation(
+        "auto_vertical_border_crop"
+    )
+    third = window._session_for_item(window._queue[2].item_id).get_operation(
+        "auto_vertical_border_crop"
+    )
+    assert first is not None
+    assert int(first.params.get("left", 0)) == 12
+    assert int(first.params.get("right", 0)) == 7
+    assert second is not None
+    assert int(second.params.get("left", 0)) == 24
+    assert int(second.params.get("right", 0)) == 15
+    assert third is None
 
 
-def test_wizard_vertical_clip_queue_mode_noop_on_insufficient_confidence(
+def test_wizard_vertical_border_crop_queue_mode_noop_on_insufficient_confidence(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -817,17 +849,17 @@ def test_wizard_vertical_clip_queue_mode_noop_on_insufficient_confidence(
             frame_count=1,
         )
     monkeypatch.setattr(
-        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
+        "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
         lambda _image: (0, 0, False, False),
     )
 
     window.wizard_apply_queue_checkbox.setChecked(True)
-    window._run_wizard_auto_vertical_clip()
+    window._run_wizard_auto_vertical_border_crop()
 
     assert "insufficient confidence" in window.status_label.text().lower()
     for item in window._queue:
         edits = window._session_for_item(item.item_id)
-        assert edits.get_operation("nav_auto_crop") is None
+        assert edits.get_operation("auto_vertical_border_crop") is None
 
 
 def test_wizard_remove_scrollbar_sets_operation(qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -1185,6 +1217,44 @@ def test_split_marker_and_layout_changes_refresh_page_preview_sidebar(
     assert window.page_preview_list.count() != initial_count
 
 
+def test_editor_scroll_resets_to_top_when_entering_editor_after_new_capture(
+    qtbot: QtBot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+
+    window._add_capture(
+        image=Image.new("RGB", (420, 4200), "white"),
+        title="first",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(80)
+    window.editor_canvas.focus_on_y(3900.0)
+    qtbot.wait(80)
+    assert (
+        window.editor_canvas.verticalScrollBar().value()
+        > window.editor_canvas.verticalScrollBar().minimum()
+    )
+
+    window.tabs.setCurrentIndex(0)
+    window._add_capture(
+        image=Image.new("RGB", (420, 4200), "white"),
+        title="second",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.tabs.setCurrentIndex(1)
+    qtbot.waitUntil(
+        lambda: window.editor_canvas.verticalScrollBar().value()
+        == window.editor_canvas.verticalScrollBar().minimum()
+    )
+
+
 def test_run_export_single_format_updates_status_without_crash(
     qtbot: QtBot,
     tmp_path: Path,
@@ -1220,11 +1290,62 @@ def test_run_export_single_format_updates_status_without_crash(
         return ExportResult(generated_paths=[out])
 
     monkeypatch.setattr("web_pagez_to_pdf.main_window.run_export", _fake_run_export)
+    monkeypatch.setattr("web_pagez_to_pdf.main_window.os.startfile", lambda _path: None)
 
     window._run_export()
 
     assert called["count"] == 1
     assert "exported 1 file" in window.status_label.text().lower()
+
+
+def test_open_after_export_launches_file_or_folder_by_output_count(
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (240, 320), "white"),
+        title="export-open",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window.pdf_checkbox.setChecked(False)
+    window.xlsx_checkbox.setChecked(True)
+    launched: list[str] = []
+
+    monkeypatch.setattr("web_pagez_to_pdf.main_window.os.startfile", launched.append)
+
+    single = tmp_path / "single.xlsx"
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.run_export",
+        lambda _request: ExportResult(generated_paths=[single]),
+    )
+    window.open_after_export_checkbox.setChecked(True)
+    window._run_export()
+    assert launched[-1] == str(single)
+
+    first = tmp_path / "one.pdf"
+    second = tmp_path / "two.xlsx"
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.run_export",
+        lambda _request: ExportResult(generated_paths=[first, second]),
+    )
+    window._run_export()
+    assert launched[-1] == str(tmp_path)
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.run_export",
+        lambda _request: ExportResult(generated_paths=[single]),
+    )
+    window.open_after_export_checkbox.setChecked(False)
+    launched_count = len(launched)
+    window._run_export()
+    assert len(launched) == launched_count
 
 
 def _clear_window_state_settings() -> None:
@@ -1290,6 +1411,28 @@ def test_window_geometry_and_splitter_sizes_restore(qtbot: QtBot) -> None:
     _clear_window_state_settings()
 
 
+def test_view_reset_action_restores_default_splitters(qtbot: QtBot) -> None:
+    _clear_window_state_settings()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.showNormal()
+    window.capture_splitter.setSizes([200, 900])
+    window.editor_splitter.setSizes([300, 900])
+    window._persist_window_state_snapshot()
+
+    window._reset_view_state()
+
+    capture_sizes = window.capture_splitter.sizes()
+    editor_sizes = window.editor_splitter.sizes()
+    assert capture_sizes[0] > 0 and capture_sizes[1] > 0
+    assert editor_sizes[0] > 0 and editor_sizes[1] > 0
+    assert capture_sizes != [200, 900]
+    assert editor_sizes != [300, 900]
+    assert "view reset to defaults" in window.status_label.text().lower()
+    _clear_window_state_settings()
+
+
 def test_export_xlsx_setting_persists_and_defaults_false(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1300,6 +1443,91 @@ def test_export_xlsx_setting_persists_and_defaults_false(qtbot: QtBot) -> None:
     )
     window._settings.clear()
     window._settings.sync()
+
+
+def test_export_open_after_and_preview_debounce_settings_persist(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._settings = QSettings(
+        "web-pagez-to-pdf-tests",
+        "test_export_open_after_and_preview_debounce_settings_persist",
+    )
+    window._settings.clear()
+    window._settings.sync()
+
+    window._settings.setValue("export.open_after_export", False)
+    window._settings.setValue("editor.preview_debounce_ms", 0)
+    window._settings.sync()
+    window._load_runtime_settings()
+    assert not window.open_after_export_checkbox.isChecked()
+    assert window._editor_preview_debounce_ms == 0
+
+    window._settings.setValue("export.open_after_export", True)
+    window._settings.setValue("editor.preview_debounce_ms", 9999)
+    window._settings.sync()
+    window._load_runtime_settings()
+    assert window.open_after_export_checkbox.isChecked()
+    assert window._editor_preview_debounce_ms == 2000
+
+    payload = window._collect_settings_payload()
+    assert bool(payload["export.open_after_export"]) is True
+    assert int(payload["editor.preview_debounce_ms"]) == 2000
+
+    window._settings.clear()
+    window._settings.sync()
+
+
+def test_editor_preview_debounce_applies_transform_after_delay(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._settings.setValue("editor.preview_debounce_ms", 180)
+    window._settings.sync()
+    window._load_runtime_settings()
+    window._add_capture(
+        image=Image.new("RGB", (300, 500), "white"),
+        title="debounce",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+
+    window.zoom_spin.setValue(125)
+    window.rotate_spin.setValue(3)
+    assert edits.get_operation("scale") is None
+    assert edits.get_operation("rotate") is None
+
+    qtbot.waitUntil(lambda: edits.get_operation("scale") is not None, timeout=1000)
+    assert int(edits.get_operation("scale").params.get("percent", 0)) == 125  # type: ignore[union-attr]
+    assert int(edits.get_operation("rotate").params.get("degrees", 0)) == 3  # type: ignore[union-attr]
+
+
+def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._settings.setValue("editor.preview_debounce_ms", 0)
+    window._settings.sync()
+    window._load_runtime_settings()
+    window._add_capture(
+        image=Image.new("RGB", (300, 500), "white"),
+        title="debounce-zero",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+
+    window.zoom_spin.setValue(130)
+    op = edits.get_operation("scale")
+    assert op is not None
+    assert int(op.params.get("percent", 0)) == 130
 
     window._settings.remove("export.xlsx")
     window._settings.sync()
@@ -1362,7 +1590,7 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.capture_backend_combo,
         window.capture_scroll_mode_combo,
         window.wizard_apply_queue_checkbox,
-        window.wizard_auto_vertical_clip_button,
+        window.wizard_auto_vertical_border_crop_button,
         window.wizard_remove_scrollbar_button,
         window.wizard_remove_border_button,
         window.wizard_undo_button,
@@ -1388,6 +1616,7 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.pdf_checkbox,
         window.tiff_checkbox,
         window.xlsx_checkbox,
+        window.open_after_export_checkbox,
         window.docx_mode_combo,
         window.base_input,
         window.output_input,

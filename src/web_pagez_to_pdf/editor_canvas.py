@@ -127,6 +127,12 @@ class EditorCanvas(QGraphicsView):
         clamped_y = max(0.0, min(float(pixmap.height() - 1), float(y_pos)))
         self.centerOn(QPointF(float(pixmap.width()) / 2.0, clamped_y))
 
+    def scroll_to_top(self) -> None:
+        """Scroll both axes to their minimum values."""
+
+        self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().minimum())
+
     def set_zoom_mode(self, mode: str, *, manual_percent: int | None = None) -> None:
         """Switch zoom mode and redraw view scaling."""
 

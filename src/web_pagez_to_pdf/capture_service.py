@@ -34,6 +34,7 @@ SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
 HWND_TOP = 0
+SW_RESTORE = 9
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
@@ -96,6 +97,8 @@ USER32.SetWindowPos.argtypes = [
     wintypes.UINT,
 ]
 USER32.SetWindowPos.restype = wintypes.BOOL
+USER32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+USER32.ShowWindow.restype = wintypes.BOOL
 USER32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
 USER32.AttachThreadInput.restype = wintypes.BOOL
 USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
@@ -186,6 +189,7 @@ class WindowInfo:
     process_name: str
     class_name: str
     process_id: int = 0
+    is_minimized: bool = False
 
     @property
     def process_short_name(self) -> str:
@@ -275,7 +279,7 @@ class WindowCaptureService:
             )
         return None
 
-    def list_top_windows(self, own_hwnd: int) -> list[WindowInfo]:
+    def list_top_windows(self, own_hwnd: int, *, include_minimized: bool = False) -> list[WindowInfo]:
         """Enumerate currently visible top-level windows."""
 
         windows: list[WindowInfo] = []
@@ -284,7 +288,7 @@ class WindowCaptureService:
         def _enum_proc(hwnd: int, _lparam: int) -> bool:
             if hwnd == own_hwnd:
                 return True
-            if not self._is_capture_candidate(hwnd):
+            if not self._is_capture_candidate(hwnd, include_minimized=include_minimized):
                 return True
             info = self.window_info(int(hwnd))
             if info is None:
@@ -313,6 +317,7 @@ class WindowCaptureService:
             process_name=self.window_process_name(hwnd),
             process_id=process_id,
             class_name=self.window_class_name(hwnd),
+            is_minimized=bool(USER32.IsIconic(hwnd)),
         )
 
     @staticmethod
@@ -327,7 +332,7 @@ class WindowCaptureService:
 
     @staticmethod
     def activate_window(hwnd: int) -> tuple[bool, str]:
-        """Attempt foreground/focus without changing target window state."""
+        """Attempt foreground/focus, restoring minimized targets when needed."""
 
         if hwnd <= 0:
             LOGGER.error("activate_window invalid hwnd=%s", hwnd)
@@ -336,8 +341,15 @@ class WindowCaptureService:
             LOGGER.error("activate_window target not visible hwnd=%s", hwnd)
             return (False, "Target window is not visible. Bring it on-screen and retry.")
         if bool(USER32.IsIconic(hwnd)):
-            LOGGER.error("activate_window target minimized hwnd=%s", hwnd)
-            return (False, "Target window is minimized. Restore it manually, then retry.")
+            LOGGER.info("activate_window target minimized, attempting restore hwnd=%s", hwnd)
+            USER32.ShowWindow(hwnd, SW_RESTORE)
+            time.sleep(0.08)
+            if bool(USER32.IsIconic(hwnd)):
+                LOGGER.error("activate_window restore failed hwnd=%s", hwnd)
+                return (
+                    False,
+                    "Target window is minimized and could not be restored. Restore it and retry.",
+                )
         if WindowCaptureService.is_foreground_window(hwnd):
             LOGGER.debug("activate_window already foreground hwnd=%s", hwnd)
             return (True, "")
@@ -831,10 +843,14 @@ class WindowCaptureService:
         return None
 
     @staticmethod
-    def _is_capture_candidate(hwnd: int) -> bool:
+    def _is_capture_candidate(hwnd: int, *, include_minimized: bool = False) -> bool:
         if hwnd <= 0:
             return False
-        return bool(USER32.IsWindowVisible(hwnd)) and not bool(USER32.IsIconic(hwnd))
+        if not bool(USER32.IsWindowVisible(hwnd)):
+            return False
+        if bool(USER32.IsIconic(hwnd)):
+            return bool(include_minimized)
+        return True
 
     @classmethod
     def _is_alt_tab_target_candidate(cls, hwnd: int, own_hwnd: int) -> bool:

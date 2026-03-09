@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from . import widget_naming
 from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
+from .image_processing import PAPER_SIZES
 from .scroll_capture import (
     DEFAULT_AUTO_TRIM_FIXED_STRIPS,
     DEFAULT_CAPTURE_LOG_LEVEL,
@@ -132,8 +135,9 @@ class SettingsWindow(QDialog):
 
     def _build_sections(self) -> None:
         capture_group = self._add_section("capture", "Capture", "capture target stop scroll")
-        editor_group = self._add_section("editor", "Editor", "editor crop rotate split redact")
         export_group = self._add_section("export", "Export", "export pdf tiff docx pptx xlsx")
+        layout_group = self._add_section("layout", "Layout", "layout paper margins header footer")
+        editor_group = self._add_section("editor", "Editor", "editor overlay debounce")
         ui_group = self._add_section("ui", "UI", "ui tab collapse")
 
         self.capture_max_pages_spin = QSpinBox(self)
@@ -256,18 +260,6 @@ class SettingsWindow(QDialog):
             self.capture_include_mouse_checkbox,
         )
 
-        editor_help_label = QLabel(
-            "Editor controls are configured directly in the Editor tab.",
-            self,
-        )
-        self._add_row(
-            editor_group,
-            "editor.inline_notice",
-            "Inline Editor",
-            "editor inline tools crop rotate split",
-            editor_help_label,
-        )
-
         output_row = QWidget(self)
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
@@ -300,6 +292,14 @@ class SettingsWindow(QDialog):
             "combine queue default",
             self.default_combine_checkbox,
         )
+        self.default_open_after_export_checkbox = QCheckBox("Open file after export", self)
+        self._add_row(
+            export_group,
+            "export.open_after_export",
+            "Open After Export",
+            "open file folder launch after export",
+            self.default_open_after_export_checkbox,
+        )
 
         self.default_pdf_checkbox = QCheckBox("PDF", self)
         self.default_paged_checkbox = QCheckBox("Paged PNG", self)
@@ -328,6 +328,148 @@ class SettingsWindow(QDialog):
             "Default Formats",
             "pdf paged long tiff docx pptx xlsx formats",
             formats_row,
+        )
+        self.default_docx_mode_combo = QComboBox(self)
+        self.default_docx_mode_combo.addItem("Per split-page", "per_split_page")
+        self.default_docx_mode_combo.addItem("Per capture", "per_capture")
+        self._add_row(
+            export_group,
+            "export.docx_mode",
+            "DOCX/PPTX/XLSX Mode",
+            "docx pptx xlsx mode per split page per capture",
+            self.default_docx_mode_combo,
+        )
+
+        self.layout_paper_combo = QComboBox(self)
+        for paper_name in sorted(PAPER_SIZES.keys()):
+            self.layout_paper_combo.addItem(paper_name, paper_name)
+        self._add_row(
+            layout_group,
+            "layout.paper_name",
+            "Paper",
+            "paper size a4 letter legal tabloid",
+            self.layout_paper_combo,
+        )
+        self.layout_orientation_combo = QComboBox(self)
+        self.layout_orientation_combo.addItem("portrait", "portrait")
+        self.layout_orientation_combo.addItem("landscape", "landscape")
+        self._add_row(
+            layout_group,
+            "layout.orientation",
+            "Orientation",
+            "layout orientation portrait landscape",
+            self.layout_orientation_combo,
+        )
+        self.layout_margin_top_spin = QDoubleSpinBox(self)
+        self.layout_margin_top_spin.setRange(0.0, 120.0)
+        self.layout_margin_top_spin.setDecimals(1)
+        self.layout_margin_top_spin.setSuffix(" mm")
+        self._add_row(
+            layout_group,
+            "layout.margin_top_mm",
+            "Top Margin",
+            "layout margin top mm",
+            self.layout_margin_top_spin,
+        )
+        self.layout_margin_bottom_spin = QDoubleSpinBox(self)
+        self.layout_margin_bottom_spin.setRange(0.0, 120.0)
+        self.layout_margin_bottom_spin.setDecimals(1)
+        self.layout_margin_bottom_spin.setSuffix(" mm")
+        self._add_row(
+            layout_group,
+            "layout.margin_bottom_mm",
+            "Bottom Margin",
+            "layout margin bottom mm",
+            self.layout_margin_bottom_spin,
+        )
+        self.layout_margin_left_spin = QDoubleSpinBox(self)
+        self.layout_margin_left_spin.setRange(0.0, 120.0)
+        self.layout_margin_left_spin.setDecimals(1)
+        self.layout_margin_left_spin.setSuffix(" mm")
+        self._add_row(
+            layout_group,
+            "layout.margin_left_mm",
+            "Left Margin",
+            "layout margin left mm",
+            self.layout_margin_left_spin,
+        )
+        self.layout_margin_right_spin = QDoubleSpinBox(self)
+        self.layout_margin_right_spin.setRange(0.0, 120.0)
+        self.layout_margin_right_spin.setDecimals(1)
+        self.layout_margin_right_spin.setSuffix(" mm")
+        self._add_row(
+            layout_group,
+            "layout.margin_right_mm",
+            "Right Margin",
+            "layout margin right mm",
+            self.layout_margin_right_spin,
+        )
+        self.layout_gutter_spin = QDoubleSpinBox(self)
+        self.layout_gutter_spin.setRange(0.0, 80.0)
+        self.layout_gutter_spin.setDecimals(1)
+        self.layout_gutter_spin.setSuffix(" mm")
+        self._add_row(
+            layout_group,
+            "layout.gutter_mm",
+            "Gutter",
+            "layout gutter mm",
+            self.layout_gutter_spin,
+        )
+        self.layout_blank_threshold_spin = QSpinBox(self)
+        self.layout_blank_threshold_spin.setRange(0, 255)
+        self._add_row(
+            layout_group,
+            "layout.blank_row_threshold",
+            "Blank Row Threshold",
+            "layout blank threshold split detection",
+            self.layout_blank_threshold_spin,
+        )
+        self.layout_search_window_spin = QSpinBox(self)
+        self.layout_search_window_spin.setRange(1, 5000)
+        self.layout_search_window_spin.setSuffix(" px")
+        self._add_row(
+            layout_group,
+            "layout.search_window_px",
+            "Search Window",
+            "layout search window px page split",
+            self.layout_search_window_spin,
+        )
+        self.layout_header_edit = QTextEdit(self)
+        self.layout_header_edit.setMinimumHeight(90)
+        self._add_row(
+            layout_group,
+            "layout.header_html",
+            "Header (Rich Text)",
+            "layout header html rich text page title tokens",
+            self.layout_header_edit,
+        )
+        self.layout_footer_edit = QTextEdit(self)
+        self.layout_footer_edit.setMinimumHeight(90)
+        self._add_row(
+            layout_group,
+            "layout.footer_html",
+            "Footer (Rich Text)",
+            "layout footer html rich text page title tokens",
+            self.layout_footer_edit,
+        )
+
+        self.editor_overlay_visible_checkbox = QCheckBox("Show split/page overlays", self)
+        self._add_row(
+            editor_group,
+            "ui.editor_overlay_visible",
+            "Overlay Visibility",
+            "editor overlay split marker guides",
+            self.editor_overlay_visible_checkbox,
+        )
+        self.editor_preview_debounce_spin = QSpinBox(self)
+        self.editor_preview_debounce_spin.setRange(0, 2000)
+        self.editor_preview_debounce_spin.setSuffix(" ms")
+        self._add_row(
+            editor_group,
+            "editor.preview_debounce_ms",
+            "Preview Debounce",
+            "editor debounce preview transform layout refresh",
+            self.editor_preview_debounce_spin,
         )
 
         self.editor_adv_collapsed = QCheckBox("Editor advanced collapsed", self)
@@ -401,6 +543,35 @@ class SettingsWindow(QDialog):
         self.default_docx_checkbox.setChecked(bool(values.get("export.docx", False)))
         self.default_pptx_checkbox.setChecked(bool(values.get("export.pptx", False)))
         self.default_xlsx_checkbox.setChecked(bool(values.get("export.xlsx", False)))
+        self.default_open_after_export_checkbox.setChecked(
+            bool(values.get("export.open_after_export", True))
+        )
+        self._set_combo_value(
+            self.default_docx_mode_combo,
+            str(values.get("export.docx_mode", "per_split_page")),
+        )
+        self._set_combo_value(
+            self.layout_paper_combo,
+            str(values.get("layout.paper_name", "A4")),
+        )
+        self._set_combo_value(
+            self.layout_orientation_combo,
+            str(values.get("layout.orientation", "portrait")),
+        )
+        self.layout_margin_top_spin.setValue(float(values.get("layout.margin_top_mm", 20.0)))
+        self.layout_margin_bottom_spin.setValue(float(values.get("layout.margin_bottom_mm", 20.0)))
+        self.layout_margin_left_spin.setValue(float(values.get("layout.margin_left_mm", 15.0)))
+        self.layout_margin_right_spin.setValue(float(values.get("layout.margin_right_mm", 15.0)))
+        self.layout_gutter_spin.setValue(float(values.get("layout.gutter_mm", 0.0)))
+        self.layout_blank_threshold_spin.setValue(int(values.get("layout.blank_row_threshold", 245)))
+        self.layout_search_window_spin.setValue(int(values.get("layout.search_window_px", 300)))
+        self.layout_header_edit.setHtml(str(values.get("layout.header_html", "")))
+        self.layout_footer_edit.setHtml(str(values.get("layout.footer_html", "")))
+        self.editor_overlay_visible_checkbox.setChecked(
+            bool(values.get("ui.editor_overlay_visible", True))
+        )
+        debounce_value = int(values.get("editor.preview_debounce_ms", 333))
+        self.editor_preview_debounce_spin.setValue(max(0, min(2000, debounce_value)))
         self.editor_adv_collapsed.setChecked(bool(values.get("ui.editor_adv_collapsed", True)))
         self.export_adv_collapsed.setChecked(bool(values.get("ui.export_adv_collapsed", True)))
 
@@ -431,6 +602,21 @@ class SettingsWindow(QDialog):
             "export.docx": self.default_docx_checkbox.isChecked(),
             "export.pptx": self.default_pptx_checkbox.isChecked(),
             "export.xlsx": self.default_xlsx_checkbox.isChecked(),
+            "export.open_after_export": self.default_open_after_export_checkbox.isChecked(),
+            "export.docx_mode": str(self.default_docx_mode_combo.currentData()),
+            "layout.paper_name": str(self.layout_paper_combo.currentData() or "A4"),
+            "layout.orientation": str(self.layout_orientation_combo.currentData() or "portrait"),
+            "layout.margin_top_mm": float(self.layout_margin_top_spin.value()),
+            "layout.margin_bottom_mm": float(self.layout_margin_bottom_spin.value()),
+            "layout.margin_left_mm": float(self.layout_margin_left_spin.value()),
+            "layout.margin_right_mm": float(self.layout_margin_right_spin.value()),
+            "layout.gutter_mm": float(self.layout_gutter_spin.value()),
+            "layout.blank_row_threshold": int(self.layout_blank_threshold_spin.value()),
+            "layout.search_window_px": int(self.layout_search_window_spin.value()),
+            "layout.header_html": self.layout_header_edit.toHtml(),
+            "layout.footer_html": self.layout_footer_edit.toHtml(),
+            "ui.editor_overlay_visible": self.editor_overlay_visible_checkbox.isChecked(),
+            "editor.preview_debounce_ms": int(self.editor_preview_debounce_spin.value()),
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }

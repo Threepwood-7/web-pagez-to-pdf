@@ -77,3 +77,38 @@ def test_resolve_alt_tab_target_retries_once(monkeypatch) -> None:
 
     assert hwnd == 222
     assert calls["shortcut"] == 2
+
+
+def test_capture_candidate_can_include_minimized(monkeypatch) -> None:
+    monkeypatch.setattr(capture_service.USER32, "IsWindowVisible", lambda _hwnd: 1)
+    monkeypatch.setattr(capture_service.USER32, "IsIconic", lambda _hwnd: 1)
+
+    assert not WindowCaptureService._is_capture_candidate(123, include_minimized=False)
+    assert WindowCaptureService._is_capture_candidate(123, include_minimized=True)
+
+
+def test_activate_window_restores_minimized_target(monkeypatch) -> None:
+    iconic_state = {"value": 1}
+    show_calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(capture_service.USER32, "IsWindowVisible", lambda _hwnd: 1)
+    monkeypatch.setattr(capture_service.USER32, "IsIconic", lambda _hwnd: iconic_state["value"])
+
+    def _show_window(hwnd: int, cmd: int) -> int:
+        show_calls.append((int(hwnd), int(cmd)))
+        iconic_state["value"] = 0
+        return 1
+
+    monkeypatch.setattr(capture_service.USER32, "ShowWindow", _show_window)
+    monkeypatch.setattr(capture_service.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        WindowCaptureService,
+        "is_foreground_window",
+        staticmethod(lambda _hwnd: True),
+    )
+
+    focused, reason = WindowCaptureService.activate_window(4242)
+
+    assert focused
+    assert reason == ""
+    assert show_calls == [(4242, capture_service.SW_RESTORE)]

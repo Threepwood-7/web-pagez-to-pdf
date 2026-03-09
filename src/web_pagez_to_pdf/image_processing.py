@@ -70,7 +70,7 @@ def apply_edit_transform(
         if op_type == "scale":
             transformed = _apply_scale(transformed, params)
             continue
-        if op_type == "nav_auto_crop":
+        if op_type in {"nav_auto_crop", "auto_vertical_border_crop"}:
             transformed = _apply_nav_crop(transformed, params)
             continue
         if op_type == "wizard_scrollbar_trim":
@@ -238,18 +238,101 @@ def _apply_redactions(image: Image.Image, params: dict[str, object]) -> Image.Im
 
 
 def suggest_navigation_crop(image: Image.Image) -> tuple[int, int]:
-    """Heuristic suggestion for left/right crop to remove side navigation."""
+    """Legacy wrapper for center-out auto vertical border crop."""
 
-    left_px, right_px, _left_confident, _right_confident = _detect_navigation_crop(image)
+    left_px, right_px, _left_confident, _right_confident = (
+        suggest_auto_vertical_border_crop_with_confidence(image)
+    )
     return (left_px, right_px)
 
 
 def suggest_navigation_crop_with_confidence(
     image: Image.Image,
 ) -> tuple[int, int, bool, bool]:
-    """Return left/right suggestions and side-specific confidence flags."""
+    """Legacy wrapper preserving older API shape."""
 
-    return _detect_navigation_crop(image)
+    return suggest_auto_vertical_border_crop_with_confidence(image)
+
+
+def suggest_auto_vertical_border_crop_with_confidence(
+    image: Image.Image,
+) -> tuple[int, int, bool, bool]:
+    """Detect minimal left/right border crop by scanning each sampled row from a robust center."""
+
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    if gray.ndim != 2:
+        return (0, 0, False, False)
+    height, width = gray.shape[:2]
+    if width < 48 or height < 64:
+        return (0, 0, False, False)
+
+    sampled_rows = _sampled_row_indices(height)
+    if sampled_rows.size == 0:
+        return (0, 0, False, False)
+
+    center_x = _robust_content_center(gray, sampled_rows)
+    if center_x is None:
+        return (0, 0, False, False)
+
+    left_bounds: list[int] = []
+    right_bounds: list[int] = []
+    border_band = max(4, min(32, width // 12))
+    for y_pos in sampled_rows:
+        row = gray[int(y_pos), :]
+        gradients = np.abs(np.diff(row, prepend=row[0]))
+        left_ref = float(np.median(row[:border_band]))
+        right_ref = float(np.median(row[width - border_band : width]))
+        left_threshold = max(8.0, float(np.std(row[:border_band])) * 2.8 + 6.0)
+        right_threshold = max(8.0, float(np.std(row[width - border_band : width])) * 2.8 + 6.0)
+        gradient_threshold = max(6.0, float(np.percentile(gradients, 85.0)) * 1.1)
+
+        left_edge = _scan_row_content_edge(
+            row=row,
+            gradients=gradients,
+            start_x=center_x,
+            stop_x=-1,
+            step=-1,
+            border_reference=left_ref,
+            amplitude_threshold=left_threshold,
+            gradient_threshold=gradient_threshold,
+        )
+        right_edge = _scan_row_content_edge(
+            row=row,
+            gradients=gradients,
+            start_x=center_x,
+            stop_x=width,
+            step=1,
+            border_reference=right_ref,
+            amplitude_threshold=right_threshold,
+            gradient_threshold=gradient_threshold,
+        )
+        if left_edge is not None:
+            left_bounds.append(int(left_edge))
+        if right_edge is not None:
+            right_bounds.append(int(right_edge))
+
+    minimum_rows = max(6, sampled_rows.size // 6)
+    if len(left_bounds) < minimum_rows and len(right_bounds) < minimum_rows:
+        return (0, 0, False, False)
+
+    content_left = min(left_bounds) if left_bounds else 0
+    content_right = max(right_bounds) if right_bounds else width - 1
+    padding = max(2, min(12, int(round(width * 0.01))))
+    content_left = max(0, content_left - padding)
+    content_right = min(width - 1, content_right + padding)
+    if content_right <= content_left:
+        return (0, 0, False, False)
+
+    left_crop = max(0, int(content_left))
+    right_crop = max(0, int((width - 1) - content_right))
+    if left_crop + right_crop >= width - 12:
+        return (0, 0, False, False)
+
+    left_confident = len(left_bounds) >= minimum_rows and left_crop > 0
+    right_confident = len(right_bounds) >= minimum_rows and right_crop > 0
+    if not left_confident and not right_confident:
+        return (0, 0, False, False)
+    return (left_crop, right_crop, bool(left_confident), bool(right_confident))
 
 
 def suggest_scrollbar_trim_with_confidence(image: Image.Image) -> tuple[int, bool]:
@@ -358,38 +441,68 @@ def suggest_window_border_trim_with_confidence(
 
 
 def _detect_navigation_crop(image: Image.Image) -> tuple[int, int, bool, bool]:
-    gray = np.asarray(image.convert("L"), dtype=np.uint8)
-    if gray.ndim != 2 or gray.shape[1] < 20:
-        return (0, 0, False, False)
+    return suggest_auto_vertical_border_crop_with_confidence(image)
 
+
+def _sampled_row_indices(height: int, *, max_rows: int = 96) -> np.ndarray:
+    margin = max(2, min(24, height // 24))
+    start = max(0, margin)
+    stop = max(start + 1, height - margin)
+    count = min(max_rows, max(1, stop - start))
+    sampled = np.linspace(start, stop - 1, num=count, dtype=np.int32)
+    return np.unique(sampled)
+
+
+def _robust_content_center(gray: np.ndarray, sampled_rows: np.ndarray) -> int | None:
     width = int(gray.shape[1])
-    left_end = max(1, round(width * 0.30))
-    right_start = min(width - 1, max(0, round(width * 0.70)))
-    max_edge_crop = max(0, round(width * 0.22))
-    if max_edge_crop <= 0:
-        return (0, 0, False, False)
+    border_band = max(4, min(32, width // 12))
+    centers: list[float] = []
+    for y_pos in sampled_rows:
+        row = gray[int(y_pos), :]
+        left_ref = float(np.median(row[:border_band]))
+        right_ref = float(np.median(row[width - border_band : width]))
+        baseline = (left_ref + right_ref) * 0.5
+        deviation = np.abs(row - baseline)
+        threshold = max(10.0, float(np.percentile(deviation, 85.0)) * 0.5)
+        content = np.flatnonzero(deviation >= threshold)
+        if content.size < max(3, width // 40):
+            continue
+        centers.append(float(np.median(content)))
+    if not centers:
+        return None
+    center_x = int(round(float(np.median(np.asarray(centers, dtype=np.float32)))))
+    return max(1, min(width - 2, center_x))
 
-    edge_scores = _column_edge_density(gray)
-    continuity_scores = _column_vertical_continuity(gray)
-    combined = (0.6 * edge_scores) + (0.4 * continuity_scores)
 
-    left_crop, left_confident = _pick_side_crop(
-        combined,
-        side="left",
-        side_start=0,
-        side_end=left_end,
-        max_edge_crop=max_edge_crop,
-        margin_px=4,
-    )
-    right_crop, right_confident = _pick_side_crop(
-        combined,
-        side="right",
-        side_start=right_start,
-        side_end=width,
-        max_edge_crop=max_edge_crop,
-        margin_px=4,
-    )
-    return (left_crop, right_crop, left_confident, right_confident)
+def _scan_row_content_edge(
+    *,
+    row: np.ndarray,
+    gradients: np.ndarray,
+    start_x: int,
+    stop_x: int,
+    step: int,
+    border_reference: float,
+    amplitude_threshold: float,
+    gradient_threshold: float,
+) -> int | None:
+    if step == 0:
+        return None
+    border_run_required = 5
+    last_content: int | None = None
+    border_run = 0
+    for x_pos in range(int(start_x), int(stop_x), int(step)):
+        amplitude = abs(float(row[x_pos]) - float(border_reference))
+        gradient = float(gradients[x_pos]) if 0 <= x_pos < int(gradients.shape[0]) else 0.0
+        if amplitude >= float(amplitude_threshold) or gradient >= float(gradient_threshold):
+            last_content = int(x_pos)
+            border_run = 0
+            continue
+        if last_content is None:
+            continue
+        border_run += 1
+        if border_run >= border_run_required:
+            return int(last_content)
+    return last_content
 
 
 def _peel_border_side(
