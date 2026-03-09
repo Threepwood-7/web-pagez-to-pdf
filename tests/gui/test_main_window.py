@@ -3,13 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QPixmap
 
 from web_pagez_to_pdf.capture_service import WindowInfo
 from web_pagez_to_pdf.main_window import MainWindow
-from web_pagez_to_pdf.mini_editor import MiniEditorWindow
-from web_pagez_to_pdf.models import CaptureItem, EditAdjustments
 from web_pagez_to_pdf.scroll_capture import ScrollCaptureProgress
 from web_pagez_to_pdf.target_picker import PickedWindow
 
@@ -223,6 +221,18 @@ def test_pick_button_uses_menu_and_crosshair_button_removed(qtbot: QtBot) -> Non
     assert not hasattr(window, "pick_crosshair_button")
 
 
+def test_toolbar_has_expected_buttons_and_no_quick_export_strip(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.top_toolbar is not None
+    assert window.top_toolbar.widgetForAction(window.top_toolbar.actions()[0]) is window.target_label
+    assert window.top_toolbar.actions()
+    assert not hasattr(window, "quick_export_button")
+    assert not hasattr(window, "quick_pdf_checkbox")
+
+
 def test_pick_menu_sorted_and_target_label_format(
     qtbot: QtBot, monkeypatch: MonkeyPatch
 ) -> None:
@@ -409,7 +419,18 @@ def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:
     assert "Alt+X" in shortcut_texts
 
 
-def test_editor_zoom_defaults_fit_height_and_manual_controls(qtbot: QtBot, tmp_path: Path) -> None:
+def test_startup_tab_forced_capture_even_if_settings_saved_other_tab(qtbot: QtBot) -> None:
+    settings = QSettings()
+    settings.setValue("ui.start_tab", "export")
+    settings.sync()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.tabs.currentIndex() == 0
+
+
+def test_editor_zoom_defaults_fit_width_and_manual_controls(qtbot: QtBot, tmp_path: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -421,30 +442,102 @@ def test_editor_zoom_defaults_fit_height_and_manual_controls(qtbot: QtBot, tmp_p
         frame_count=1,
     )
 
-    assert window._editor_zoom_mode == "fit_height"
-    assert "fit height" in window.zoom_status_label.text().lower()
+    assert "fit width" in window.zoom_status_label.text().lower()
 
     qtbot.mouseClick(window.zoom_100_button, Qt.MouseButton.LeftButton)
-    assert window._editor_zoom_mode == "manual"
     assert "100%" in window.zoom_status_label.text()
 
 
-def test_mini_editor_zoom_defaults_fit_height(qtbot: QtBot, tmp_path: Path) -> None:
-    image_path = tmp_path / "sample.png"
-    Image.new("RGB", (400, 900), "red").save(image_path, format="PNG")
+def test_editor_has_no_mini_editor_entry_point(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
 
-    item = CaptureItem(
-        item_id="item-1",
-        title="sample",
-        image_path=image_path,
+    assert not hasattr(window, "open_mini_editor_button")
+
+
+def test_last_crop_wins_when_auto_crop_applied(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (240, 320), "white"),
+        title="crop",
         source_hwnd=None,
         frame_count=1,
     )
-    window = MiniEditorWindow()
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+    edits.set_operation("crop_rect", {"left": 10, "top": 10, "width": 100, "height": 100})
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_navigation_crop",
+        lambda _image: (14, 12),
+    )
+
+    window._apply_auto_crop_item()
+
+    assert edits.get_operation("crop_rect") is None
+    nav_crop = edits.get_operation("nav_auto_crop")
+    assert nav_crop is not None
+    assert int(nav_crop.params.get("left", 0)) == 14
+    assert int(nav_crop.params.get("right", 0)) == 12
+
+
+def test_queue_auto_crop_applies_consensus_to_all_items(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    window.bind_item(item, EditAdjustments())
+    window.output_input.setText(str(tmp_path))
+    for index in range(3):
+        window._add_capture(
+            image=Image.new("RGB", (200 + (index * 20), 220), "white"),
+            title=f"item-{index}",
+            source_hwnd=None,
+            frame_count=1,
+        )
 
-    assert "fit height" in window.zoom_status_label.text().lower()
-    qtbot.mouseClick(window.zoom_100_button, Qt.MouseButton.LeftButton)
-    assert "100%" in window.zoom_status_label.text()
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
+        lambda image: (int(image.width * 0.1), int(image.width * 0.08), True, True),
+    )
+    window._apply_auto_crop_queue()
+
+    for item in window._queue:
+        edits = window._session_for_item(item.item_id)
+        nav_crop = edits.get_operation("nav_auto_crop")
+        assert nav_crop is not None
+        assert int(nav_crop.params.get("left", 0)) > 0
+        assert int(nav_crop.params.get("right", 0)) > 0
+
+
+def test_queue_auto_crop_noop_on_insufficient_confidence(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    for index in range(3):
+        window._add_capture(
+            image=Image.new("RGB", (210, 210), "white"),
+            title=f"item-{index}",
+            source_hwnd=None,
+            frame_count=1,
+        )
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
+        lambda _image: (0, 0, False, False),
+    )
+
+    window._apply_auto_crop_queue()
+
+    assert "insufficient confidence" in window.status_label.text().lower()
+    for item in window._queue:
+        edits = window._session_for_item(item.item_id)
+        assert edits.get_operation("nav_auto_crop") is None

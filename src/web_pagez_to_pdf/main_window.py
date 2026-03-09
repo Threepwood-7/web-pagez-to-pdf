@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import uuid
 from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageQt
-from PySide6.QtCore import QEvent, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QRectF, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -29,11 +33,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
     QTextEdit,
+    QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +55,7 @@ from .capture_service import (
     WindowInfo,
 )
 from .constants import APP_DISPLAY_NAME, APP_IDENTITY
+from .editor_canvas import EditorCanvas
 from .exporters import run_export, sanitize_basename
 from .hotkeys import GlobalHotkeyPoller
 from .image_processing import (
@@ -58,8 +64,8 @@ from .image_processing import (
     compute_page_slices,
     pil_to_qpixmap,
     suggest_navigation_crop,
+    suggest_navigation_crop_with_confidence,
 )
-from .mini_editor import MiniEditorWindow
 from .models import (
     CaptureItem,
     EditAdjustments,
@@ -152,7 +158,7 @@ class FullCaptureWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    """Tabbed capture/editor/export window with mini-editor integration."""
+    """Tabbed capture/editor/export window with in-tab editor tools."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -167,12 +173,8 @@ class MainWindow(QMainWindow):
         self._stop_event = threading.Event()
         self._capture_worker: FullCaptureWorker | None = None
         self._crosshair_overlay: CrosshairPickerOverlay | None = None
-        self._mini_editor: MiniEditorWindow | None = None
         self._settings_window: SettingsWindow | None = None
-        self._editor_sync_guard = False
-        self._format_sync_guard = False
-        self._editor_zoom_mode = "fit_height"
-        self._editor_manual_zoom_percent = 100
+        self._editor_loading = False
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -186,61 +188,14 @@ class MainWindow(QMainWindow):
         self._assign_widget_identity(self, widget_naming.window_widget_id(self.window_id), "window")
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setMinimumSize(1120, 680)
+        self._build_menu()
+        self._build_toolbar()
+
         root = QWidget(self)
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-
-        self._build_menu()
-        top = QWidget(self)
-        top_row = QHBoxLayout(top)
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
-        self.target_label = QLabel("Target: none")
-        self.pick_list_button = QPushButton("Pick")
-        self.pick_target_menu = QMenu(self.pick_list_button)
-        self.capture_button = QPushButton("Capture (Ctrl+Shift+C)")
-        self.capture_full_button = QPushButton("Capture Full (Ctrl+Shift+S)")
-        self.capture_last_selected_button = QPushButton("Capture Last Selected Window")
-        self.stop_button = QPushButton("Stop (Ctrl+Shift+X)")
-        self.import_button = QPushButton("Import")
-        for widget, control in (
-            (self.target_label, "target_label"),
-            (self.pick_list_button, "pick_list_button"),
-            (self.capture_button, "capture_button"),
-            (self.capture_full_button, "capture_full_button"),
-            (self.capture_last_selected_button, "capture_last_selected_button"),
-            (self.stop_button, "stop_button"),
-            (self.import_button, "import_button"),
-        ):
-            self._assign_control_identity(widget, control, control)
-        self.pick_list_button.setMenu(self.pick_target_menu)
-        top_row.addWidget(self.target_label, 2)
-        top_row.addWidget(self.pick_list_button)
-        top_row.addWidget(self.capture_button)
-        top_row.addWidget(self.capture_full_button)
-        top_row.addWidget(self.capture_last_selected_button)
-        top_row.addWidget(self.stop_button)
-        top_row.addWidget(self.import_button)
-        self.quick_pdf_checkbox = QCheckBox("PDF")
-        self.quick_paged_checkbox = QCheckBox("Paged")
-        self.quick_long_checkbox = QCheckBox("Long")
-        self.quick_tiff_checkbox = QCheckBox("TIFF")
-        self.quick_docx_checkbox = QCheckBox("DOCX")
-        self.quick_pptx_checkbox = QCheckBox("PPTX")
-        self.quick_export_button = QPushButton("Export")
-        for widget in (
-            self.quick_pdf_checkbox,
-            self.quick_paged_checkbox,
-            self.quick_long_checkbox,
-            self.quick_tiff_checkbox,
-            self.quick_docx_checkbox,
-            self.quick_pptx_checkbox,
-            self.quick_export_button,
-        ):
-            top_row.addWidget(widget)
-        layout.addWidget(top)
 
         self.tabs = QTabWidget(self)
         self._assign_control_identity(self.tabs, "workflow_tabs", "workflow_tabs")
@@ -407,22 +362,35 @@ class MainWindow(QMainWindow):
 
         editor_tab = QWidget(self)
         editor_layout = QVBoxLayout(editor_tab)
-        self.preview_scroll = QScrollArea()
-        self._assign_control_identity(self.preview_scroll, "preview_scroll", "preview_scroll")
-        self.preview_scroll.setWidgetResizable(True)
-        self.preview_label = QLabel("No capture selected")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_scroll.setWidget(self.preview_label)
-        editor_layout.addWidget(self.preview_scroll, stretch=1)
-        self.preview_scroll.viewport().installEventFilter(self)
+        editor_split = QSplitter(Qt.Orientation.Horizontal, editor_tab)
+        editor_layout.addWidget(editor_split, stretch=1)
 
-        zoom_row = QHBoxLayout()
-        self.zoom_fit_height_button = QPushButton("Fit Height")
-        self.zoom_fit_width_button = QPushButton("Fit Width")
-        self.zoom_100_button = QPushButton("100%")
-        self.zoom_out_button = QPushButton("-")
-        self.zoom_in_button = QPushButton("+")
-        self.zoom_status_label = QLabel("Fit Height")
+        editor_left = QWidget(editor_split)
+        editor_left_layout = QVBoxLayout(editor_left)
+        editor_left_layout.setContentsMargins(0, 0, 0, 0)
+        editor_left_layout.setSpacing(6)
+        editor_left_layout.addWidget(QLabel("Editor Preview"))
+        self.editor_canvas = EditorCanvas(editor_left)
+        self._assign_control_identity(self.editor_canvas, "editor_canvas", "editor_canvas")
+        editor_left_layout.addWidget(self.editor_canvas, stretch=1)
+
+        editor_right = QWidget(editor_split)
+        editor_right_layout = QVBoxLayout(editor_right)
+        editor_right_layout.setContentsMargins(0, 0, 0, 0)
+        editor_right_layout.setSpacing(8)
+
+        self.editor_item_label = QLabel("No queue item selected.", editor_right)
+        self._assign_control_identity(self.editor_item_label, "editor_item_label", "editor_item_label")
+        editor_right_layout.addWidget(self.editor_item_label)
+
+        view_group = QGroupBox("View", editor_right)
+        view_layout = QHBoxLayout(view_group)
+        self.zoom_fit_height_button = QPushButton("Fit Height", view_group)
+        self.zoom_fit_width_button = QPushButton("Fit Width", view_group)
+        self.zoom_100_button = QPushButton("100%", view_group)
+        self.zoom_out_button = QPushButton("-", view_group)
+        self.zoom_in_button = QPushButton("+", view_group)
+        self.zoom_status_label = QLabel("Fit Width", view_group)
         for widget, control in (
             (self.zoom_fit_height_button, "zoom_fit_height_button"),
             (self.zoom_fit_width_button, "zoom_fit_width_button"),
@@ -432,37 +400,63 @@ class MainWindow(QMainWindow):
             (self.zoom_status_label, "zoom_status_label"),
         ):
             self._assign_control_identity(widget, control, control)
-        zoom_row.addWidget(self.zoom_fit_height_button)
-        zoom_row.addWidget(self.zoom_fit_width_button)
-        zoom_row.addWidget(self.zoom_100_button)
-        zoom_row.addWidget(self.zoom_out_button)
-        zoom_row.addWidget(self.zoom_in_button)
-        zoom_row.addWidget(self.zoom_status_label, 1)
-        editor_layout.addLayout(zoom_row)
+        view_layout.addWidget(self.zoom_fit_height_button)
+        view_layout.addWidget(self.zoom_fit_width_button)
+        view_layout.addWidget(self.zoom_100_button)
+        view_layout.addWidget(self.zoom_out_button)
+        view_layout.addWidget(self.zoom_in_button)
+        view_layout.addWidget(self.zoom_status_label, 1)
+        editor_right_layout.addWidget(view_group)
 
-        form = QFormLayout()
-        self.zoom_spin = QDoubleSpinBox()
+        tools_group = QGroupBox("Tools", editor_right)
+        tools_layout = QHBoxLayout(tools_group)
+        self.editor_tool_buttons = QButtonGroup(self)
+        self.editor_tool_buttons.setExclusive(True)
+        self.pan_tool_button = self._new_editor_tool_button("Pan", "pan", checked=True)
+        self.vertical_crop_tool_button = self._new_editor_tool_button(
+            "Vertical Border Crop",
+            "crop_vertical_band",
+        )
+        self.rect_crop_tool_button = self._new_editor_tool_button("Rect Crop", "crop_rect")
+        self.free_crop_tool_button = self._new_editor_tool_button("Free Crop", "crop_free")
+        self.redact_tool_button = self._new_editor_tool_button("Redact", "redact")
+        for widget, control in (
+            (self.pan_tool_button, "pan_tool_button"),
+            (self.vertical_crop_tool_button, "vertical_crop_tool_button"),
+            (self.rect_crop_tool_button, "rect_crop_tool_button"),
+            (self.free_crop_tool_button, "free_crop_tool_button"),
+            (self.redact_tool_button, "redact_tool_button"),
+        ):
+            self._assign_control_identity(widget, control, control)
+        for button in (
+            self.pan_tool_button,
+            self.vertical_crop_tool_button,
+            self.rect_crop_tool_button,
+            self.free_crop_tool_button,
+            self.redact_tool_button,
+        ):
+            tools_layout.addWidget(button)
+        editor_right_layout.addWidget(tools_group)
+
+        transform_group = QGroupBox("Transform", editor_right)
+        transform_layout = QFormLayout(transform_group)
+        self.zoom_spin = QDoubleSpinBox(transform_group)
         self.zoom_spin.setRange(10.0, 400.0)
         self.zoom_spin.setValue(100.0)
         self.zoom_spin.setSuffix(" %")
-        self.rotate_spin = QSpinBox()
+        self.rotate_spin = QSpinBox(transform_group)
         self.rotate_spin.setRange(-180, 180)
-        self.straighten_spin = QSpinBox()
+        self.straighten_spin = QSpinBox(transform_group)
         self.straighten_spin.setRange(-15, 15)
-        self.auto_crop_button = QPushButton("Suggest Nav Crop")
-        self.open_mini_editor_button = QPushButton("Open Mini Editor")
-        self.reset_item_edits_button = QPushButton("Reset Item Edits")
-        form.addRow("Scale", self.zoom_spin)
-        form.addRow("Rotate", self.rotate_spin)
-        form.addRow("Straighten", self.straighten_spin)
-        form.addRow(self.auto_crop_button)
-        form.addRow(self.open_mini_editor_button)
-        form.addRow(self.reset_item_edits_button)
-        editor_layout.addLayout(form)
+        transform_layout.addRow("Scale", self.zoom_spin)
+        transform_layout.addRow("Rotate", self.rotate_spin)
+        transform_layout.addRow("Straighten", self.straighten_spin)
+        editor_right_layout.addWidget(transform_group)
+
         self.editor_advanced_group, edit_adv_layout = self._new_collapsible_group(
             "Split Markers",
             expanded=not self._bool_setting("ui.editor_adv_collapsed", True),
-            parent=editor_tab,
+            parent=editor_right,
         )
         split_form = QFormLayout()
         self.split_spin = QSpinBox()
@@ -477,7 +471,30 @@ class MainWindow(QMainWindow):
         split_form.addRow(self.remove_split_button)
         split_form.addRow(self.preview_breaks_button)
         edit_adv_layout.addLayout(split_form)
-        editor_layout.addWidget(self.editor_advanced_group)
+        editor_right_layout.addWidget(self.editor_advanced_group)
+
+        ops_group = QGroupBox("Operations", editor_right)
+        ops_layout = QVBoxLayout(ops_group)
+        self.auto_crop_item_button = QPushButton("Suggest Nav Crop (Item)")
+        self.auto_crop_queue_button = QPushButton("Suggest Nav Crop (Queue)")
+        self.clear_redactions_button = QPushButton("Clear Redactions")
+        self.reset_item_edits_button = QPushButton("Reset Item Edits")
+        for widget, control in (
+            (self.auto_crop_item_button, "auto_crop_item_button"),
+            (self.auto_crop_queue_button, "auto_crop_queue_button"),
+            (self.clear_redactions_button, "clear_redactions_button"),
+            (self.reset_item_edits_button, "reset_item_edits_button"),
+        ):
+            self._assign_control_identity(widget, control, control)
+        ops_layout.addWidget(self.auto_crop_item_button)
+        ops_layout.addWidget(self.auto_crop_queue_button)
+        ops_layout.addWidget(self.clear_redactions_button)
+        ops_layout.addWidget(self.reset_item_edits_button)
+        editor_right_layout.addWidget(ops_group)
+        editor_right_layout.addStretch(1)
+
+        editor_split.setStretchFactor(0, 3)
+        editor_split.setStretchFactor(1, 2)
         self.tabs.addTab(editor_tab, "Editor")
 
         export_tab = QWidget(self)
@@ -575,19 +592,22 @@ class MainWindow(QMainWindow):
         self.capture_full_button.clicked.connect(self._capture_full_scroll)
         self.stop_button.clicked.connect(self._request_stop)
         self.import_button.clicked.connect(self._import_images)
-        self.quick_export_button.clicked.connect(self._run_export)
         self.queue_list.currentRowChanged.connect(self._on_queue_selection_changed)
         self.up_button.clicked.connect(self._queue_move_up)
         self.down_button.clicked.connect(self._queue_move_down)
         self.remove_button.clicked.connect(self._queue_remove)
-        self.auto_crop_button.clicked.connect(self._apply_auto_crop)
-        self.open_mini_editor_button.clicked.connect(self._open_mini_editor)
+        self.auto_crop_item_button.clicked.connect(self._apply_auto_crop_item)
+        self.auto_crop_queue_button.clicked.connect(self._apply_auto_crop_queue)
+        self.clear_redactions_button.clicked.connect(self._clear_redactions)
         self.reset_item_edits_button.clicked.connect(self._reset_item_edits)
         self.add_split_button.clicked.connect(self._add_split_marker)
         self.remove_split_button.clicked.connect(self._remove_split_marker)
         self.preview_breaks_button.clicked.connect(self._preview_breaks)
         self.output_browse_button.clicked.connect(self._browse_output)
         self.export_button.clicked.connect(self._run_export)
+        self.editor_tool_buttons.buttonClicked.connect(self._on_editor_tool_changed)
+        self.editor_canvas.rect_drawn.connect(self._on_editor_rect_drawn)
+        self.editor_canvas.free_crop_drawn.connect(self._on_editor_free_crop)
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
@@ -615,28 +635,57 @@ class MainWindow(QMainWindow):
         self.capture_log_level_combo.currentIndexChanged.connect(
             self._persist_capture_log_level
         )
-        for checkbox in (
-            self.pdf_checkbox,
-            self.paged_images_checkbox,
-            self.long_image_checkbox,
-            self.tiff_checkbox,
-            self.docx_checkbox,
-            self.pptx_checkbox,
-        ):
-            checkbox.toggled.connect(lambda _value: self._sync_quick_formats_from_main())
-        for checkbox in (
-            self.quick_pdf_checkbox,
-            self.quick_paged_checkbox,
-            self.quick_long_checkbox,
-            self.quick_tiff_checkbox,
-            self.quick_docx_checkbox,
-            self.quick_pptx_checkbox,
-        ):
-            checkbox.toggled.connect(lambda _value: self._sync_main_formats_from_quick())
         self._hotkeys.capture_selected_requested.connect(self._capture_selected_viewport)
         self._hotkeys.capture_full_requested.connect(self._capture_full_scroll)
         self._hotkeys.stop_capture_requested.connect(self._request_stop)
         self._stop_overlay.stop_requested.connect(self._request_stop)
+
+    def _build_toolbar(self) -> None:
+        self.top_toolbar = QToolBar("Capture", self)
+        self.top_toolbar.setMovable(False)
+        self.top_toolbar.setFloatable(False)
+        self.top_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.top_toolbar)
+
+        self.target_label = QLabel("Target: none")
+        self.pick_list_button = QPushButton("Pick")
+        self.pick_target_menu = QMenu(self.pick_list_button)
+        self.capture_button = QPushButton("Capture (Ctrl+Shift+C)")
+        self.capture_full_button = QPushButton("Capture Full (Ctrl+Shift+S)")
+        self.capture_last_selected_button = QPushButton("Capture Last Selected Window")
+        self.stop_button = QPushButton("Stop (Ctrl+Shift+X)")
+        self.import_button = QPushButton("Import")
+
+        for widget, control in (
+            (self.target_label, "target_label"),
+            (self.pick_list_button, "pick_list_button"),
+            (self.capture_button, "capture_button"),
+            (self.capture_full_button, "capture_full_button"),
+            (self.capture_last_selected_button, "capture_last_selected_button"),
+            (self.stop_button, "stop_button"),
+            (self.import_button, "import_button"),
+        ):
+            self._assign_control_identity(widget, control, control)
+
+        self.pick_list_button.setMenu(self.pick_target_menu)
+        self.top_toolbar.addWidget(self.target_label)
+        self.top_toolbar.addWidget(self.pick_list_button)
+        self.top_toolbar.addSeparator()
+        self.top_toolbar.addWidget(self.capture_button)
+        self.top_toolbar.addWidget(self.capture_full_button)
+        self.top_toolbar.addWidget(self.capture_last_selected_button)
+        self.top_toolbar.addWidget(self.stop_button)
+        self.top_toolbar.addSeparator()
+        self.top_toolbar.addWidget(self.import_button)
+
+    def _new_editor_tool_button(self, text: str, tool: str, *, checked: bool = False) -> QToolButton:
+        button = QToolButton(self)
+        button.setText(text)
+        button.setCheckable(True)
+        button.setChecked(checked)
+        button.setProperty("tool", tool)
+        self.editor_tool_buttons.addButton(button)
+        return button
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -696,8 +745,6 @@ class MainWindow(QMainWindow):
             "capture.log_level": str(
                 self.capture_log_level_combo.currentData() or DEFAULT_CAPTURE_LOG_LEVEL
             ),
-            "editor.auto_open_mini": self._bool_setting("editor.auto_open_mini", False),
-            "editor.show_grid": self._bool_setting("editor.show_grid", False),
             "export.output_dir": self.output_input.text().strip(),
             "export.basename": self.base_input.text().strip(),
             "export.combine_mode": self.combine_checkbox.isChecked(),
@@ -708,7 +755,6 @@ class MainWindow(QMainWindow):
             "export.docx": self.docx_checkbox.isChecked(),
             "export.pptx": self.pptx_checkbox.isChecked(),
             "export.docx_mode": str(self.docx_mode_combo.currentData()),
-            "ui.start_tab": ["capture", "editor", "export"][self.tabs.currentIndex()],
             "ui.editor_adv_collapsed": not self.editor_advanced_group.isChecked(),
             "ui.export_adv_collapsed": not self.export_advanced_group.isChecked(),
         }
@@ -771,12 +817,10 @@ class MainWindow(QMainWindow):
         output_dir = str(self._settings.value("export.output_dir", self.output_input.text()))
         if output_dir:
             self.output_input.setText(output_dir)
-        tab_name = str(self._settings.value("ui.start_tab", "capture"))
-        self.tabs.setCurrentIndex({"capture": 0, "editor": 1, "export": 2}.get(tab_name, 0))
+        self.tabs.setCurrentIndex(0)
         self.editor_advanced_group.setChecked(not self._bool_setting("ui.editor_adv_collapsed", True))
         self.export_advanced_group.setChecked(not self._bool_setting("ui.export_adv_collapsed", True))
-        self._sync_quick_formats_from_main()
-        self._set_editor_zoom_mode("fit_height")
+        self._set_editor_zoom_mode("fit_width")
 
     @staticmethod
     def _row_widget(widgets: list[QWidget]) -> QWidget:
@@ -966,34 +1010,6 @@ class MainWindow(QMainWindow):
         normalized = normalize_capture_log_level(level)
         capture_level = logging.DEBUG if normalized == "DEBUG" else logging.INFO
         logging.getLogger(CAPTURE_LOGGER_NAME).setLevel(capture_level)
-
-    def _sync_quick_formats_from_main(self) -> None:
-        if self._format_sync_guard:
-            return
-        self._format_sync_guard = True
-        try:
-            self.quick_pdf_checkbox.setChecked(self.pdf_checkbox.isChecked())
-            self.quick_paged_checkbox.setChecked(self.paged_images_checkbox.isChecked())
-            self.quick_long_checkbox.setChecked(self.long_image_checkbox.isChecked())
-            self.quick_tiff_checkbox.setChecked(self.tiff_checkbox.isChecked())
-            self.quick_docx_checkbox.setChecked(self.docx_checkbox.isChecked())
-            self.quick_pptx_checkbox.setChecked(self.pptx_checkbox.isChecked())
-        finally:
-            self._format_sync_guard = False
-
-    def _sync_main_formats_from_quick(self) -> None:
-        if self._format_sync_guard:
-            return
-        self._format_sync_guard = True
-        try:
-            self.pdf_checkbox.setChecked(self.quick_pdf_checkbox.isChecked())
-            self.paged_images_checkbox.setChecked(self.quick_paged_checkbox.isChecked())
-            self.long_image_checkbox.setChecked(self.quick_long_checkbox.isChecked())
-            self.tiff_checkbox.setChecked(self.quick_tiff_checkbox.isChecked())
-            self.docx_checkbox.setChecked(self.quick_docx_checkbox.isChecked())
-            self.pptx_checkbox.setChecked(self.quick_pptx_checkbox.isChecked())
-        finally:
-            self._format_sync_guard = False
 
     def _apply_start_geometry(self) -> None:
         screen = QGuiApplication.primaryScreen()
@@ -1416,8 +1432,6 @@ class MainWindow(QMainWindow):
         self.queue_list.addItem(list_item)
         self.queue_list.setCurrentRow(self.queue_list.count() - 1)
         self._refresh_queue_summary()
-        if self._bool_setting("editor.auto_open_mini", False):
-            self._open_mini_editor()
 
     def _import_images(self) -> None:
         paths, _filter = QFileDialog.getOpenFileNames(
@@ -1477,14 +1491,11 @@ class MainWindow(QMainWindow):
         return self._queue[row]
 
     def _on_queue_selection_changed(self, *_args: object) -> None:
-        self._set_editor_zoom_mode("fit_height")
+        self._set_editor_zoom_mode("fit_width")
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
         self._refresh_queue_summary()
-        item = self._current_item()
-        if self._mini_editor is not None and self._mini_editor.isVisible() and item is not None:
-            self._mini_editor.bind_item(item, self._session_for_item(item.item_id))
 
     def _session_for_item(self, item_id: str) -> EditAdjustments:
         existing = self._sessions.edits_by_item_id.get(item_id)
@@ -1500,7 +1511,7 @@ class MainWindow(QMainWindow):
         return self._session_for_item(item.item_id)
 
     def _editor_controls_changed(self, *_args: object) -> None:
-        if self._editor_sync_guard:
+        if self._editor_loading:
             return
         edits = self._current_session()
         if edits is None:
@@ -1515,9 +1526,6 @@ class MainWindow(QMainWindow):
             0,
         )
         self._refresh_preview()
-        item = self._current_item()
-        if self._mini_editor is not None and item is not None:
-            self._mini_editor.update_session(item.item_id, edits)
 
     def _set_scalar_operation(
         self,
@@ -1534,7 +1542,7 @@ class MainWindow(QMainWindow):
 
     def _sync_editor_controls(self) -> None:
         edits = self._current_session()
-        self._editor_sync_guard = True
+        self._editor_loading = True
         try:
             if edits is None:
                 self.zoom_spin.setValue(100.0)
@@ -1550,7 +1558,7 @@ class MainWindow(QMainWindow):
                 int(straighten_op.params.get("degrees", 0)) if straighten_op else 0
             )
         finally:
-            self._editor_sync_guard = False
+            self._editor_loading = False
 
     def _sync_split_marker_list(self) -> None:
         self.split_list.clear()
@@ -1560,29 +1568,6 @@ class MainWindow(QMainWindow):
         for marker in sorted({int(v) for v in edits.split_markers_px if int(v) > 0}):
             self.split_list.addItem(QListWidgetItem(str(marker)))
 
-    def _open_mini_editor(self) -> None:
-        item = self._current_item()
-        if item is None:
-            self.status_label.setText("Select queue item first.")
-            return
-        if self._mini_editor is None:
-            self._mini_editor = MiniEditorWindow(self)
-            self._mini_editor.session_changed.connect(self._mini_editor_changed)
-        self._mini_editor.bind_item(item, self._session_for_item(item.item_id))
-        self._mini_editor.show()
-        self._mini_editor.raise_()
-        self._mini_editor.activateWindow()
-
-    def _mini_editor_changed(self, item_id: str, session_obj: object) -> None:
-        if not isinstance(session_obj, EditAdjustments):
-            return
-        self._sessions.edits_by_item_id[item_id] = session_obj
-        current = self._current_item()
-        if current is not None and current.item_id == item_id:
-            self._sync_editor_controls()
-            self._sync_split_marker_list()
-            self._refresh_preview()
-
     def _reset_item_edits(self) -> None:
         item = self._current_item()
         if item is None:
@@ -1591,8 +1576,6 @@ class MainWindow(QMainWindow):
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
-        if self._mini_editor is not None:
-            self._mini_editor.update_session(item.item_id, self._session_for_item(item.item_id))
 
     def _refresh_queue_summary(self) -> None:
         selected = self.queue_list.currentRow() + 1 if self.queue_list.currentRow() >= 0 else 0
@@ -1637,77 +1620,96 @@ class MainWindow(QMainWindow):
         )
 
     def _set_editor_zoom_mode(self, mode: str, manual_percent: int | None = None) -> None:
-        normalized = str(mode or "fit_height").strip().lower()
-        if normalized not in {"fit_height", "fit_width", "manual"}:
-            normalized = "fit_height"
-        self._editor_zoom_mode = normalized
-        if manual_percent is not None:
-            self._editor_manual_zoom_percent = max(10, min(400, int(manual_percent)))
-        if self._editor_zoom_mode == "fit_height":
-            self.zoom_status_label.setText("Fit Height")
-        elif self._editor_zoom_mode == "fit_width":
-            self.zoom_status_label.setText("Fit Width")
-        else:
-            self.zoom_status_label.setText(f"{self._editor_manual_zoom_percent}%")
+        self.editor_canvas.set_zoom_mode(mode, manual_percent=manual_percent)
+        self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
         self._refresh_preview()
 
     def _adjust_editor_zoom(self, delta_percent: int) -> None:
-        if self._editor_zoom_mode != "manual":
-            self._editor_manual_zoom_percent = 100
-        self._set_editor_zoom_mode("manual", self._editor_manual_zoom_percent + int(delta_percent))
+        self.editor_canvas.adjust_manual_zoom(delta_percent)
+        self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
 
-    def eventFilter(self, obj: object, event: QEvent) -> bool:
-        if (
-            obj is self.preview_scroll.viewport()
-            and event.type() == QEvent.Type.Resize
-            and self._editor_zoom_mode in {"fit_height", "fit_width"}
-        ):
-            self._refresh_preview()
-        return super().eventFilter(obj, event)
+    def _on_editor_tool_changed(self, button: QToolButton) -> None:
+        tool = str(button.property("tool") or "pan")
+        self.editor_canvas.set_tool(tool)
 
-    def _scaled_for_editor_view(self, pixmap: QPixmap) -> QPixmap:
-        if pixmap.isNull():
-            return pixmap
-        viewport = self.preview_scroll.viewport().size()
-        target_width = max(1, viewport.width() - 10)
-        target_height = max(1, viewport.height() - 10)
-        if self._editor_zoom_mode == "fit_height":
-            factor = target_height / max(1, pixmap.height())
-            target_size = (
-                max(1, round(pixmap.width() * factor)),
-                max(1, round(pixmap.height() * factor)),
-            )
-        elif self._editor_zoom_mode == "fit_width":
-            factor = target_width / max(1, pixmap.width())
-            target_size = (
-                max(1, round(pixmap.width() * factor)),
-                max(1, round(pixmap.height() * factor)),
-            )
+    def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
+        keep_normalized = str(keep or "").strip().lower()
+        for op_type in ("crop_rect", "crop_free", "crop_vertical_band", "nav_auto_crop"):
+            if op_type != keep_normalized:
+                edits.remove_operation(op_type)
+
+    def _on_editor_rect_drawn(self, tool: str, rect_obj: object) -> None:
+        item = self._current_item()
+        if item is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        if not isinstance(rect_obj, QRectF):
+            return
+        rect = rect_obj.normalized()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        payload = {
+            "left": int(max(0.0, rect.left())),
+            "top": int(max(0.0, rect.top())),
+            "width": int(max(1.0, rect.width())),
+            "height": int(max(1.0, rect.height())),
+        }
+        edits = self._session_for_item(item.item_id)
+        normalized_tool = str(tool or "").strip().lower()
+        if normalized_tool in {"crop_rect", "crop_vertical_band"}:
+            self._clear_crop_operations(edits, keep=normalized_tool)
+            edits.set_operation(normalized_tool, payload)
+        elif normalized_tool == "redact":
+            redaction = {
+                "x": payload["left"],
+                "y": payload["top"],
+                "width": payload["width"],
+                "height": payload["height"],
+            }
+            op = edits.get_operation("redact_rects")
+            rectangles: list[dict[str, int]] = []
+            if op is not None:
+                raw = op.params.get("rectangles")
+                if isinstance(raw, list):
+                    for row in raw:
+                        if isinstance(row, dict):
+                            rectangles.append(deepcopy(row))
+            rectangles.append(redaction)
+            edits.set_operation("redact_rects", {"rectangles": rectangles})
         else:
-            factor = max(0.1, float(self._editor_manual_zoom_percent) / 100.0)
-            target_size = (
-                max(1, round(pixmap.width() * factor)),
-                max(1, round(pixmap.height() * factor)),
-            )
-            self.zoom_status_label.setText(f"{self._editor_manual_zoom_percent}%")
-        return pixmap.scaled(
-            target_size[0],
-            target_size[1],
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+            return
+        self._refresh_preview()
+
+    def _on_editor_free_crop(self, points_obj: object) -> None:
+        item = self._current_item()
+        if item is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        points = points_obj if isinstance(points_obj, list) else []
+        normalized: list[list[int]] = []
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            normalized.append([int(point[0]), int(point[1])])
+        if len(normalized) < 3:
+            return
+        edits = self._session_for_item(item.item_id)
+        self._clear_crop_operations(edits, keep="crop_free")
+        edits.set_operation("crop_free", {"points": normalized})
+        self._refresh_preview()
 
     def _refresh_preview(self, *_args: object) -> None:
         item = self._current_item()
         if item is None:
-            self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText("No capture selected")
+            self.editor_item_label.setText("No queue item selected.")
+            self.editor_canvas.set_image(QPixmap())
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("No capture selected")
             return
+        self.editor_item_label.setText(f"Editing: {item.title} [{item.image_path.name}]")
         if not item.image_path.exists():
-            self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText("Capture file missing")
+            self.editor_item_label.setText(f"Editing: {item.title} [image missing]")
+            self.editor_canvas.set_image(QPixmap())
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("Capture file missing")
             return
@@ -1719,8 +1721,8 @@ class MainWindow(QMainWindow):
             edits,
         )
         full_pixmap = pil_to_qpixmap(preview)
-        self.preview_label.setPixmap(self._scaled_for_editor_view(full_pixmap))
-        self.preview_label.setText("")
+        self.editor_canvas.set_image(full_pixmap)
+        self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
         thumb = full_pixmap.scaled(
             max(1, self.capture_tab_preview_label.width() - 8),
             max(1, self.capture_tab_preview_label.height() - 8),
@@ -1730,7 +1732,7 @@ class MainWindow(QMainWindow):
         self.capture_tab_preview_label.setPixmap(thumb)
         self.capture_tab_preview_label.setText("")
 
-    def _apply_auto_crop(self) -> None:
+    def _apply_auto_crop_item(self) -> None:
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
@@ -1738,14 +1740,66 @@ class MainWindow(QMainWindow):
         image = Image.open(item.image_path).convert("RGB")
         left, right = suggest_navigation_crop(image)
         edits = self._session_for_item(item.item_id)
+        self._clear_crop_operations(edits, keep="nav_auto_crop")
         if left <= 0 and right <= 0:
             edits.remove_operation("nav_auto_crop")
         else:
             edits.set_operation("nav_auto_crop", {"left": left, "right": right})
         self._refresh_preview()
-        if self._mini_editor is not None:
-            self._mini_editor.update_session(item.item_id, edits)
         self.status_label.setText(f"Suggested crop left={left}px right={right}px")
+
+    def _apply_auto_crop_queue(self) -> None:
+        if not self._queue:
+            self.status_label.setText("Queue is empty.")
+            return
+        left_ratios: list[float] = []
+        right_ratios: list[float] = []
+        for item in self._queue:
+            if not item.image_path.exists():
+                continue
+            image = Image.open(item.image_path).convert("RGB")
+            left_px, right_px, left_ok, right_ok = suggest_navigation_crop_with_confidence(image)
+            width = max(1, image.width)
+            if left_ok and left_px > 0:
+                left_ratios.append(float(left_px) / float(width))
+            if right_ok and right_px > 0:
+                right_ratios.append(float(right_px) / float(width))
+        minimum_count = max(2, math.ceil(0.6 * len(self._queue)))
+        left_ratio = 0.0
+        right_ratio = 0.0
+        if len(left_ratios) >= minimum_count:
+            left_ratio = float(np.median(np.asarray(left_ratios, dtype=np.float32)))
+        if len(right_ratios) >= minimum_count:
+            right_ratio = float(np.median(np.asarray(right_ratios, dtype=np.float32)))
+        if left_ratio <= 0.0 and right_ratio <= 0.0:
+            self.status_label.setText("Queue auto-crop has insufficient confidence.")
+            return
+
+        for item in self._queue:
+            if not item.image_path.exists():
+                continue
+            image = Image.open(item.image_path).convert("RGB")
+            left_px = round(left_ratio * image.width)
+            right_px = round(right_ratio * image.width)
+            edits = self._session_for_item(item.item_id)
+            self._clear_crop_operations(edits, keep="nav_auto_crop")
+            if left_px <= 0 and right_px <= 0:
+                edits.remove_operation("nav_auto_crop")
+            else:
+                edits.set_operation("nav_auto_crop", {"left": left_px, "right": right_px})
+        self._sync_editor_controls()
+        self._sync_split_marker_list()
+        self._refresh_preview()
+        self.status_label.setText("Queue nav crop applied to all items.")
+
+    def _clear_redactions(self) -> None:
+        edits = self._current_session()
+        if edits is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        edits.remove_operation("redact_rects")
+        self._refresh_preview()
+        self.status_label.setText("Redactions cleared.")
 
     def _add_split_marker(self) -> None:
         edits = self._current_session()
@@ -1863,6 +1917,4 @@ class MainWindow(QMainWindow):
         self._settings.sync()
         self._hotkeys.stop()
         self._stop_overlay.hide()
-        if self._mini_editor is not None:
-            self._mini_editor.close()
         super().closeEvent(event)

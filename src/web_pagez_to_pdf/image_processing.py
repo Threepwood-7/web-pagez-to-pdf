@@ -58,6 +58,9 @@ def apply_edit_transform(
         if op_type == "crop_rect":
             transformed = _apply_crop_rect(transformed, params)
             continue
+        if op_type == "crop_vertical_band":
+            transformed = _apply_crop_vertical_band(transformed, params)
+            continue
         if op_type == "crop_free":
             transformed = _apply_crop_free(transformed, params)
             continue
@@ -165,6 +168,16 @@ def _apply_crop_free(image: Image.Image, params: dict[str, object]) -> Image.Ima
     return image.crop((left, top, right, bottom))
 
 
+def _apply_crop_vertical_band(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    left = max(0, int(params.get("left", 0)))
+    width = max(1, int(params.get("width", image.width)))
+    x1 = min(left, max(0, image.width - 1))
+    x2 = min(image.width, x1 + width)
+    if x2 <= x1:
+        return image
+    return image.crop((x1, 0, x2, image.height))
+
+
 def _apply_nav_crop(image: Image.Image, params: dict[str, object]) -> Image.Image:
     left = max(0, int(params.get("left", 0)))
     right = max(0, int(params.get("right", 0)))
@@ -199,34 +212,99 @@ def _apply_redactions(image: Image.Image, params: dict[str, object]) -> Image.Im
 def suggest_navigation_crop(image: Image.Image) -> tuple[int, int]:
     """Heuristic suggestion for left/right crop to remove side navigation."""
 
-    gray = np.asarray(image.convert("L"))
+    left_px, right_px, _left_confident, _right_confident = _detect_navigation_crop(image)
+    return (left_px, right_px)
+
+
+def suggest_navigation_crop_with_confidence(
+    image: Image.Image,
+) -> tuple[int, int, bool, bool]:
+    """Return left/right suggestions and side-specific confidence flags."""
+
+    return _detect_navigation_crop(image)
+
+
+def _detect_navigation_crop(image: Image.Image) -> tuple[int, int, bool, bool]:
+    gray = np.asarray(image.convert("L"), dtype=np.uint8)
+    if gray.ndim != 2 or gray.shape[1] < 20:
+        return (0, 0, False, False)
+
+    width = int(gray.shape[1])
+    left_end = max(1, round(width * 0.30))
+    right_start = min(width - 1, max(0, round(width * 0.70)))
+    max_edge_crop = max(0, round(width * 0.22))
+    if max_edge_crop <= 0:
+        return (0, 0, False, False)
+
+    edge_scores = _column_edge_density(gray)
+    continuity_scores = _column_vertical_continuity(gray)
+    combined = (0.6 * edge_scores) + (0.4 * continuity_scores)
+
+    left_crop, left_confident = _pick_side_crop(
+        combined,
+        side="left",
+        side_start=0,
+        side_end=left_end,
+        max_edge_crop=max_edge_crop,
+        margin_px=4,
+    )
+    right_crop, right_confident = _pick_side_crop(
+        combined,
+        side="right",
+        side_start=right_start,
+        side_end=width,
+        max_edge_crop=max_edge_crop,
+        margin_px=4,
+    )
+    return (left_crop, right_crop, left_confident, right_confident)
+
+
+def _column_edge_density(gray: np.ndarray) -> np.ndarray:
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 64, 180)
-    density = edges.mean(axis=0)
-    smooth = cv2.GaussianBlur(density.astype(np.float32), (1, 21), 0).reshape(-1)
+    density = edges.mean(axis=0).astype(np.float32)
+    max_val = float(np.max(density)) if density.size else 0.0
+    if max_val <= 0.0:
+        return np.zeros_like(density, dtype=np.float32)
+    return density / max_val
 
-    if smooth.size <= 10:
-        return (0, 0)
 
-    nonzero = smooth[smooth > 0.0]
-    if nonzero.size == 0:
-        return (0, 0)
-    threshold = float(np.percentile(nonzero, 40))
+def _column_vertical_continuity(gray: np.ndarray) -> np.ndarray:
+    gradient = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    strength = np.abs(gradient)
+    kernel = np.ones((31, 1), dtype=np.float32) / 31.0
+    smooth = cv2.filter2D(strength, -1, kernel, borderType=cv2.BORDER_REFLECT)
+    continuity = smooth.mean(axis=0).astype(np.float32)
+    max_val = float(np.max(continuity)) if continuity.size else 0.0
+    if max_val <= 0.0:
+        return np.zeros_like(continuity, dtype=np.float32)
+    return continuity / max_val
 
-    left = 0
-    for idx in range(min(smooth.size // 3, smooth.size)):
-        if smooth[idx] >= threshold:
-            left = max(0, idx - 6)
-            break
 
-    right_crop = 0
-    for reverse_idx in range(smooth.size - 1, max((2 * smooth.size) // 3, 0), -1):
-        if smooth[reverse_idx] >= threshold:
-            right_crop = max(0, smooth.size - reverse_idx - 6)
-            break
+def _pick_side_crop(
+    score: np.ndarray,
+    *,
+    side: str,
+    side_start: int,
+    side_end: int,
+    max_edge_crop: int,
+    margin_px: int,
+) -> tuple[int, bool]:
+    side_slice = score[side_start:side_end]
+    if side_slice.size == 0:
+        return (0, False)
+    threshold = max(float(np.percentile(side_slice, 75)), 0.11)
+    candidates = np.where(side_slice >= threshold)[0]
+    if candidates.size == 0:
+        return (0, False)
 
-    max_edge_crop = int(image.width * 0.18)
-    return (min(left, max_edge_crop), min(right_crop, max_edge_crop))
+    if side == "left":
+        boundary = side_start + int(candidates[-1])
+        crop = min(max_edge_crop, max(0, boundary + margin_px))
+    else:
+        boundary = side_start + int(candidates[0])
+        crop = min(max_edge_crop, max(0, score.size - boundary + margin_px))
+    return (int(crop), True)
 
 
 def compute_page_slices(

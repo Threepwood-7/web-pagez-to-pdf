@@ -256,23 +256,16 @@ class SettingsWindow(QDialog):
             self.capture_include_mouse_checkbox,
         )
 
-        self.editor_auto_open_checkbox = QCheckBox(
-            "Auto-open mini editor on queue selection", self
+        editor_help_label = QLabel(
+            "Editor controls are configured directly in the Editor tab.",
+            self,
         )
         self._add_row(
             editor_group,
-            "editor.auto_open_mini",
-            "Auto Open Mini Editor",
-            "mini editor auto open",
-            self.editor_auto_open_checkbox,
-        )
-        self.editor_show_grid_checkbox = QCheckBox("Show helper grid in mini editor", self)
-        self._add_row(
-            editor_group,
-            "editor.show_grid",
-            "Mini Editor Grid",
-            "editor grid helper",
-            self.editor_show_grid_checkbox,
+            "editor.inline_notice",
+            "Inline Editor",
+            "editor inline tools crop rotate split",
+            editor_help_label,
         )
 
         output_row = QWidget(self)
@@ -335,17 +328,6 @@ class SettingsWindow(QDialog):
             formats_row,
         )
 
-        self.start_tab_combo = QComboBox(self)
-        self.start_tab_combo.addItem("Capture", "capture")
-        self.start_tab_combo.addItem("Editor", "editor")
-        self.start_tab_combo.addItem("Export", "export")
-        self._add_row(
-            ui_group,
-            "ui.start_tab",
-            "Start Tab",
-            "start tab capture editor export",
-            self.start_tab_combo,
-        )
         self.editor_adv_collapsed = QCheckBox("Editor advanced collapsed", self)
         self.export_adv_collapsed = QCheckBox("Export print collapsed", self)
         collapse_row = QWidget(self)
@@ -407,8 +389,6 @@ class SettingsWindow(QDialog):
         self.capture_include_mouse_checkbox.setChecked(
             bool(values.get("capture.include_mouse_cursor", False))
         )
-        self.editor_auto_open_checkbox.setChecked(bool(values.get("editor.auto_open_mini", False)))
-        self.editor_show_grid_checkbox.setChecked(bool(values.get("editor.show_grid", False)))
         self.default_output_edit.setText(str(values.get("export.output_dir", "")))
         self.default_basename_edit.setText(str(values.get("export.basename", "capture")))
         self.default_combine_checkbox.setChecked(bool(values.get("export.combine_mode", True)))
@@ -418,8 +398,6 @@ class SettingsWindow(QDialog):
         self.default_tiff_checkbox.setChecked(bool(values.get("export.tiff", False)))
         self.default_docx_checkbox.setChecked(bool(values.get("export.docx", False)))
         self.default_pptx_checkbox.setChecked(bool(values.get("export.pptx", False)))
-        start_tab = str(values.get("ui.start_tab", "capture"))
-        self._set_combo_value(self.start_tab_combo, start_tab)
         self.editor_adv_collapsed.setChecked(bool(values.get("ui.editor_adv_collapsed", True)))
         self.export_adv_collapsed.setChecked(bool(values.get("ui.export_adv_collapsed", True)))
 
@@ -440,8 +418,6 @@ class SettingsWindow(QDialog):
                 str(self.capture_log_level_combo.currentData())
             ),
             "capture.include_mouse_cursor": self.capture_include_mouse_checkbox.isChecked(),
-            "editor.auto_open_mini": self.editor_auto_open_checkbox.isChecked(),
-            "editor.show_grid": self.editor_show_grid_checkbox.isChecked(),
             "export.output_dir": self.default_output_edit.text().strip(),
             "export.basename": self.default_basename_edit.text().strip() or "capture",
             "export.combine_mode": self.default_combine_checkbox.isChecked(),
@@ -451,7 +427,6 @@ class SettingsWindow(QDialog):
             "export.tiff": self.default_tiff_checkbox.isChecked(),
             "export.docx": self.default_docx_checkbox.isChecked(),
             "export.pptx": self.default_pptx_checkbox.isChecked(),
-            "ui.start_tab": str(self.start_tab_combo.currentData()),
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }
