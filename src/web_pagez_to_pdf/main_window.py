@@ -10,6 +10,7 @@ import threading
 import uuid
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -75,8 +76,9 @@ from .image_processing import (
     apply_edit_transform,
     compute_page_slices,
     pil_to_qpixmap,
-    suggest_navigation_crop,
     suggest_navigation_crop_with_confidence,
+    suggest_scrollbar_trim_with_confidence,
+    suggest_window_border_trim_with_confidence,
 )
 from .models import (
     CaptureItem,
@@ -169,6 +171,12 @@ class FullCaptureWorker(QThread):
         self.capture_succeeded.emit(result)
 
 
+@dataclass(slots=True)
+class _EditorHistoryEntry:
+    edits_by_item_id: dict[str, EditAdjustments]
+    selected_item_id: str | None
+
+
 class MainWindow(QMainWindow):
     """Tabbed capture/editor/export window with in-tab editor tools."""
 
@@ -188,6 +196,12 @@ class MainWindow(QMainWindow):
         self._settings_window: SettingsWindow | None = None
         self._editor_loading = False
         self._current_preview_slices: list[tuple[int, int]] = []
+        self._undo_history: list[_EditorHistoryEntry] = []
+        self._redo_history: list[_EditorHistoryEntry] = []
+        self._history_restoring = False
+        self._history_limit = 200
+        self._undo_action: QAction | None = None
+        self._redo_action: QAction | None = None
         self._window_state_restore_in_progress = False
         self._window_state_timer = QTimer(self)
         self._window_state_timer.setSingleShot(True)
@@ -199,6 +213,7 @@ class MainWindow(QMainWindow):
         self._load_defaults()
         self._load_runtime_settings()
         self._select_default_browser_target()
+        self._update_history_actions()
         self._hotkeys.start()
         CAPTURE_UI_LOGGER.info("main window initialized hwnd=%s", int(self.winId()))
 
@@ -689,21 +704,44 @@ class MainWindow(QMainWindow):
         edit_adv_layout.addLayout(split_form)
         editor_right_layout.addWidget(self.editor_advanced_group)
 
+        self.wizardry_group = QGroupBox("Wizardry", editor_right)
+        wizardry_layout = QVBoxLayout(self.wizardry_group)
+        self.wizard_apply_queue_checkbox = QCheckBox("Apply to whole queue")
+        self.wizard_apply_queue_checkbox.setChecked(False)
+        self.wizard_auto_vertical_clip_button = QPushButton("Auto Vertical Clip")
+        self.wizard_remove_scrollbar_button = QPushButton("Remove Vertical Scrollbar")
+        self.wizard_remove_border_button = QPushButton("Remove Window Border")
+        self.wizard_undo_button = QPushButton("Undo")
+        self.wizard_redo_button = QPushButton("Redo")
+        for widget, control in (
+            (self.wizardry_group, "wizardry_group"),
+            (self.wizard_apply_queue_checkbox, "wizard_apply_queue_checkbox"),
+            (self.wizard_auto_vertical_clip_button, "wizard_auto_vertical_clip_button"),
+            (self.wizard_remove_scrollbar_button, "wizard_remove_scrollbar_button"),
+            (self.wizard_remove_border_button, "wizard_remove_border_button"),
+            (self.wizard_undo_button, "wizard_undo_button"),
+            (self.wizard_redo_button, "wizard_redo_button"),
+        ):
+            self._assign_control_identity(widget, control, control)
+        wizardry_layout.addWidget(self.wizard_apply_queue_checkbox)
+        wizardry_layout.addWidget(self.wizard_auto_vertical_clip_button)
+        wizardry_layout.addWidget(self.wizard_remove_scrollbar_button)
+        wizardry_layout.addWidget(self.wizard_remove_border_button)
+        wizardry_actions_row = QHBoxLayout()
+        wizardry_actions_row.addWidget(self.wizard_undo_button)
+        wizardry_actions_row.addWidget(self.wizard_redo_button)
+        wizardry_layout.addLayout(wizardry_actions_row)
+        editor_right_layout.addWidget(self.wizardry_group)
+
         ops_group = QGroupBox("Operations", editor_right)
         ops_layout = QVBoxLayout(ops_group)
-        self.auto_crop_item_button = QPushButton("Suggest Nav Crop (Item)")
-        self.auto_crop_queue_button = QPushButton("Suggest Nav Crop (Queue)")
         self.clear_redactions_button = QPushButton("Clear Redactions")
         self.reset_item_edits_button = QPushButton("Reset Item Edits")
         for widget, control in (
-            (self.auto_crop_item_button, "auto_crop_item_button"),
-            (self.auto_crop_queue_button, "auto_crop_queue_button"),
             (self.clear_redactions_button, "clear_redactions_button"),
             (self.reset_item_edits_button, "reset_item_edits_button"),
         ):
             self._assign_control_identity(widget, control, control)
-        ops_layout.addWidget(self.auto_crop_item_button)
-        ops_layout.addWidget(self.auto_crop_queue_button)
         ops_layout.addWidget(self.clear_redactions_button)
         ops_layout.addWidget(self.reset_item_edits_button)
         editor_right_layout.addWidget(ops_group)
@@ -805,8 +843,11 @@ class MainWindow(QMainWindow):
         self.up_button.clicked.connect(self._queue_move_up)
         self.down_button.clicked.connect(self._queue_move_down)
         self.remove_button.clicked.connect(self._queue_remove)
-        self.auto_crop_item_button.clicked.connect(self._apply_auto_crop_item)
-        self.auto_crop_queue_button.clicked.connect(self._apply_auto_crop_queue)
+        self.wizard_auto_vertical_clip_button.clicked.connect(self._run_wizard_auto_vertical_clip)
+        self.wizard_remove_scrollbar_button.clicked.connect(self._run_wizard_remove_scrollbar)
+        self.wizard_remove_border_button.clicked.connect(self._run_wizard_remove_window_border)
+        self.wizard_undo_button.clicked.connect(self._undo_editor_change)
+        self.wizard_redo_button.clicked.connect(self._redo_editor_change)
         self.clear_redactions_button.clicked.connect(self._clear_redactions)
         self.reset_item_edits_button.clicked.connect(self._reset_item_edits)
         self.add_split_button.clicked.connect(self._add_split_marker)
@@ -962,8 +1003,24 @@ class MainWindow(QMainWindow):
             (self.split_list, "Manual split markers for this queue item."),
             (self.remove_split_button, "Remove the selected manual split marker."),
             (self.preview_breaks_button, "Recompute predicted page breaks with current settings."),
-            (self.auto_crop_item_button, "Suggest navigation crop for the selected item."),
-            (self.auto_crop_queue_button, "Suggest navigation crop across the full queue."),
+            (
+                self.wizard_apply_queue_checkbox,
+                "Apply Wizardry actions to all queue items instead of only the selected item.",
+            ),
+            (
+                self.wizard_auto_vertical_clip_button,
+                "Auto Vertical Clip: suggest left/right nav crop using edge heuristics.",
+            ),
+            (
+                self.wizard_remove_scrollbar_button,
+                "Detect and trim right-side vertical scrollbar area.",
+            ),
+            (
+                self.wizard_remove_border_button,
+                "Peel probable window border from outer edges toward the center.",
+            ),
+            (self.wizard_undo_button, "Undo the most recent editor change (Ctrl+Z)."),
+            (self.wizard_redo_button, "Redo the last undone editor change (Ctrl+Y)."),
             (self.clear_redactions_button, "Remove all redactions for the selected item."),
             (self.reset_item_edits_button, "Reset all editor operations for the selected item."),
             (self.combine_checkbox, "Export all queue items as one combined job."),
@@ -1002,6 +1059,16 @@ class MainWindow(QMainWindow):
         )
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        edit_menu = self.menuBar().addMenu("Edit")
+        self._undo_action = QAction("Undo", self)
+        self._undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self._undo_action.triggered.connect(self._undo_editor_change)
+        edit_menu.addAction(self._undo_action)
+        self._redo_action = QAction("Redo", self)
+        self._redo_action.setShortcut(QKeySequence("Ctrl+Y"))
+        self._redo_action.triggered.connect(self._redo_editor_change)
+        edit_menu.addAction(self._redo_action)
 
         view_menu = self.menuBar().addMenu("View")
         settings_action = QAction("Settings", self)
@@ -1957,12 +2024,96 @@ class MainWindow(QMainWindow):
             return None
         return self._session_for_item(item.item_id)
 
+    def _history_item_row(self, item_id: str | None) -> int:
+        if not item_id:
+            return -1
+        for index, item in enumerate(self._queue):
+            if item.item_id == item_id:
+                return index
+        return -1
+
+    def _snapshot_history_entry(self) -> _EditorHistoryEntry:
+        current = self._current_item()
+        return _EditorHistoryEntry(
+            edits_by_item_id={
+                item_id: edits.clone() for item_id, edits in self._sessions.edits_by_item_id.items()
+            },
+            selected_item_id=current.item_id if current is not None else None,
+        )
+
+    def _push_history_if_changed(self, before: _EditorHistoryEntry) -> bool:
+        if self._history_restoring:
+            return False
+        after = self._snapshot_history_entry()
+        if before.edits_by_item_id == after.edits_by_item_id:
+            return False
+        self._undo_history.append(before)
+        if len(self._undo_history) > self._history_limit:
+            self._undo_history = self._undo_history[-self._history_limit :]
+        self._redo_history.clear()
+        self._update_history_actions()
+        return True
+
+    def _restore_history_entry(self, entry: _EditorHistoryEntry) -> None:
+        self._history_restoring = True
+        try:
+            self._sessions.edits_by_item_id = {
+                item_id: edits.clone() for item_id, edits in entry.edits_by_item_id.items()
+            }
+            row = self._history_item_row(entry.selected_item_id)
+            with QSignalBlocker(self.queue_list):
+                if row >= 0:
+                    self.queue_list.setCurrentRow(row)
+            self._sync_editor_controls()
+            self._sync_split_marker_list()
+            self._refresh_preview()
+            self._refresh_queue_summary()
+        finally:
+            self._history_restoring = False
+        self._update_history_actions()
+
+    def _update_history_actions(self) -> None:
+        can_undo = bool(self._undo_history)
+        can_redo = bool(self._redo_history)
+        if self._undo_action is not None:
+            self._undo_action.setEnabled(can_undo)
+        if self._redo_action is not None:
+            self._redo_action.setEnabled(can_redo)
+        self.wizard_undo_button.setEnabled(can_undo)
+        self.wizard_redo_button.setEnabled(can_redo)
+
+    def _undo_editor_change(self) -> None:
+        if not self._undo_history:
+            self.status_label.setText("Nothing to undo.")
+            self._update_history_actions()
+            return
+        current = self._snapshot_history_entry()
+        entry = self._undo_history.pop()
+        self._redo_history.append(current)
+        self._restore_history_entry(entry)
+        self.status_label.setText("Undo applied.")
+
+    def _redo_editor_change(self) -> None:
+        if not self._redo_history:
+            self.status_label.setText("Nothing to redo.")
+            self._update_history_actions()
+            return
+        current = self._snapshot_history_entry()
+        entry = self._redo_history.pop()
+        self._undo_history.append(current)
+        self._restore_history_entry(entry)
+        self.status_label.setText("Redo applied.")
+
+    def _wizard_apply_to_queue(self) -> bool:
+        return bool(self.wizard_apply_queue_checkbox.isChecked())
+
     def _editor_controls_changed(self, *_args: object) -> None:
         if self._editor_loading:
             return
         edits = self._current_session()
         if edits is None:
             return
+        before = self._snapshot_history_entry()
         self._set_scalar_operation(edits, "scale", "percent", int(self.zoom_spin.value()), 100)
         self._set_scalar_operation(edits, "rotate", "degrees", int(self.rotate_spin.value()), 0)
         self._set_scalar_operation(
@@ -1972,6 +2123,7 @@ class MainWindow(QMainWindow):
             int(self.straighten_spin.value()),
             0,
         )
+        self._push_history_if_changed(before)
         self._refresh_preview()
 
     def _set_scalar_operation(
@@ -2055,8 +2207,10 @@ class MainWindow(QMainWindow):
         edits = self._current_session()
         if edits is None:
             return
+        before = self._snapshot_history_entry()
         normalized = self._normalized_markers(markers)
         edits.split_markers_px = normalized
+        self._push_history_if_changed(before)
         self._sync_split_marker_list(selected_marker=selected_marker)
         self._refresh_preview()
 
@@ -2064,7 +2218,9 @@ class MainWindow(QMainWindow):
         item = self._current_item()
         if item is None:
             return
+        before = self._snapshot_history_entry()
         self._sessions.edits_by_item_id[item.item_id] = EditAdjustments()
+        self._push_history_if_changed(before)
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
@@ -2218,6 +2374,7 @@ class MainWindow(QMainWindow):
             "height": int(max(1.0, rect.height())),
         }
         edits = self._session_for_item(item.item_id)
+        before = self._snapshot_history_entry()
         normalized_tool = str(tool or "").strip().lower()
         if normalized_tool in {"crop_rect", "crop_vertical_band"}:
             self._clear_crop_operations(edits, keep=normalized_tool)
@@ -2241,6 +2398,7 @@ class MainWindow(QMainWindow):
             edits.set_operation("redact_rects", {"rectangles": rectangles})
         else:
             return
+        self._push_history_if_changed(before)
         self._refresh_preview()
 
     def _on_editor_free_crop(self, points_obj: object) -> None:
@@ -2257,8 +2415,10 @@ class MainWindow(QMainWindow):
         if len(normalized) < 3:
             return
         edits = self._session_for_item(item.item_id)
+        before = self._snapshot_history_entry()
         self._clear_crop_operations(edits, keep="crop_free")
         edits.set_operation("crop_free", {"points": normalized})
+        self._push_history_if_changed(before)
         self._refresh_preview()
 
     def _refresh_preview(self, *_args: object) -> None:
@@ -2313,21 +2473,265 @@ class MainWindow(QMainWindow):
         self.capture_tab_preview_label.setPixmap(thumb)
         self.capture_tab_preview_label.setText("")
 
+    @staticmethod
+    def _queue_confidence_minimum(total_items: int) -> int:
+        return max(2, math.ceil(0.6 * total_items))
+
+    def _run_wizard_auto_vertical_clip(self, *_args: object) -> None:
+        if self._wizard_apply_to_queue():
+            self._apply_auto_crop_queue()
+            return
+        self._apply_auto_crop_item()
+
+    def _run_wizard_remove_scrollbar(self, *_args: object) -> None:
+        if self._wizard_apply_to_queue():
+            if not self._queue:
+                self.status_label.setText("Queue is empty.")
+                return
+            right_ratios: list[float] = []
+            for item in self._queue:
+                if not item.image_path.exists():
+                    continue
+                image = Image.open(item.image_path).convert("RGB")
+                right_px, confident = suggest_scrollbar_trim_with_confidence(image)
+                if confident and right_px > 0:
+                    right_ratios.append(float(right_px) / float(max(1, image.width)))
+            minimum_count = self._queue_confidence_minimum(len(self._queue))
+            if len(right_ratios) < minimum_count:
+                self.status_label.setText("Queue scrollbar trim has insufficient confidence.")
+                return
+            right_ratio = float(np.median(np.asarray(right_ratios, dtype=np.float32)))
+            before = self._snapshot_history_entry()
+            for item in self._queue:
+                if not item.image_path.exists():
+                    continue
+                image = Image.open(item.image_path).convert("RGB")
+                right_px = round(right_ratio * image.width)
+                edits = self._session_for_item(item.item_id)
+                if right_px <= 0:
+                    edits.remove_operation("wizard_scrollbar_trim")
+                else:
+                    edits.set_operation("wizard_scrollbar_trim", {"right": int(right_px)})
+            self._push_history_if_changed(before)
+            self._sync_editor_controls()
+            self._sync_split_marker_list()
+            self._refresh_preview()
+            self.status_label.setText("Queue vertical scrollbar trim applied.")
+            return
+
+        item = self._current_item()
+        if item is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        image = Image.open(item.image_path).convert("RGB")
+        right_px, confident = suggest_scrollbar_trim_with_confidence(image)
+        before = self._snapshot_history_entry()
+        edits = self._session_for_item(item.item_id)
+        if confident and right_px > 0:
+            edits.set_operation("wizard_scrollbar_trim", {"right": int(right_px)})
+            self.status_label.setText(f"Scrollbar trim right={int(right_px)}px applied.")
+        else:
+            edits.remove_operation("wizard_scrollbar_trim")
+            self.status_label.setText("Could not confidently detect a vertical scrollbar.")
+        self._push_history_if_changed(before)
+        self._refresh_preview()
+
+    @staticmethod
+    def _wizard_border_trim_from_edits(edits: EditAdjustments) -> tuple[int, int, int, int]:
+        op = edits.get_operation("wizard_border_trim")
+        if op is None:
+            return (0, 0, 0, 0)
+        return (
+            max(0, int(op.params.get("left", 0))),
+            max(0, int(op.params.get("right", 0))),
+            max(0, int(op.params.get("top", 0))),
+            max(0, int(op.params.get("bottom", 0))),
+        )
+
+    @staticmethod
+    def _clamp_trim_margins_to_safe_bounds(
+        width: int,
+        height: int,
+        left: int,
+        right: int,
+        top: int,
+        bottom: int,
+    ) -> tuple[int, int, int, int]:
+        left = max(0, int(left))
+        right = max(0, int(right))
+        top = max(0, int(top))
+        bottom = max(0, int(bottom))
+        max_trim_width = max(0, int(width) - 20)
+        max_trim_height = max(0, int(height) - 20)
+        if left + right > max_trim_width:
+            overflow = (left + right) - max_trim_width
+            if right >= left:
+                reduced = min(overflow, right)
+                right -= reduced
+                overflow -= reduced
+                if overflow > 0:
+                    left = max(0, left - overflow)
+            else:
+                reduced = min(overflow, left)
+                left -= reduced
+                overflow -= reduced
+                if overflow > 0:
+                    right = max(0, right - overflow)
+        if top + bottom > max_trim_height:
+            overflow = (top + bottom) - max_trim_height
+            if bottom >= top:
+                reduced = min(overflow, bottom)
+                bottom -= reduced
+                overflow -= reduced
+                if overflow > 0:
+                    top = max(0, top - overflow)
+            else:
+                reduced = min(overflow, top)
+                top -= reduced
+                overflow -= reduced
+                if overflow > 0:
+                    bottom = max(0, bottom - overflow)
+        return (left, right, top, bottom)
+
+    def _crop_with_trim_margins(
+        self,
+        image: Image.Image,
+        left: int,
+        right: int,
+        top: int,
+        bottom: int,
+    ) -> tuple[Image.Image, tuple[int, int, int, int]]:
+        left, right, top, bottom = self._clamp_trim_margins_to_safe_bounds(
+            image.width,
+            image.height,
+            left,
+            right,
+            top,
+            bottom,
+        )
+        x1 = left
+        y1 = top
+        x2 = max(x1 + 1, image.width - right)
+        y2 = max(y1 + 1, image.height - bottom)
+        return (image.crop((x1, y1, x2, y2)), (left, right, top, bottom))
+
+    def _apply_iterative_border_trim_for_item(self, item: CaptureItem) -> tuple[bool, bool]:
+        if not item.image_path.exists():
+            return (False, False)
+        image = Image.open(item.image_path).convert("RGB")
+        edits = self._session_for_item(item.item_id)
+        current_left, current_right, current_top, current_bottom = self._wizard_border_trim_from_edits(
+            edits
+        )
+        working, (current_left, current_right, current_top, current_bottom) = self._crop_with_trim_margins(
+            image,
+            current_left,
+            current_right,
+            current_top,
+            current_bottom,
+        )
+        left_delta, right_delta, top_delta, bottom_delta, left_ok, right_ok, top_ok, bottom_ok = (
+            suggest_window_border_trim_with_confidence(working)
+        )
+        if not (left_ok or right_ok or top_ok or bottom_ok):
+            return (False, False)
+        next_left = current_left + (int(left_delta) if left_ok else 0)
+        next_right = current_right + (int(right_delta) if right_ok else 0)
+        next_top = current_top + (int(top_delta) if top_ok else 0)
+        next_bottom = current_bottom + (int(bottom_delta) if bottom_ok else 0)
+        next_left, next_right, next_top, next_bottom = self._clamp_trim_margins_to_safe_bounds(
+            image.width,
+            image.height,
+            next_left,
+            next_right,
+            next_top,
+            next_bottom,
+        )
+        if (
+            next_left == current_left
+            and next_right == current_right
+            and next_top == current_top
+            and next_bottom == current_bottom
+        ):
+            return (False, True)
+        edits.set_operation(
+            "wizard_border_trim",
+            {
+                "left": int(next_left),
+                "right": int(next_right),
+                "top": int(next_top),
+                "bottom": int(next_bottom),
+            },
+        )
+        return (True, True)
+
+    def _run_wizard_remove_window_border(self, *_args: object) -> None:
+        if self._wizard_apply_to_queue():
+            if not self._queue:
+                self.status_label.setText("Queue is empty.")
+                return
+            before = self._snapshot_history_entry()
+            applied_items = 0
+            detected_items = 0
+            for item in self._queue:
+                applied, detected = self._apply_iterative_border_trim_for_item(item)
+                if detected:
+                    detected_items += 1
+                if applied:
+                    applied_items += 1
+            changed = self._push_history_if_changed(before)
+            self._sync_editor_controls()
+            self._sync_split_marker_list()
+            self._refresh_preview()
+            if changed and applied_items > 0:
+                self.status_label.setText(
+                    f"Queue next inner border level applied to {applied_items} item(s)."
+                )
+            elif detected_items > 0:
+                self.status_label.setText("Queue border trim is already at safe bounds.")
+            else:
+                self.status_label.setText("No deeper border confidently detected for queue.")
+            return
+
+        item = self._current_item()
+        if item is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        before = self._snapshot_history_entry()
+        applied, detected = self._apply_iterative_border_trim_for_item(item)
+        changed = self._push_history_if_changed(before)
+        self._refresh_preview()
+        if changed and applied:
+            edits = self._session_for_item(item.item_id)
+            left_px, right_px, top_px, bottom_px = self._wizard_border_trim_from_edits(edits)
+            self.status_label.setText(
+                "Next inner border level applied "
+                f"(l={left_px}px r={right_px}px t={top_px}px b={bottom_px}px)."
+            )
+        elif detected:
+            self.status_label.setText("Border trim is already at safe bounds.")
+        else:
+            self.status_label.setText("No deeper border confidently detected.")
+
     def _apply_auto_crop_item(self) -> None:
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
             return
         image = Image.open(item.image_path).convert("RGB")
-        left, right = suggest_navigation_crop(image)
+        left_px, right_px, left_ok, right_ok = suggest_navigation_crop_with_confidence(image)
+        before = self._snapshot_history_entry()
         edits = self._session_for_item(item.item_id)
-        self._clear_crop_operations(edits, keep="nav_auto_crop")
-        if left <= 0 and right <= 0:
-            edits.remove_operation("nav_auto_crop")
+        if (left_ok and left_px > 0) or (right_ok and right_px > 0):
+            edits.set_operation("nav_auto_crop", {"left": int(left_px), "right": int(right_px)})
+            self.status_label.setText(
+                f"Auto vertical clip applied (left={int(left_px)}px right={int(right_px)}px)."
+            )
         else:
-            edits.set_operation("nav_auto_crop", {"left": left, "right": right})
+            edits.remove_operation("nav_auto_crop")
+            self.status_label.setText("Auto vertical clip has insufficient confidence.")
+        self._push_history_if_changed(before)
         self._refresh_preview()
-        self.status_label.setText(f"Suggested crop left={left}px right={right}px")
 
     def _apply_auto_crop_queue(self) -> None:
         if not self._queue:
@@ -2345,17 +2749,21 @@ class MainWindow(QMainWindow):
                 left_ratios.append(float(left_px) / float(width))
             if right_ok and right_px > 0:
                 right_ratios.append(float(right_px) / float(width))
-        minimum_count = max(2, math.ceil(0.6 * len(self._queue)))
-        left_ratio = 0.0
-        right_ratio = 0.0
-        if len(left_ratios) >= minimum_count:
-            left_ratio = float(np.median(np.asarray(left_ratios, dtype=np.float32)))
-        if len(right_ratios) >= minimum_count:
-            right_ratio = float(np.median(np.asarray(right_ratios, dtype=np.float32)))
+        minimum_count = self._queue_confidence_minimum(len(self._queue))
+        left_ratio = (
+            float(np.median(np.asarray(left_ratios, dtype=np.float32)))
+            if len(left_ratios) >= minimum_count
+            else 0.0
+        )
+        right_ratio = (
+            float(np.median(np.asarray(right_ratios, dtype=np.float32)))
+            if len(right_ratios) >= minimum_count
+            else 0.0
+        )
         if left_ratio <= 0.0 and right_ratio <= 0.0:
-            self.status_label.setText("Queue auto-crop has insufficient confidence.")
+            self.status_label.setText("Queue auto vertical clip has insufficient confidence.")
             return
-
+        before = self._snapshot_history_entry()
         for item in self._queue:
             if not item.image_path.exists():
                 continue
@@ -2363,22 +2771,24 @@ class MainWindow(QMainWindow):
             left_px = round(left_ratio * image.width)
             right_px = round(right_ratio * image.width)
             edits = self._session_for_item(item.item_id)
-            self._clear_crop_operations(edits, keep="nav_auto_crop")
             if left_px <= 0 and right_px <= 0:
                 edits.remove_operation("nav_auto_crop")
             else:
-                edits.set_operation("nav_auto_crop", {"left": left_px, "right": right_px})
+                edits.set_operation("nav_auto_crop", {"left": int(left_px), "right": int(right_px)})
+        self._push_history_if_changed(before)
         self._sync_editor_controls()
         self._sync_split_marker_list()
         self._refresh_preview()
-        self.status_label.setText("Queue nav crop applied to all items.")
+        self.status_label.setText("Queue auto vertical clip applied.")
 
     def _clear_redactions(self) -> None:
         edits = self._current_session()
         if edits is None:
             self.status_label.setText("Select queue item first.")
             return
+        before = self._snapshot_history_entry()
         edits.remove_operation("redact_rects")
+        self._push_history_if_changed(before)
         self._refresh_preview()
         self.status_label.setText("Redactions cleared.")
 

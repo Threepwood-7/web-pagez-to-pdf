@@ -126,6 +126,25 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         window.split_edit_tool_button.property("widget_id")
         == "window:main:control:split_edit_tool_button"
     )
+    assert window.wizardry_group.property("widget_id") == "window:main:control:wizardry_group"
+    assert (
+        window.wizard_apply_queue_checkbox.property("widget_id")
+        == "window:main:control:wizard_apply_queue_checkbox"
+    )
+    assert (
+        window.wizard_auto_vertical_clip_button.property("widget_id")
+        == "window:main:control:wizard_auto_vertical_clip_button"
+    )
+    assert (
+        window.wizard_remove_scrollbar_button.property("widget_id")
+        == "window:main:control:wizard_remove_scrollbar_button"
+    )
+    assert (
+        window.wizard_remove_border_button.property("widget_id")
+        == "window:main:control:wizard_remove_border_button"
+    )
+    assert window.wizard_undo_button.property("widget_id") == "window:main:control:wizard_undo_button"
+    assert window.wizard_redo_button.property("widget_id") == "window:main:control:wizard_redo_button"
 
 
 def test_capture_advanced_group_is_visible_and_not_checkable(qtbot: QtBot) -> None:
@@ -332,6 +351,14 @@ def test_capture_defaults_max_pages_and_delay(qtbot: QtBot) -> None:
 
     assert window.max_pages_spin.value() == 50
     assert window.capture_delay_spin.value() == 333
+
+
+def test_wizard_apply_queue_checkbox_defaults_disabled(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert not window.wizard_apply_queue_checkbox.isChecked()
 
 
 def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:
@@ -661,6 +688,22 @@ def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:
     assert "Alt+X" in shortcut_texts
 
 
+def test_edit_menu_has_undo_redo_shortcuts(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    actions = [action for action in window.menuBar().actions() if action.menu() is not None]
+    edit_menu = next((action.menu() for action in actions if action.text() == "Edit"), None)
+    assert edit_menu is not None
+    undo_action = next((action for action in edit_menu.actions() if action.text() == "Undo"), None)
+    redo_action = next((action for action in edit_menu.actions() if action.text() == "Redo"), None)
+    assert isinstance(undo_action, QAction)
+    assert isinstance(redo_action, QAction)
+    assert undo_action.shortcut().toString() == "Ctrl+Z"
+    assert redo_action.shortcut().toString() == "Ctrl+Y"
+
+
 def test_startup_tab_forced_capture_even_if_settings_saved_other_tab(qtbot: QtBot) -> None:
     settings = QSettings()
     settings.setValue("ui.start_tab", "export")
@@ -698,7 +741,7 @@ def test_editor_has_no_mini_editor_entry_point(qtbot: QtBot) -> None:
     assert not hasattr(window, "open_mini_editor_button")
 
 
-def test_last_crop_wins_when_auto_crop_applied(
+def test_wizard_vertical_clip_is_additive_with_existing_crop(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -716,20 +759,20 @@ def test_last_crop_wins_when_auto_crop_applied(
     edits = window._session_for_item(item.item_id)
     edits.set_operation("crop_rect", {"left": 10, "top": 10, "width": 100, "height": 100})
     monkeypatch.setattr(
-        "web_pagez_to_pdf.main_window.suggest_navigation_crop",
-        lambda _image: (14, 12),
+        "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
+        lambda _image: (14, 12, True, True),
     )
 
-    window._apply_auto_crop_item()
+    window._run_wizard_auto_vertical_clip()
 
-    assert edits.get_operation("crop_rect") is None
+    assert edits.get_operation("crop_rect") is not None
     nav_crop = edits.get_operation("nav_auto_crop")
     assert nav_crop is not None
     assert int(nav_crop.params.get("left", 0)) == 14
     assert int(nav_crop.params.get("right", 0)) == 12
 
 
-def test_queue_auto_crop_applies_consensus_to_all_items(
+def test_wizard_vertical_clip_queue_mode_applies_consensus_to_all_items(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -748,7 +791,8 @@ def test_queue_auto_crop_applies_consensus_to_all_items(
         "web_pagez_to_pdf.main_window.suggest_navigation_crop_with_confidence",
         lambda image: (int(image.width * 0.1), int(image.width * 0.08), True, True),
     )
-    window._apply_auto_crop_queue()
+    window.wizard_apply_queue_checkbox.setChecked(True)
+    window._run_wizard_auto_vertical_clip()
 
     for item in window._queue:
         edits = window._session_for_item(item.item_id)
@@ -758,7 +802,7 @@ def test_queue_auto_crop_applies_consensus_to_all_items(
         assert int(nav_crop.params.get("right", 0)) > 0
 
 
-def test_queue_auto_crop_noop_on_insufficient_confidence(
+def test_wizard_vertical_clip_queue_mode_noop_on_insufficient_confidence(
     qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     window = MainWindow()
@@ -777,12 +821,268 @@ def test_queue_auto_crop_noop_on_insufficient_confidence(
         lambda _image: (0, 0, False, False),
     )
 
-    window._apply_auto_crop_queue()
+    window.wizard_apply_queue_checkbox.setChecked(True)
+    window._run_wizard_auto_vertical_clip()
 
     assert "insufficient confidence" in window.status_label.text().lower()
     for item in window._queue:
         edits = window._session_for_item(item.item_id)
         assert edits.get_operation("nav_auto_crop") is None
+
+
+def test_wizard_remove_scrollbar_sets_operation(qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (210, 200), "white"),
+        title="scrollbar",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_scrollbar_trim_with_confidence",
+        lambda _image: (11, True),
+    )
+
+    window._run_wizard_remove_scrollbar()
+
+    item = window._current_item()
+    assert item is not None
+    op = window._session_for_item(item.item_id).get_operation("wizard_scrollbar_trim")
+    assert op is not None
+    assert int(op.params.get("right", 0)) == 11
+
+
+def test_wizard_remove_border_sets_operation(qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (220, 220), "white"),
+        title="border",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_window_border_trim_with_confidence",
+        lambda _image: (4, 6, 3, 5, True, True, True, True),
+    )
+
+    window._run_wizard_remove_window_border()
+
+    item = window._current_item()
+    assert item is not None
+    op = window._session_for_item(item.item_id).get_operation("wizard_border_trim")
+    assert op is not None
+    assert int(op.params.get("left", 0)) == 4
+    assert int(op.params.get("right", 0)) == 6
+    assert int(op.params.get("top", 0)) == 3
+    assert int(op.params.get("bottom", 0)) == 5
+
+
+def test_wizard_remove_border_accumulates_on_repeated_clicks(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (220, 220), "white"),
+        title="border-iterative",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    seen_sizes: list[tuple[int, int]] = []
+    responses = iter(
+        [
+            (4, 6, 3, 5, True, True, True, True),
+            (1, 2, 0, 1, True, True, False, True),
+        ]
+    )
+
+    def _fake_detector(image: Image.Image) -> tuple[int, int, int, int, bool, bool, bool, bool]:
+        seen_sizes.append(image.size)
+        return next(responses)
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_window_border_trim_with_confidence",
+        _fake_detector,
+    )
+
+    window._run_wizard_remove_window_border()
+    window._run_wizard_remove_window_border()
+
+    item = window._current_item()
+    assert item is not None
+    op = window._session_for_item(item.item_id).get_operation("wizard_border_trim")
+    assert op is not None
+    assert seen_sizes == [(220, 220), (210, 212)]
+    assert int(op.params.get("left", 0)) == 5
+    assert int(op.params.get("right", 0)) == 8
+    assert int(op.params.get("top", 0)) == 3
+    assert int(op.params.get("bottom", 0)) == 6
+
+
+def test_wizard_remove_border_uncertain_second_pass_keeps_existing_trim(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (220, 220), "white"),
+        title="border-noop",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    responses = iter(
+        [
+            (4, 6, 3, 5, True, True, True, True),
+            (0, 0, 0, 0, False, False, False, False),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_window_border_trim_with_confidence",
+        lambda _image: next(responses),
+    )
+
+    window._run_wizard_remove_window_border()
+    window._run_wizard_remove_window_border()
+
+    item = window._current_item()
+    assert item is not None
+    op = window._session_for_item(item.item_id).get_operation("wizard_border_trim")
+    assert op is not None
+    assert int(op.params.get("left", 0)) == 4
+    assert int(op.params.get("right", 0)) == 6
+    assert int(op.params.get("top", 0)) == 3
+    assert int(op.params.get("bottom", 0)) == 5
+    assert len(window._undo_history) == 1
+
+
+def test_wizard_remove_border_queue_iterative_per_item_one_undo_step(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (220, 200), "white"),
+        title="border-q0",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window._add_capture(
+        image=Image.new("RGB", (240, 200), "white"),
+        title="border-q1",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    first_item = window._queue[0]
+    second_item = window._queue[1]
+    window._session_for_item(first_item.item_id).set_operation(
+        "wizard_border_trim",
+        {"left": 2, "right": 1, "top": 0, "bottom": 0},
+    )
+    window.wizard_apply_queue_checkbox.setChecked(True)
+
+    def _fake_detector(image: Image.Image) -> tuple[int, int, int, int, bool, bool, bool, bool]:
+        if image.size == (217, 200):
+            return (1, 0, 2, 0, True, False, True, False)
+        if image.size == (240, 200):
+            return (0, 3, 0, 2, False, True, False, True)
+        return (0, 0, 0, 0, False, False, False, False)
+
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_window_border_trim_with_confidence",
+        _fake_detector,
+    )
+
+    window._run_wizard_remove_window_border()
+
+    first_op = window._session_for_item(first_item.item_id).get_operation("wizard_border_trim")
+    second_op = window._session_for_item(second_item.item_id).get_operation("wizard_border_trim")
+    assert first_op is not None
+    assert second_op is not None
+    assert int(first_op.params.get("left", 0)) == 3
+    assert int(first_op.params.get("right", 0)) == 1
+    assert int(first_op.params.get("top", 0)) == 2
+    assert int(first_op.params.get("bottom", 0)) == 0
+    assert int(second_op.params.get("left", 0)) == 0
+    assert int(second_op.params.get("right", 0)) == 3
+    assert int(second_op.params.get("top", 0)) == 0
+    assert int(second_op.params.get("bottom", 0)) == 2
+    assert len(window._undo_history) == 1
+
+    window._undo_editor_change()
+    first_op = window._session_for_item(first_item.item_id).get_operation("wizard_border_trim")
+    second_op = window._session_for_item(second_item.item_id).get_operation("wizard_border_trim")
+    assert first_op is not None
+    assert int(first_op.params.get("left", 0)) == 2
+    assert int(first_op.params.get("right", 0)) == 1
+    assert int(first_op.params.get("top", 0)) == 0
+    assert int(first_op.params.get("bottom", 0)) == 0
+    assert second_op is None
+
+
+def test_wizard_queue_run_is_one_undo_step(qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    for index in range(3):
+        window._add_capture(
+            image=Image.new("RGB", (200 + index * 5, 180), "white"),
+            title=f"undo-queue-{index}",
+            source_hwnd=None,
+            frame_count=1,
+        )
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.suggest_scrollbar_trim_with_confidence",
+        lambda _image: (12, True),
+    )
+    window.wizard_apply_queue_checkbox.setChecked(True)
+
+    window._run_wizard_remove_scrollbar()
+    assert len(window._undo_history) == 1
+
+    window._undo_editor_change()
+    for item in window._queue:
+        edits = window._session_for_item(item.item_id)
+        assert edits.get_operation("wizard_scrollbar_trim") is None
+
+
+def test_global_undo_redo_applies_to_manual_crop(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (300, 220), "white"),
+        title="undo-crop",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.rect_crop_tool_button.click()
+    from PySide6.QtCore import QRectF
+
+    window._on_editor_rect_drawn("crop_rect", QRectF(10.0, 10.0, 80.0, 60.0))
+    item = window._current_item()
+    assert item is not None
+    assert window._session_for_item(item.item_id).get_operation("crop_rect") is not None
+
+    window._undo_editor_change()
+    assert window._session_for_item(item.item_id).get_operation("crop_rect") is None
+
+    window._redo_editor_change()
+    assert window._session_for_item(item.item_id).get_operation("crop_rect") is not None
 
 
 def _is_descendant(widget, parent) -> bool:
@@ -1027,6 +1327,12 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.capture_delay_spin,
         window.capture_backend_combo,
         window.capture_scroll_mode_combo,
+        window.wizard_apply_queue_checkbox,
+        window.wizard_auto_vertical_clip_button,
+        window.wizard_remove_scrollbar_button,
+        window.wizard_remove_border_button,
+        window.wizard_undo_button,
+        window.wizard_redo_button,
         window.editor_canvas,
         window.zoom_fit_width_button,
         window.pan_tool_button,

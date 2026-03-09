@@ -73,6 +73,12 @@ def apply_edit_transform(
         if op_type == "nav_auto_crop":
             transformed = _apply_nav_crop(transformed, params)
             continue
+        if op_type == "wizard_scrollbar_trim":
+            transformed = _apply_wizard_scrollbar_trim(transformed, params)
+            continue
+        if op_type == "wizard_border_trim":
+            transformed = _apply_wizard_border_trim(transformed, params)
+            continue
         if op_type == "redact_rects":
             transformed = _apply_redactions(transformed, params)
             continue
@@ -188,6 +194,28 @@ def _apply_nav_crop(image: Image.Image, params: dict[str, object]) -> Image.Imag
     return image.crop((x1, 0, x2, image.height))
 
 
+def _apply_wizard_scrollbar_trim(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    right = max(0, int(params.get("right", 0)))
+    x2 = max(1, image.width - right)
+    if x2 <= 0:
+        return image
+    return image.crop((0, 0, x2, image.height))
+
+
+def _apply_wizard_border_trim(image: Image.Image, params: dict[str, object]) -> Image.Image:
+    left = max(0, int(params.get("left", 0)))
+    right = max(0, int(params.get("right", 0)))
+    top = max(0, int(params.get("top", 0)))
+    bottom = max(0, int(params.get("bottom", 0)))
+    x1 = min(left, max(0, image.width - 1))
+    x2 = max(1, image.width - right)
+    y1 = min(top, max(0, image.height - 1))
+    y2 = max(1, image.height - bottom)
+    if x2 <= x1 or y2 <= y1:
+        return image
+    return image.crop((x1, y1, x2, y2))
+
+
 def _apply_redactions(image: Image.Image, params: dict[str, object]) -> Image.Image:
     rectangles = params.get("rectangles")
     if not isinstance(rectangles, list) or not rectangles:
@@ -224,6 +252,111 @@ def suggest_navigation_crop_with_confidence(
     return _detect_navigation_crop(image)
 
 
+def suggest_scrollbar_trim_with_confidence(image: Image.Image) -> tuple[int, bool]:
+    """Estimate right scrollbar trim with lightweight confidence checks."""
+
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    height, width = gray.shape[:2]
+    if width < 48 or height < 64:
+        return (0, False)
+    max_trim = min(180, max(0, int(width * 0.18)))
+    if max_trim <= 0:
+        return (0, False)
+    band_start = max(0, width - max_trim - 2)
+    band = gray[:, band_start:width]
+    if band.size == 0:
+        return (0, False)
+
+    col_activity = np.mean(np.abs(np.diff(band, axis=0)), axis=0)
+    stable_cols = 0
+    for score in reversed(col_activity.tolist()):
+        if float(score) <= 3.0:
+            stable_cols += 1
+            continue
+        break
+    if stable_cols < 4:
+        return (0, False)
+    trim = min(max_trim, stable_cols)
+    boundary_x = width - trim
+    if boundary_x <= 0 or boundary_x >= width:
+        return (0, False)
+    outer = gray[:, boundary_x:width]
+    inner = gray[:, max(0, boundary_x - 4):boundary_x]
+    if outer.size == 0 or inner.size == 0:
+        return (0, False)
+    boundary_contrast = float(np.mean(np.abs(gray[:, boundary_x - 1] - gray[:, boundary_x])))
+    outer_std = float(np.std(outer))
+    inner_std = float(np.std(inner))
+    confident = boundary_contrast >= 1.8 and outer_std <= 46.0 and inner_std >= 6.0
+    return (int(trim), bool(confident))
+
+
+def suggest_window_border_trim_with_confidence(
+    image: Image.Image,
+) -> tuple[int, int, int, int, bool, bool, bool, bool]:
+    """Peel likely window border from outside toward center with per-side confidence flags."""
+
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    height, width = gray.shape[:2]
+    if width < 60 or height < 60:
+        return (0, 0, 0, 0, False, False, False, False)
+
+    max_left = min(120, max(0, int(width * 0.18)))
+    max_right = max_left
+    max_top = min(120, max(0, int(height * 0.18)))
+    max_bottom = max_top
+    variance_threshold = 10.0
+    contrast_threshold = 7.0
+
+    left = _peel_border_side(
+        gray,
+        side="left",
+        max_peel=max_left,
+        variance_threshold=variance_threshold,
+        contrast_threshold=contrast_threshold,
+    )
+    right = _peel_border_side(
+        gray,
+        side="right",
+        max_peel=max_right,
+        variance_threshold=variance_threshold,
+        contrast_threshold=contrast_threshold,
+    )
+    top = _peel_border_side(
+        gray,
+        side="top",
+        max_peel=max_top,
+        variance_threshold=variance_threshold,
+        contrast_threshold=contrast_threshold,
+    )
+    bottom = _peel_border_side(
+        gray,
+        side="bottom",
+        max_peel=max_bottom,
+        variance_threshold=variance_threshold,
+        contrast_threshold=contrast_threshold,
+    )
+
+    max_keep_width = max(20, width - 40)
+    max_keep_height = max(20, height - 40)
+    if left + right >= max_keep_width:
+        left = 0
+        right = 0
+    if top + bottom >= max_keep_height:
+        top = 0
+        bottom = 0
+    return (
+        int(left),
+        int(right),
+        int(top),
+        int(bottom),
+        bool(left > 0),
+        bool(right > 0),
+        bool(top > 0),
+        bool(bottom > 0),
+    )
+
+
 def _detect_navigation_crop(image: Image.Image) -> tuple[int, int, bool, bool]:
     gray = np.asarray(image.convert("L"), dtype=np.uint8)
     if gray.ndim != 2 or gray.shape[1] < 20:
@@ -257,6 +390,48 @@ def _detect_navigation_crop(image: Image.Image) -> tuple[int, int, bool, bool]:
         margin_px=4,
     )
     return (left_crop, right_crop, left_confident, right_confident)
+
+
+def _peel_border_side(
+    gray: np.ndarray,
+    *,
+    side: str,
+    max_peel: int,
+    variance_threshold: float,
+    contrast_threshold: float,
+) -> int:
+    height, width = gray.shape[:2]
+    if side in {"left", "right"}:
+        max_candidate = min(max_peel, width - 2)
+    else:
+        max_candidate = min(max_peel, height - 2)
+    if max_candidate <= 0:
+        return 0
+
+    best = 0
+    for peel in range(1, max_candidate + 1):
+        if side == "left":
+            border_strip = gray[:, :peel]
+            outer_edge = gray[:, peel - 1]
+            inner_edge = gray[:, peel]
+        elif side == "right":
+            border_strip = gray[:, width - peel : width]
+            outer_edge = gray[:, width - peel]
+            inner_edge = gray[:, width - peel - 1]
+        elif side == "top":
+            border_strip = gray[:peel, :]
+            outer_edge = gray[peel - 1, :]
+            inner_edge = gray[peel, :]
+        else:
+            border_strip = gray[height - peel : height, :]
+            outer_edge = gray[height - peel, :]
+            inner_edge = gray[height - peel - 1, :]
+
+        variance = float(np.std(border_strip))
+        contrast = float(np.mean(np.abs(outer_edge - inner_edge)))
+        if variance <= variance_threshold and contrast >= contrast_threshold:
+            best = peel
+    return int(best)
 
 
 def _column_edge_density(gray: np.ndarray) -> np.ndarray:
