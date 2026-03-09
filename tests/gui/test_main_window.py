@@ -5,8 +5,12 @@ from typing import TYPE_CHECKING
 from PIL import Image
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtWidgets import QApplication
 
 from web_pagez_to_pdf.capture_service import WindowInfo
+from web_pagez_to_pdf.constants import APP_IDENTITY
+from web_pagez_to_pdf.exporters import ExportResult
+from web_pagez_to_pdf.image_processing import apply_edit_transform, compute_page_slices
 from web_pagez_to_pdf.main_window import MainWindow
 from web_pagez_to_pdf.scroll_capture import ScrollCaptureProgress
 from web_pagez_to_pdf.target_picker import PickedWindow
@@ -66,6 +70,22 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:capture_tab_preview_label"
     )
     assert window.capture_log_list.property("widget_id") == "window:main:control:capture_log_list"
+    assert (
+        window.layout_preview_group.property("widget_id")
+        == "window:main:control:layout_preview_group"
+    )
+    assert (
+        window.editor_overlay_toggle.property("widget_id")
+        == "window:main:control:editor_overlay_toggle"
+    )
+    assert (
+        window.page_preview_list.property("widget_id")
+        == "window:main:control:page_preview_list"
+    )
+    assert (
+        window.split_edit_tool_button.property("widget_id")
+        == "window:main:control:split_edit_tool_button"
+    )
 
 
 def test_capture_advanced_group_is_visible_and_not_checkable(qtbot: QtBot) -> None:
@@ -541,3 +561,274 @@ def test_queue_auto_crop_noop_on_insufficient_confidence(
     for item in window._queue:
         edits = window._session_for_item(item.item_id)
         assert edits.get_operation("nav_auto_crop") is None
+
+
+def _is_descendant(widget, parent) -> bool:
+    current = widget
+    while current is not None:
+        if current is parent:
+            return True
+        current = current.parentWidget()
+    return False
+
+
+def test_layout_controls_live_in_editor_tab_not_export_tab(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    editor_tab = window.tabs.widget(1)
+    export_tab = window.tabs.widget(2)
+
+    assert _is_descendant(window.paper_combo, editor_tab)
+    assert _is_descendant(window.header_input, editor_tab)
+    assert _is_descendant(window.footer_input, editor_tab)
+    assert not _is_descendant(window.paper_combo, export_tab)
+    assert not _is_descendant(window.header_input, export_tab)
+    assert not _is_descendant(window.footer_input, export_tab)
+
+
+def test_overlay_toggle_defaults_on_and_updates_canvas(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.editor_overlay_toggle.isChecked()
+    assert window.editor_canvas.overlay_visible()
+    window.editor_overlay_toggle.setChecked(False)
+    assert not window.editor_canvas.overlay_visible()
+
+
+def test_page_preview_sidebar_count_matches_computed_slices(
+    qtbot: QtBot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="preview-count",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    item = window._current_item()
+    assert item is not None
+    source = Image.open(item.image_path).convert("RGB")
+    transformed = apply_edit_transform(
+        source,
+        window._collect_layout(),
+        window._session_for_item(item.item_id),
+    )
+    slices = compute_page_slices(
+        transformed,
+        window._collect_layout(),
+        window._split_markers(),
+    )
+
+    assert window.page_preview_list.count() == len(slices)
+
+
+def test_split_marker_and_layout_changes_refresh_page_preview_sidebar(
+    qtbot: QtBot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="preview-refresh",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    initial_count = window.page_preview_list.count()
+    initial_slices = list(window._current_preview_slices)
+
+    window.split_spin.setValue(120)
+    window._add_split_marker()
+    qtbot.waitUntil(
+        lambda: any(bottom == 120 for _top, bottom in window._current_preview_slices)
+    )
+    with_marker_count = window.page_preview_list.count()
+    assert window._current_preview_slices != initial_slices
+
+    window.orientation_combo.setCurrentText("landscape")
+    qtbot.waitUntil(lambda: window.page_preview_list.count() != with_marker_count)
+    assert window.page_preview_list.count() != initial_count
+
+
+def test_run_export_single_format_updates_status_without_crash(
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (240, 320), "white"),
+        title="export",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window.pdf_checkbox.setChecked(True)
+    window.paged_images_checkbox.setChecked(False)
+    window.long_image_checkbox.setChecked(False)
+    window.tiff_checkbox.setChecked(False)
+    window.docx_checkbox.setChecked(False)
+    window.pptx_checkbox.setChecked(False)
+
+    called: dict[str, int] = {"count": 0}
+
+    def _fake_run_export(_request) -> ExportResult:
+        called["count"] += 1
+        out = tmp_path / "fake.pdf"
+        out.write_bytes(b"%PDF-1.4\n")
+        return ExportResult(generated_paths=[out])
+
+    monkeypatch.setattr("web_pagez_to_pdf.main_window.run_export", _fake_run_export)
+
+    window._run_export()
+
+    assert called["count"] == 1
+    assert "exported 1 file" in window.status_label.text().lower()
+
+
+def _clear_window_state_settings() -> None:
+    app = QApplication.instance()
+    if app is not None:
+        app.setOrganizationName(APP_IDENTITY.org_name)
+        app.setApplicationName(APP_IDENTITY.app_name)
+    settings = QSettings(APP_IDENTITY.org_name, APP_IDENTITY.app_name)
+    for key in (
+        "ui.window_geometry",
+        "ui.window_is_maximized",
+        "ui.capture_splitter_sizes",
+        "ui.editor_splitter_sizes",
+    ):
+        settings.remove(key)
+    settings.sync()
+
+
+def test_window_starts_maximized_when_no_saved_state(qtbot: QtBot) -> None:
+    _clear_window_state_settings()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert bool(window.windowState() & Qt.WindowState.WindowMaximized)
+    _clear_window_state_settings()
+
+
+def test_window_geometry_and_splitter_sizes_restore(qtbot: QtBot) -> None:
+    _clear_window_state_settings()
+    first = MainWindow()
+    qtbot.addWidget(first)
+    first.show()
+    first.showNormal()
+    first.setGeometry(80, 90, 1230, 760)
+    first.capture_splitter.setSizes([620, 280])
+    first.editor_splitter.setSizes([940, 260])
+    first._persist_window_state_snapshot()
+    first._persist_splitter_sizes()
+    first.close()
+    settings = QSettings(APP_IDENTITY.org_name, APP_IDENTITY.app_name)
+    saved_capture = settings.value("ui.capture_splitter_sizes")
+    saved_editor = settings.value("ui.editor_splitter_sizes")
+    assert saved_capture is not None
+    assert saved_editor is not None
+
+    second = MainWindow()
+    qtbot.addWidget(second)
+    second.show()
+    second.showNormal()
+    second._load_runtime_settings()
+    geometry = second.geometry()
+
+    assert not second.isMaximized()
+    assert geometry.width() >= 1120
+    assert abs(geometry.height() - 760) <= 24
+    capture_sizes = second.capture_splitter.sizes()
+    editor_sizes = second.editor_splitter.sizes()
+    assert len(second._int_list_setting("ui.capture_splitter_sizes")) >= 2
+    assert len(second._int_list_setting("ui.editor_splitter_sizes")) >= 2
+    assert all(size > 0 for size in capture_sizes)
+    assert all(size > 0 for size in editor_sizes)
+    _clear_window_state_settings()
+
+
+def test_split_edit_signals_update_manual_markers(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="split-edit",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    window.split_edit_tool_button.click()
+
+    window.editor_canvas.split_marker_added.emit(210)
+    assert 210 in window._split_markers()
+    window.editor_canvas.split_marker_moved.emit(210, 260)
+    assert 210 not in window._split_markers()
+    assert 260 in window._split_markers()
+    window.editor_canvas.split_marker_removed.emit(260)
+    assert 260 not in window._split_markers()
+
+
+def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    controls = [
+        window.pick_list_button,
+        window.capture_button,
+        window.capture_full_button,
+        window.stop_button,
+        window.import_button,
+        window.queue_list,
+        window.max_pages_spin,
+        window.capture_delay_spin,
+        window.capture_backend_combo,
+        window.capture_scroll_mode_combo,
+        window.editor_canvas,
+        window.zoom_fit_width_button,
+        window.pan_tool_button,
+        window.split_edit_tool_button,
+        window.rect_crop_tool_button,
+        window.zoom_spin,
+        window.paper_combo,
+        window.margin_top_spin,
+        window.blank_spin,
+        window.header_input,
+        window.footer_input,
+        window.editor_overlay_toggle,
+        window.page_preview_list,
+        window.split_spin,
+        window.add_split_button,
+        window.split_list,
+        window.remove_split_button,
+        window.combine_checkbox,
+        window.pdf_checkbox,
+        window.tiff_checkbox,
+        window.docx_mode_combo,
+        window.base_input,
+        window.output_input,
+        window.export_button,
+    ]
+    missing = [widget.objectName() or widget.__class__.__name__ for widget in controls if not widget.toolTip().strip()]
+    assert not missing

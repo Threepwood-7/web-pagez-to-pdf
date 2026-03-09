@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +43,43 @@ except ImportError:  # pragma: no cover
     Presentation = None  # type: ignore[assignment]
     Inches = None  # type: ignore[assignment]
 
+EXPORT_LOGGER = logging.getLogger("web_pagez_to_pdf.export")
+
+
+class _RichTextProbe(HTMLParser):
+    """Detect whether an HTML fragment contains meaningful visible content."""
+
+    _VOID_MEDIA_TAGS = {"img", "hr", "svg", "canvas", "video", "audio", "object", "iframe"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._suppress_depth = 0
+        self.has_visible_text = False
+        self.has_media_content = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: D401
+        del attrs
+        name = str(tag or "").strip().lower()
+        if name in {"style", "script", "head"}:
+            self._suppress_depth += 1
+            return
+        if name in self._VOID_MEDIA_TAGS:
+            self.has_media_content = True
+
+    def handle_endtag(self, tag: str) -> None:  # noqa: D401
+        name = str(tag or "").strip().lower()
+        if name in {"style", "script", "head"} and self._suppress_depth > 0:
+            self._suppress_depth -= 1
+
+    def handle_data(self, data: str) -> None:  # noqa: D401
+        if self._suppress_depth > 0:
+            return
+        if re.sub(r"\s+", "", str(data or "")):
+            self.has_visible_text = True
+
+    def has_meaningful_content(self) -> bool:
+        return self.has_visible_text or self.has_media_content
+
 
 @dataclass(slots=True)
 class PageFrame:
@@ -62,6 +102,26 @@ class ExportResult:
 def run_export(request: ExportRequest) -> ExportResult:
     """Export selected capture queue into requested output formats."""
 
+    requested_formats = [
+        name
+        for name, enabled in (
+            ("pdf", request.formats.pdf),
+            ("paged_images", request.formats.paged_images),
+            ("long_image", request.formats.long_image),
+            ("tiff", request.formats.tiff),
+            ("docx", request.formats.docx),
+            ("pptx", request.formats.pptx),
+        )
+        if enabled
+    ]
+    EXPORT_LOGGER.info(
+        "run_export start captures=%s combine_mode=%s formats=%s output_dir=%s basename=%s",
+        len(request.captures),
+        request.combine_mode,
+        ",".join(requested_formats) or "none",
+        request.output_dir,
+        request.basename,
+    )
     request.output_dir = Path(request.output_dir)
     request.output_dir.mkdir(parents=True, exist_ok=True)
     frames, transformed_images = build_page_frames(request)
@@ -70,17 +130,34 @@ def run_export(request: ExportRequest) -> ExportResult:
 
     generated: list[Path] = []
     if request.formats.pdf:
+        EXPORT_LOGGER.info("writer start format=pdf")
         generated.append(export_pdf(request, frames))
+        EXPORT_LOGGER.info("writer done format=pdf path=%s", generated[-1])
     if request.formats.paged_images:
+        EXPORT_LOGGER.info("writer start format=paged_images")
         generated.extend(export_paged_images(request, frames))
+        EXPORT_LOGGER.info("writer done format=paged_images")
     if request.formats.long_image:
+        EXPORT_LOGGER.info("writer start format=long_image")
         generated.append(export_long_image(request, transformed_images))
+        EXPORT_LOGGER.info("writer done format=long_image path=%s", generated[-1])
     if request.formats.tiff:
+        EXPORT_LOGGER.info("writer start format=tiff")
         generated.append(export_multipage_tiff(request, frames))
+        EXPORT_LOGGER.info("writer done format=tiff path=%s", generated[-1])
     if request.formats.docx:
+        EXPORT_LOGGER.info("writer start format=docx")
         generated.append(export_docx(request, frames, transformed_images))
+        EXPORT_LOGGER.info("writer done format=docx path=%s", generated[-1])
     if request.formats.pptx:
+        EXPORT_LOGGER.info("writer start format=pptx")
         generated.append(export_pptx(request, frames, transformed_images))
+        EXPORT_LOGGER.info("writer done format=pptx path=%s", generated[-1])
+    EXPORT_LOGGER.info(
+        "run_export done generated=%s paths=%s",
+        len(generated),
+        [str(path) for path in generated],
+    )
     return ExportResult(generated_paths=generated)
 
 
@@ -163,7 +240,8 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
 
 
 def _draw_rich_text(pdf: canvas.Canvas, rich_text: str, context: dict[str, str], x_pos: float, y_pos: float, width: float) -> None:
-    text = _apply_tokens(rich_text, context).strip()
+    source = _meaningful_rich_text_or_empty(rich_text)
+    text = _apply_tokens(source, context).strip()
     if not text:
         return
     paragraph = Paragraph(text)
@@ -207,10 +285,37 @@ def export_multipage_tiff(request: ExportRequest, frames: list[PageFrame]) -> Pa
     """Export split pages into one multi-page TIFF file."""
 
     output = request.output_dir / f"{request.basename}.tiff"
-    head = frames[0].image
-    tail = [frame.image for frame in frames[1:]]
-    head.save(output, format="TIFF", save_all=True, append_images=tail, compression="tiff_deflate")
-    return output
+    if not frames:
+        raise RuntimeError("No frames available for TIFF export.")
+    head = frames[0].image.copy().convert("RGB")
+    tail = [frame.image.copy().convert("RGB") for frame in frames[1:]]
+    try:
+        head.save(
+            output,
+            format="TIFF",
+            save_all=True,
+            append_images=tail,
+            compression="tiff_deflate",
+        )
+        return output
+    except TypeError:
+        # Pillow/libtiff can fail after prior PNG writes in the same run.
+        with suppress(OSError):
+            output.unlink()
+        fallback_head = frames[0].image.copy().convert("RGB")
+        fallback_tail = [frame.image.copy().convert("RGB") for frame in frames[1:]]
+        try:
+            fallback_head.save(
+                output,
+                format="TIFF",
+                save_all=True,
+                append_images=fallback_tail,
+            )
+            return output
+        except Exception as exc:  # pragma: no cover - depends on local Pillow/libtiff
+            raise RuntimeError(f"TIFF export failed after fallback: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"TIFF export failed: {exc}") from exc
 
 
 def export_docx(
@@ -282,3 +387,16 @@ def _apply_tokens(text: str, context: dict[str, str]) -> str:
     for key, value in context.items():
         result = result.replace(f"{{{key}}}", value)
     return result
+
+
+def _meaningful_rich_text_or_empty(rich_text: str) -> str:
+    source = str(rich_text or "")
+    if not source.strip():
+        return ""
+    probe = _RichTextProbe()
+    with suppress(Exception):
+        probe.feed(source)
+        probe.close()
+    if probe.has_meaningful_content():
+        return source
+    return ""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import threading
 import uuid
 from contextlib import suppress
@@ -14,8 +15,19 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageQt
-from PySide6.QtCore import QRectF, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QPixmap
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QRectF,
+    QSettings,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -28,6 +40,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -175,6 +188,12 @@ class MainWindow(QMainWindow):
         self._crosshair_overlay: CrosshairPickerOverlay | None = None
         self._settings_window: SettingsWindow | None = None
         self._editor_loading = False
+        self._current_preview_slices: list[tuple[int, int]] = []
+        self._window_state_restore_in_progress = False
+        self._window_state_timer = QTimer(self)
+        self._window_state_timer.setSingleShot(True)
+        self._window_state_timer.setInterval(300)
+        self._window_state_timer.timeout.connect(self._persist_window_state_snapshot)
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -203,9 +222,10 @@ class MainWindow(QMainWindow):
 
         capture_tab = QWidget(self)
         capture_layout = QVBoxLayout(capture_tab)
-        split = QSplitter(Qt.Orientation.Horizontal, capture_tab)
-        capture_layout.addWidget(split, stretch=1)
-        left = QWidget(split)
+        self.capture_splitter = QSplitter(Qt.Orientation.Horizontal, capture_tab)
+        self._assign_control_identity(self.capture_splitter, "capture_splitter", "capture_splitter")
+        capture_layout.addWidget(self.capture_splitter, stretch=1)
+        left = QWidget(self.capture_splitter)
         left_layout = QVBoxLayout(left)
         self.queue_list = QListWidget()
         self._assign_control_identity(self.queue_list, "queue_list", "queue_list")
@@ -220,7 +240,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(queue_row)
         self.queue_summary_label = QLabel("Queue: 0 item(s)")
         left_layout.addWidget(self.queue_summary_label)
-        right = QWidget(split)
+        right = QWidget(self.capture_splitter)
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(QLabel("Latest / Selected Thumbnail"))
         self.capture_tab_preview_label = QLabel("No capture selected", right)
@@ -356,16 +376,17 @@ class MainWindow(QMainWindow):
         )
         right_layout.addWidget(self.capture_log_list, 1)
         right_layout.addStretch(1)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
+        self.capture_splitter.setStretchFactor(0, 3)
+        self.capture_splitter.setStretchFactor(1, 2)
         self.tabs.addTab(capture_tab, "Capture")
 
         editor_tab = QWidget(self)
         editor_layout = QVBoxLayout(editor_tab)
-        editor_split = QSplitter(Qt.Orientation.Horizontal, editor_tab)
-        editor_layout.addWidget(editor_split, stretch=1)
+        self.editor_splitter = QSplitter(Qt.Orientation.Horizontal, editor_tab)
+        self._assign_control_identity(self.editor_splitter, "editor_splitter", "editor_splitter")
+        editor_layout.addWidget(self.editor_splitter, stretch=1)
 
-        editor_left = QWidget(editor_split)
+        editor_left = QWidget(self.editor_splitter)
         editor_left_layout = QVBoxLayout(editor_left)
         editor_left_layout.setContentsMargins(0, 0, 0, 0)
         editor_left_layout.setSpacing(6)
@@ -374,7 +395,7 @@ class MainWindow(QMainWindow):
         self._assign_control_identity(self.editor_canvas, "editor_canvas", "editor_canvas")
         editor_left_layout.addWidget(self.editor_canvas, stretch=1)
 
-        editor_right = QWidget(editor_split)
+        editor_right = QWidget(self.editor_splitter)
         editor_right_layout = QVBoxLayout(editor_right)
         editor_right_layout.setContentsMargins(0, 0, 0, 0)
         editor_right_layout.setSpacing(8)
@@ -413,6 +434,7 @@ class MainWindow(QMainWindow):
         self.editor_tool_buttons = QButtonGroup(self)
         self.editor_tool_buttons.setExclusive(True)
         self.pan_tool_button = self._new_editor_tool_button("Pan", "pan", checked=True)
+        self.split_edit_tool_button = self._new_editor_tool_button("Split Edit", "split_edit")
         self.vertical_crop_tool_button = self._new_editor_tool_button(
             "Vertical Border Crop",
             "crop_vertical_band",
@@ -422,6 +444,7 @@ class MainWindow(QMainWindow):
         self.redact_tool_button = self._new_editor_tool_button("Redact", "redact")
         for widget, control in (
             (self.pan_tool_button, "pan_tool_button"),
+            (self.split_edit_tool_button, "split_edit_tool_button"),
             (self.vertical_crop_tool_button, "vertical_crop_tool_button"),
             (self.rect_crop_tool_button, "rect_crop_tool_button"),
             (self.free_crop_tool_button, "free_crop_tool_button"),
@@ -430,6 +453,7 @@ class MainWindow(QMainWindow):
             self._assign_control_identity(widget, control, control)
         for button in (
             self.pan_tool_button,
+            self.split_edit_tool_button,
             self.vertical_crop_tool_button,
             self.rect_crop_tool_button,
             self.free_crop_tool_button,
@@ -453,6 +477,106 @@ class MainWindow(QMainWindow):
         transform_layout.addRow("Straighten", self.straighten_spin)
         editor_right_layout.addWidget(transform_group)
 
+        self.layout_preview_group = QGroupBox("Page Layout & Print Preview", editor_right)
+        self._assign_control_identity(
+            self.layout_preview_group,
+            "layout_preview_group",
+            "layout_preview_group",
+        )
+        layout_preview_layout = QVBoxLayout(self.layout_preview_group)
+        layout_form = QFormLayout()
+        self.paper_combo = QComboBox(self.layout_preview_group)
+        for paper_name in sorted(PAPER_SIZES.keys()):
+            self.paper_combo.addItem(paper_name)
+        self.paper_combo.setCurrentText("A4")
+        self.orientation_combo = QComboBox(self.layout_preview_group)
+        self.orientation_combo.addItems(["portrait", "landscape"])
+        self.margin_top_spin = QDoubleSpinBox(self.layout_preview_group)
+        self.margin_bottom_spin = QDoubleSpinBox(self.layout_preview_group)
+        self.margin_left_spin = QDoubleSpinBox(self.layout_preview_group)
+        self.margin_right_spin = QDoubleSpinBox(self.layout_preview_group)
+        self.gutter_spin = QDoubleSpinBox(self.layout_preview_group)
+        for spin, value in (
+            (self.margin_top_spin, 20.0),
+            (self.margin_bottom_spin, 20.0),
+            (self.margin_left_spin, 15.0),
+            (self.margin_right_spin, 15.0),
+            (self.gutter_spin, 0.0),
+        ):
+            spin.setRange(0.0, 60.0)
+            spin.setValue(value)
+        self.blank_spin = QSpinBox(self.layout_preview_group)
+        self.blank_spin.setRange(0, 255)
+        self.blank_spin.setValue(245)
+        self.search_spin = QSpinBox(self.layout_preview_group)
+        self.search_spin.setRange(20, 2000)
+        self.search_spin.setValue(300)
+        self.header_input = QTextEdit(self.layout_preview_group)
+        self.footer_input = QTextEdit(self.layout_preview_group)
+        for widget, control in (
+            (self.paper_combo, "paper_combo"),
+            (self.orientation_combo, "orientation_combo"),
+            (self.margin_top_spin, "margin_top_spin"),
+            (self.margin_bottom_spin, "margin_bottom_spin"),
+            (self.margin_left_spin, "margin_left_spin"),
+            (self.margin_right_spin, "margin_right_spin"),
+            (self.gutter_spin, "gutter_spin"),
+            (self.blank_spin, "blank_spin"),
+            (self.search_spin, "search_spin"),
+            (self.header_input, "header_input"),
+            (self.footer_input, "footer_input"),
+        ):
+            self._assign_control_identity(widget, control, control)
+        layout_form.addRow(
+            "Paper / Orientation",
+            self._row_widget([self.paper_combo, self.orientation_combo]),
+        )
+        layout_form.addRow(
+            "Margins + Gutter",
+            self._row_widget(
+                [
+                    self.margin_top_spin,
+                    self.margin_bottom_spin,
+                    self.margin_left_spin,
+                    self.margin_right_spin,
+                    self.gutter_spin,
+                ]
+            ),
+        )
+        layout_form.addRow(
+            "Blank / Search",
+            self._row_widget([self.blank_spin, self.search_spin]),
+        )
+        layout_form.addRow("Header", self.header_input)
+        layout_form.addRow("Footer", self.footer_input)
+        layout_preview_layout.addLayout(layout_form)
+        self.editor_overlay_toggle = QCheckBox(
+            "Show split/page overlays",
+            self.layout_preview_group,
+        )
+        self.editor_overlay_toggle.setChecked(True)
+        self._assign_control_identity(
+            self.editor_overlay_toggle,
+            "editor_overlay_toggle",
+            "editor_overlay_toggle",
+        )
+        layout_preview_layout.addWidget(self.editor_overlay_toggle)
+        self.page_preview_list = QListWidget(self.layout_preview_group)
+        self.page_preview_list.setViewMode(QListView.ViewMode.IconMode)
+        self.page_preview_list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.page_preview_list.setMovement(QListView.Movement.Static)
+        self.page_preview_list.setIconSize(QSize(150, 210))
+        self.page_preview_list.setWordWrap(True)
+        self.page_preview_list.setSpacing(8)
+        self.page_preview_list.setMinimumHeight(220)
+        self._assign_control_identity(
+            self.page_preview_list,
+            "page_preview_list",
+            "page_preview_list",
+        )
+        layout_preview_layout.addWidget(self.page_preview_list, 1)
+        editor_right_layout.addWidget(self.layout_preview_group)
+
         self.editor_advanced_group, edit_adv_layout = self._new_collapsible_group(
             "Split Markers",
             expanded=not self._bool_setting("ui.editor_adv_collapsed", True),
@@ -465,6 +589,14 @@ class MainWindow(QMainWindow):
         self.split_list = QListWidget()
         self.remove_split_button = QPushButton("Remove Split Marker")
         self.preview_breaks_button = QPushButton("Preview Breaks")
+        for widget, control in (
+            (self.split_spin, "split_spin"),
+            (self.add_split_button, "add_split_button"),
+            (self.split_list, "split_list"),
+            (self.remove_split_button, "remove_split_button"),
+            (self.preview_breaks_button, "preview_breaks_button"),
+        ):
+            self._assign_control_identity(widget, control, control)
         split_form.addRow("Split Y", self.split_spin)
         split_form.addRow(self.add_split_button)
         split_form.addRow(self.split_list)
@@ -493,8 +625,8 @@ class MainWindow(QMainWindow):
         editor_right_layout.addWidget(ops_group)
         editor_right_layout.addStretch(1)
 
-        editor_split.setStretchFactor(0, 3)
-        editor_split.setStretchFactor(1, 2)
+        self.editor_splitter.setStretchFactor(0, 5)
+        self.editor_splitter.setStretchFactor(1, 2)
         self.tabs.addTab(editor_tab, "Editor")
 
         export_tab = QWidget(self)
@@ -513,77 +645,48 @@ class MainWindow(QMainWindow):
         self.docx_mode_combo = QComboBox()
         self.docx_mode_combo.addItem("Per split-page", "per_split_page")
         self.docx_mode_combo.addItem("Per capture", "per_capture")
-        self.paper_combo = QComboBox()
-        for paper_name in sorted(PAPER_SIZES.keys()):
-            self.paper_combo.addItem(paper_name)
-        self.paper_combo.setCurrentText("A4")
-        self.orientation_combo = QComboBox()
-        self.orientation_combo.addItems(["portrait", "landscape"])
-        self.margin_top_spin = QDoubleSpinBox()
-        self.margin_bottom_spin = QDoubleSpinBox()
-        self.margin_left_spin = QDoubleSpinBox()
-        self.margin_right_spin = QDoubleSpinBox()
-        self.gutter_spin = QDoubleSpinBox()
-        for spin, value in (
-            (self.margin_top_spin, 20.0),
-            (self.margin_bottom_spin, 20.0),
-            (self.margin_left_spin, 15.0),
-            (self.margin_right_spin, 15.0),
-            (self.gutter_spin, 0.0),
-        ):
-            spin.setRange(0.0, 60.0)
-            spin.setValue(value)
-        self.blank_spin = QSpinBox()
-        self.blank_spin.setRange(0, 255)
-        self.blank_spin.setValue(245)
-        self.search_spin = QSpinBox()
-        self.search_spin.setRange(20, 2000)
-        self.search_spin.setValue(300)
         self.base_input = QLineEdit("capture")
         self.output_input = QLineEdit()
         self.output_browse_button = QPushButton("Browse")
-        self.header_input = QTextEdit()
-        self.footer_input = QTextEdit()
         self.export_button = QPushButton("Export")
         self._assign_control_identity(self.export_button, "export_button", "export_button")
 
         export_grid.addWidget(self.combine_checkbox, 0, 0)
         export_grid.addWidget(self.pdf_checkbox, 0, 1)
         export_grid.addWidget(self.paged_images_checkbox, 0, 2)
-        export_grid.addWidget(self.long_image_checkbox, 1, 0)
-        export_grid.addWidget(self.tiff_checkbox, 1, 1)
-        export_grid.addWidget(self.docx_checkbox, 1, 2)
-        export_grid.addWidget(self.pptx_checkbox, 1, 3)
+        export_grid.addWidget(self.long_image_checkbox, 0, 3)
+        export_grid.addWidget(self.tiff_checkbox, 1, 0)
+        export_grid.addWidget(self.docx_checkbox, 1, 1)
+        export_grid.addWidget(self.pptx_checkbox, 1, 2)
         export_grid.addWidget(QLabel("DOCX/PPTX mode"), 2, 0)
         export_grid.addWidget(self.docx_mode_combo, 2, 1)
-        export_grid.addWidget(QLabel("Paper/Orientation"), 2, 2)
-        export_grid.addWidget(self._row_widget([self.paper_combo, self.orientation_combo]), 2, 3)
-        export_grid.addWidget(QLabel("Margins + Gutter"), 3, 0)
-        export_grid.addWidget(self._row_widget([self.margin_top_spin, self.margin_bottom_spin, self.margin_left_spin, self.margin_right_spin, self.gutter_spin]), 3, 1, 1, 3)
-        export_grid.addWidget(QLabel("Blank/Search"), 4, 0)
-        export_grid.addWidget(self._row_widget([self.blank_spin, self.search_spin]), 4, 1)
-        export_grid.addWidget(QLabel("Base Name"), 4, 2)
-        export_grid.addWidget(self.base_input, 4, 3)
-        export_grid.addWidget(QLabel("Output Folder"), 5, 0)
-        export_grid.addWidget(self._row_widget([self.output_input, self.output_browse_button]), 5, 1, 1, 3)
-        export_grid.addWidget(QLabel("Header"), 6, 0)
-        export_grid.addWidget(self.header_input, 6, 1, 1, 3)
-        export_grid.addWidget(QLabel("Footer"), 7, 0)
-        export_grid.addWidget(self.footer_input, 7, 1, 1, 3)
-        export_grid.addWidget(self.export_button, 8, 3)
+        export_grid.addWidget(QLabel("Base Name"), 2, 2)
+        export_grid.addWidget(self.base_input, 2, 3)
+        export_grid.addWidget(QLabel("Output Folder"), 3, 0)
+        export_grid.addWidget(
+            self._row_widget([self.output_input, self.output_browse_button]),
+            3,
+            1,
+            1,
+            3,
+        )
+        export_grid.addWidget(self.export_button, 4, 3)
         export_layout.addWidget(export)
         self.export_advanced_group, exp_adv_layout = self._new_collapsible_group(
-            "Print Controls",
+            "Export Notes",
             expanded=not self._bool_setting("ui.export_adv_collapsed", True),
             parent=export_tab,
         )
-        exp_adv_layout.addWidget(QLabel("Print controls are available in the Export tab grid."))
+        exp_adv_layout.addWidget(
+            QLabel("Paper/layout preview settings are configured in the Editor tab.")
+        )
         export_layout.addWidget(self.export_advanced_group)
         self.tabs.addTab(export_tab, "Export")
 
         self.status_label = QLabel("Ready.")
         self._assign_control_identity(self.status_label, "status_label", "status_label")
         layout.addWidget(self.status_label)
+        self._apply_control_tooltips()
 
     def _bind_events(self) -> None:
         self.pick_target_menu.aboutToShow.connect(self._populate_pick_target_menu)
@@ -603,11 +706,15 @@ class MainWindow(QMainWindow):
         self.add_split_button.clicked.connect(self._add_split_marker)
         self.remove_split_button.clicked.connect(self._remove_split_marker)
         self.preview_breaks_button.clicked.connect(self._preview_breaks)
+        self.split_list.currentRowChanged.connect(self._on_split_list_row_changed)
         self.output_browse_button.clicked.connect(self._browse_output)
         self.export_button.clicked.connect(self._run_export)
         self.editor_tool_buttons.buttonClicked.connect(self._on_editor_tool_changed)
         self.editor_canvas.rect_drawn.connect(self._on_editor_rect_drawn)
         self.editor_canvas.free_crop_drawn.connect(self._on_editor_free_crop)
+        self.editor_canvas.split_marker_added.connect(self._on_canvas_split_marker_added)
+        self.editor_canvas.split_marker_moved.connect(self._on_canvas_split_marker_moved)
+        self.editor_canvas.split_marker_removed.connect(self._on_canvas_split_marker_removed)
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
@@ -616,6 +723,21 @@ class MainWindow(QMainWindow):
         self.zoom_100_button.clicked.connect(lambda: self._set_editor_zoom_mode("manual", 100))
         self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
+        self.paper_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
+        self.orientation_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
+        self.margin_top_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.margin_bottom_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.margin_left_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.margin_right_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.gutter_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.blank_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.search_spin.valueChanged.connect(self._on_layout_controls_changed)
+        self.header_input.textChanged.connect(self._on_layout_controls_changed)
+        self.footer_input.textChanged.connect(self._on_layout_controls_changed)
+        self.editor_overlay_toggle.toggled.connect(self._on_overlay_visibility_changed)
+        self.page_preview_list.currentRowChanged.connect(self._on_page_preview_selected)
+        self.capture_splitter.splitterMoved.connect(self._persist_splitter_sizes)
+        self.editor_splitter.splitterMoved.connect(self._persist_splitter_sizes)
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
         self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
         self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
@@ -677,6 +799,91 @@ class MainWindow(QMainWindow):
         self.top_toolbar.addWidget(self.stop_button)
         self.top_toolbar.addSeparator()
         self.top_toolbar.addWidget(self.import_button)
+
+    @staticmethod
+    def _set_tooltip(widget: QWidget, text: str) -> None:
+        widget.setToolTip(text)
+        widget.setStatusTip(text)
+
+    def _apply_control_tooltips(self) -> None:
+        tooltip_map: list[tuple[QWidget, str]] = [
+            (self.pick_list_button, "Choose the window to capture."),
+            (self.capture_button, "Capture the currently visible viewport of the selected window."),
+            (self.capture_full_button, "Capture a full scrolling page from the selected window."),
+            (self.capture_last_selected_button, "Capture the last window you selected in the OS."),
+            (self.stop_button, "Stop an active full-page capture."),
+            (self.import_button, "Import existing image files into the queue."),
+            (self.queue_list, "Queue of captured/imported images used by Editor and Export."),
+            (self.up_button, "Move the selected queue item up."),
+            (self.down_button, "Move the selected queue item down."),
+            (self.remove_button, "Remove the selected queue item from the queue."),
+            (self.max_pages_spin, "Maximum pages captured during a full-scroll run."),
+            (self.capture_delay_spin, "Delay between scroll steps during full capture."),
+            (self.capture_backend_combo, "Primary backend used to grab image frames."),
+            (self.capture_scroll_mode_combo, "Scroll automation strategy used for full capture."),
+            (self.capture_scroll_to_top_checkbox, "Try to jump to the top before full capture starts."),
+            (self.capture_auto_trim_fixed_checkbox, "Auto-trim repeated fixed top/bottom strips after capture."),
+            (self.capture_frame_region_combo, "Choose client-only or full-window capture region."),
+            (self.capture_wheel_injection_combo, "How wheel input is injected into the target window."),
+            (self.capture_cursor_hold_combo, "How the mouse cursor is positioned while scrolling."),
+            (self.capture_log_level_combo, "Capture diagnostics log verbosity."),
+            (self.capture_include_mouse_checkbox, "Include the mouse cursor in captured frames."),
+            (self.capture_log_list, "Capture diagnostics log entries."),
+            (self.editor_canvas, "Preview image. Use tools to crop/redact/split directly on the image."),
+            (self.zoom_fit_height_button, "Fit the preview to the available viewport height."),
+            (self.zoom_fit_width_button, "Fit the preview to the available viewport width."),
+            (self.zoom_100_button, "Show preview at 100% zoom."),
+            (self.zoom_out_button, "Zoom out by 10%."),
+            (self.zoom_in_button, "Zoom in by 10%."),
+            (self.pan_tool_button, "Pan/scroll the preview without editing."),
+            (
+                self.split_edit_tool_button,
+                "Split Edit mode: click to add, drag marker lines to move, right-click a line to remove.",
+            ),
+            (self.vertical_crop_tool_button, "Draw a vertical crop band."),
+            (self.rect_crop_tool_button, "Draw a rectangular crop area."),
+            (self.free_crop_tool_button, "Draw free-form crop points, then double-click to apply."),
+            (self.redact_tool_button, "Draw redaction rectangles."),
+            (self.zoom_spin, "Scale transform applied before page slicing/export."),
+            (self.rotate_spin, "Rotate image in whole degrees."),
+            (self.straighten_spin, "Fine rotation used for straightening."),
+            (self.paper_combo, "Target paper size for pagination and export."),
+            (self.orientation_combo, "Target page orientation."),
+            (self.margin_top_spin, "Top page margin in millimeters."),
+            (self.margin_bottom_spin, "Bottom page margin in millimeters."),
+            (self.margin_left_spin, "Left page margin in millimeters."),
+            (self.margin_right_spin, "Right page margin in millimeters."),
+            (self.gutter_spin, "Extra inner gutter margin in millimeters."),
+            (self.blank_spin, "Blank-row threshold used to find clean split cuts."),
+            (self.search_spin, "Search window around ideal split for blank-row cuts."),
+            (self.header_input, "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
+            (self.footer_input, "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
+            (self.editor_overlay_toggle, "Toggle page-break guides, split markers, labels, and printable area guides."),
+            (self.page_preview_list, "Live page thumbnails generated from current edit and layout settings."),
+            (self.split_spin, "Pixel Y position for adding a manual split marker."),
+            (self.add_split_button, "Add a manual split marker at the selected Y position."),
+            (self.split_list, "Manual split markers for this queue item."),
+            (self.remove_split_button, "Remove the selected manual split marker."),
+            (self.preview_breaks_button, "Recompute predicted page breaks with current settings."),
+            (self.auto_crop_item_button, "Suggest navigation crop for the selected item."),
+            (self.auto_crop_queue_button, "Suggest navigation crop across the full queue."),
+            (self.clear_redactions_button, "Remove all redactions for the selected item."),
+            (self.reset_item_edits_button, "Reset all editor operations for the selected item."),
+            (self.combine_checkbox, "Export all queue items as one combined job."),
+            (self.pdf_checkbox, "Export PDF output."),
+            (self.paged_images_checkbox, "Export one PNG file per computed page slice."),
+            (self.long_image_checkbox, "Export one long stitched PNG image."),
+            (self.tiff_checkbox, "Export one multi-page TIFF."),
+            (self.docx_checkbox, "Export DOCX output."),
+            (self.pptx_checkbox, "Export PPTX output."),
+            (self.docx_mode_combo, "Choose whether DOCX/PPTX uses split pages or per-capture images."),
+            (self.base_input, "Base filename used for exported files."),
+            (self.output_input, "Destination folder for exported files."),
+            (self.output_browse_button, "Choose destination folder."),
+            (self.export_button, "Run export for the selected formats."),
+        ]
+        for widget, tip in tooltip_map:
+            self._set_tooltip(widget, tip)
 
     def _new_editor_tool_button(self, text: str, tool: str, *, checked: bool = False) -> QToolButton:
         button = QToolButton(self)
@@ -755,72 +962,126 @@ class MainWindow(QMainWindow):
             "export.docx": self.docx_checkbox.isChecked(),
             "export.pptx": self.pptx_checkbox.isChecked(),
             "export.docx_mode": str(self.docx_mode_combo.currentData()),
+            "layout.paper_name": self.paper_combo.currentText(),
+            "layout.orientation": self.orientation_combo.currentText(),
+            "layout.margin_top_mm": float(self.margin_top_spin.value()),
+            "layout.margin_bottom_mm": float(self.margin_bottom_spin.value()),
+            "layout.margin_left_mm": float(self.margin_left_spin.value()),
+            "layout.margin_right_mm": float(self.margin_right_spin.value()),
+            "layout.gutter_mm": float(self.gutter_spin.value()),
+            "layout.blank_row_threshold": int(self.blank_spin.value()),
+            "layout.search_window_px": int(self.search_spin.value()),
+            "layout.header_html": self.header_input.toHtml(),
+            "layout.footer_html": self.footer_input.toHtml(),
             "ui.editor_adv_collapsed": not self.editor_advanced_group.isChecked(),
             "ui.export_adv_collapsed": not self.export_advanced_group.isChecked(),
+            "ui.editor_overlay_visible": self.editor_overlay_toggle.isChecked(),
+            "ui.window_geometry": self.saveGeometry(),
+            "ui.window_is_maximized": self.isMaximized(),
+            "ui.capture_splitter_sizes": self.capture_splitter.sizes(),
+            "ui.editor_splitter_sizes": self.editor_splitter.sizes(),
         }
 
     def _load_runtime_settings(self) -> None:
-        self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 18)))
-        self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 380)))
-        backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
-        self._set_capture_backend_combo(backend)
-        scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
-        self._set_scroll_mode_combo(scroll_mode)
-        self.capture_scroll_to_top_checkbox.setChecked(
-            self._bool_setting("capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL)
-        )
-        self.capture_auto_trim_fixed_checkbox.setChecked(
-            self._bool_setting(
-                "capture.auto_trim_fixed_strips",
-                DEFAULT_AUTO_TRIM_FIXED_STRIPS,
+        self._editor_loading = True
+        try:
+            self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 18)))
+            self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 380)))
+            backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
+            self._set_capture_backend_combo(backend)
+            scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
+            self._set_scroll_mode_combo(scroll_mode)
+            self.capture_scroll_to_top_checkbox.setChecked(
+                self._bool_setting("capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL)
             )
-        )
-        frame_region = str(
-            self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
-        )
-        self._set_capture_frame_region_combo(frame_region)
-        wheel_injection = str(
-            self._settings.value(
-                "capture.wheel_injection_mode",
-                DEFAULT_WHEEL_INJECTION_MODE,
+            self.capture_auto_trim_fixed_checkbox.setChecked(
+                self._bool_setting(
+                    "capture.auto_trim_fixed_strips",
+                    DEFAULT_AUTO_TRIM_FIXED_STRIPS,
+                )
             )
-        )
-        self._set_wheel_injection_combo(wheel_injection)
-        cursor_hold_mode = str(
-            self._settings.value(
-                "capture.cursor_hold_mode",
-                DEFAULT_CURSOR_HOLD_MODE,
+            frame_region = str(
+                self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
             )
-        )
-        self._set_cursor_hold_combo(cursor_hold_mode)
-        self.capture_include_mouse_checkbox.setChecked(
-            self._bool_setting("capture.include_mouse_cursor", False)
-        )
-        capture_log_level = normalize_capture_log_level(
-            str(self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
-        )
-        self._set_capture_log_level_combo(capture_log_level)
-        self._apply_capture_logger_level(capture_log_level)
-        self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
-        self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
-        self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
-        self.long_image_checkbox.setChecked(self._bool_setting("export.long_image", False))
-        self.tiff_checkbox.setChecked(self._bool_setting("export.tiff", False))
-        self.docx_checkbox.setChecked(self._bool_setting("export.docx", False))
-        self.pptx_checkbox.setChecked(self._bool_setting("export.pptx", False))
-        mode = str(self._settings.value("export.docx_mode", "per_split_page"))
-        if mode == "per_capture":
-            self.docx_mode_combo.setCurrentIndex(1)
-        else:
-            self.docx_mode_combo.setCurrentIndex(0)
-        self.base_input.setText(str(self._settings.value("export.basename", self.base_input.text())))
-        output_dir = str(self._settings.value("export.output_dir", self.output_input.text()))
-        if output_dir:
-            self.output_input.setText(output_dir)
-        self.tabs.setCurrentIndex(0)
-        self.editor_advanced_group.setChecked(not self._bool_setting("ui.editor_adv_collapsed", True))
-        self.export_advanced_group.setChecked(not self._bool_setting("ui.export_adv_collapsed", True))
-        self._set_editor_zoom_mode("fit_width")
+            self._set_capture_frame_region_combo(frame_region)
+            wheel_injection = str(
+                self._settings.value(
+                    "capture.wheel_injection_mode",
+                    DEFAULT_WHEEL_INJECTION_MODE,
+                )
+            )
+            self._set_wheel_injection_combo(wheel_injection)
+            cursor_hold_mode = str(
+                self._settings.value(
+                    "capture.cursor_hold_mode",
+                    DEFAULT_CURSOR_HOLD_MODE,
+                )
+            )
+            self._set_cursor_hold_combo(cursor_hold_mode)
+            self.capture_include_mouse_checkbox.setChecked(
+                self._bool_setting("capture.include_mouse_cursor", False)
+            )
+            capture_log_level = normalize_capture_log_level(
+                str(self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
+            )
+            self._set_capture_log_level_combo(capture_log_level)
+            self._apply_capture_logger_level(capture_log_level)
+
+            self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
+            self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
+            self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
+            self.long_image_checkbox.setChecked(self._bool_setting("export.long_image", False))
+            self.tiff_checkbox.setChecked(self._bool_setting("export.tiff", False))
+            self.docx_checkbox.setChecked(self._bool_setting("export.docx", False))
+            self.pptx_checkbox.setChecked(self._bool_setting("export.pptx", False))
+            mode = str(self._settings.value("export.docx_mode", "per_split_page"))
+            if mode == "per_capture":
+                self.docx_mode_combo.setCurrentIndex(1)
+            else:
+                self.docx_mode_combo.setCurrentIndex(0)
+            self.base_input.setText(
+                str(self._settings.value("export.basename", self.base_input.text()))
+            )
+            output_dir = str(self._settings.value("export.output_dir", self.output_input.text()))
+            if output_dir:
+                self.output_input.setText(output_dir)
+
+            paper_name = str(self._settings.value("layout.paper_name", "A4"))
+            if self.paper_combo.findText(paper_name) >= 0:
+                self.paper_combo.setCurrentText(paper_name)
+            orientation = str(self._settings.value("layout.orientation", "portrait"))
+            if self.orientation_combo.findText(orientation) >= 0:
+                self.orientation_combo.setCurrentText(orientation)
+            self.margin_top_spin.setValue(float(self._settings.value("layout.margin_top_mm", 20.0)))
+            self.margin_bottom_spin.setValue(
+                float(self._settings.value("layout.margin_bottom_mm", 20.0))
+            )
+            self.margin_left_spin.setValue(float(self._settings.value("layout.margin_left_mm", 15.0)))
+            self.margin_right_spin.setValue(
+                float(self._settings.value("layout.margin_right_mm", 15.0))
+            )
+            self.gutter_spin.setValue(float(self._settings.value("layout.gutter_mm", 0.0)))
+            self.blank_spin.setValue(int(self._settings.value("layout.blank_row_threshold", 245)))
+            self.search_spin.setValue(int(self._settings.value("layout.search_window_px", 300)))
+            header_html = str(self._settings.value("layout.header_html", ""))
+            footer_html = str(self._settings.value("layout.footer_html", ""))
+            self.header_input.setHtml(header_html)
+            self.footer_input.setHtml(footer_html)
+            overlay_visible = self._bool_setting("ui.editor_overlay_visible", True)
+            self.editor_overlay_toggle.setChecked(overlay_visible)
+            self.editor_canvas.set_overlay_visibility(overlay_visible)
+            self._restore_splitter_sizes()
+
+            self.tabs.setCurrentIndex(0)
+            self.editor_advanced_group.setChecked(
+                not self._bool_setting("ui.editor_adv_collapsed", True)
+            )
+            self.export_advanced_group.setChecked(
+                not self._bool_setting("ui.export_adv_collapsed", True)
+            )
+            self._set_editor_zoom_mode("fit_width")
+        finally:
+            self._editor_loading = False
 
     @staticmethod
     def _row_widget(widgets: list[QWidget]) -> QWidget:
@@ -853,6 +1114,43 @@ class MainWindow(QMainWindow):
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _int_list_setting(self, key: str) -> list[int]:
+        value = self._settings.value(key)
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            raw_values = list(value)
+        elif isinstance(value, str):
+            raw_values = [part for part in re.split(r"[,\s]+", value.strip()) if part]
+        else:
+            raw_values = [value]
+        parsed: list[int] = []
+        for raw in raw_values:
+            try:
+                number = int(float(raw))
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                parsed.append(number)
+        return parsed
+
+    def _persist_splitter_sizes(self, *_args: object) -> None:
+        self._settings.setValue("ui.capture_splitter_sizes", self.capture_splitter.sizes())
+        self._settings.setValue("ui.editor_splitter_sizes", self.editor_splitter.sizes())
+
+    def _restore_splitter_sizes(self) -> None:
+        capture_sizes = self._int_list_setting("ui.capture_splitter_sizes")
+        if len(capture_sizes) >= 2:
+            self.capture_splitter.setSizes(capture_sizes)
+        else:
+            self.capture_splitter.setSizes([560, 420])
+
+        editor_sizes = self._int_list_setting("ui.editor_splitter_sizes")
+        if len(editor_sizes) >= 2:
+            self.editor_splitter.setSizes(editor_sizes)
+        else:
+            self.editor_splitter.setSizes([980, 360])
 
     def _set_capture_backend_combo(self, backend: str) -> None:
         normalized = str(backend or "").strip().lower()
@@ -1012,15 +1310,52 @@ class MainWindow(QMainWindow):
         logging.getLogger(CAPTURE_LOGGER_NAME).setLevel(capture_level)
 
     def _apply_start_geometry(self) -> None:
-        screen = QGuiApplication.primaryScreen()
-        if screen is None:
+        self._window_state_restore_in_progress = True
+        try:
+            restored = False
+            raw_geometry = self._settings.value("ui.window_geometry")
+            if isinstance(raw_geometry, QByteArray):
+                restored = self.restoreGeometry(raw_geometry)
+            elif isinstance(raw_geometry, (bytes, bytearray)):
+                restored = self.restoreGeometry(QByteArray(bytes(raw_geometry)))
+            elif isinstance(raw_geometry, str) and raw_geometry.strip():
+                with suppress(Exception):
+                    restored = self.restoreGeometry(
+                        QByteArray.fromBase64(raw_geometry.encode("ascii", errors="ignore"))
+                    )
+
+            if restored:
+                if self._bool_setting("ui.window_is_maximized", False):
+                    self.showMaximized()
+                return
+            self.showMaximized()
+        finally:
+            self._window_state_restore_in_progress = False
+
+    def _schedule_window_state_snapshot(self) -> None:
+        if self._window_state_restore_in_progress:
             return
-        area = screen.availableGeometry()
-        width = int(area.width() * 0.76)
-        height = int(area.height() * 0.82)
-        x_pos = area.left() + (area.width() - width) // 2
-        y_pos = area.top() + int(area.height() * 0.08)
-        self.setGeometry(x_pos, y_pos, width, height)
+        self._window_state_timer.start()
+
+    def _persist_window_state_snapshot(self) -> None:
+        if self._window_state_restore_in_progress:
+            return
+        self._settings.setValue("ui.window_geometry", self.saveGeometry())
+        self._settings.setValue("ui.window_is_maximized", self.isMaximized())
+        self._persist_splitter_sizes()
+
+    def moveEvent(self, event) -> None:  # noqa: N802
+        super().moveEvent(event)
+        self._schedule_window_state_snapshot()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_window_state_snapshot()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._schedule_window_state_snapshot()
 
     def _load_defaults(self) -> None:
         output_dir = resolve_app_data_dir(APP_IDENTITY) / "captures"
@@ -1560,13 +1895,58 @@ class MainWindow(QMainWindow):
         finally:
             self._editor_loading = False
 
-    def _sync_split_marker_list(self) -> None:
-        self.split_list.clear()
+    @staticmethod
+    def _normalized_markers(values: list[int]) -> list[int]:
+        return sorted({int(value) for value in values if int(value) > 0})
+
+    def _sync_split_marker_list(self, *, selected_marker: int | None = None) -> None:
+        edits = self._current_session()
+        selected_value = selected_marker
+        if selected_value is None and self.split_list.currentRow() >= 0:
+            selected_value = self._split_marker_at_row(self.split_list.currentRow())
+        with QSignalBlocker(self.split_list):
+            self.split_list.clear()
+            if edits is None:
+                return
+            for marker in self._normalized_markers(edits.split_markers_px):
+                item = QListWidgetItem(str(marker))
+                self.split_list.addItem(item)
+            if selected_value is not None:
+                for row in range(self.split_list.count()):
+                    marker = self._split_marker_at_row(row)
+                    if marker == selected_value:
+                        self.split_list.setCurrentRow(row)
+                        break
+        if self.split_list.currentRow() < 0 and self.split_list.count() > 0:
+            self.split_list.setCurrentRow(0)
+
+    def _split_marker_at_row(self, row: int) -> int | None:
+        if row < 0 or row >= self.split_list.count():
+            return None
+        item = self.split_list.item(row)
+        if item is None:
+            return None
+        try:
+            marker = int(item.text().strip())
+        except (TypeError, ValueError):
+            return None
+        if marker <= 0:
+            return None
+        return marker
+
+    def _set_manual_split_markers(
+        self,
+        markers: list[int],
+        *,
+        selected_marker: int | None = None,
+    ) -> None:
         edits = self._current_session()
         if edits is None:
             return
-        for marker in sorted({int(v) for v in edits.split_markers_px if int(v) > 0}):
-            self.split_list.addItem(QListWidgetItem(str(marker)))
+        normalized = self._normalized_markers(markers)
+        edits.split_markers_px = normalized
+        self._sync_split_marker_list(selected_marker=selected_marker)
+        self._refresh_preview()
 
     def _reset_item_edits(self) -> None:
         item = self._current_item()
@@ -1602,7 +1982,30 @@ class MainWindow(QMainWindow):
         }
         return mapping.get(str(reason or "").strip().lower(), "unknown")
 
+    @staticmethod
+    def _rich_text_has_meaningful_content(rich_html: str) -> bool:
+        source = str(rich_html or "")
+        if not source.strip():
+            return False
+        doc = QTextDocument()
+        doc.setHtml(source)
+        plain_text = doc.toPlainText().replace("\u200b", "").replace("\ufeff", "")
+        if re.sub(r"\s+", "", plain_text):
+            return True
+        return bool(
+            re.search(
+                r"<\s*(img|svg|canvas|object|iframe|video|audio|hr)\b",
+                source,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _effective_rich_html(self, rich_html: str) -> str:
+        return rich_html if self._rich_text_has_meaningful_content(rich_html) else ""
+
     def _collect_layout(self) -> PrintLayout:
+        header_html = self._effective_rich_html(self.header_input.toHtml())
+        footer_html = self._effective_rich_html(self.footer_input.toHtml())
         return PrintLayout(
             paper_name=self.paper_combo.currentText(),
             orientation=self.orientation_combo.currentText(),
@@ -1615,9 +2018,53 @@ class MainWindow(QMainWindow):
             search_window_px=int(self.search_spin.value()),
             zoom_percent=100.0,
             rotate_degrees=0,
-            header_rich_text=self.header_input.toHtml(),
-            footer_rich_text=self.footer_input.toHtml(),
+            header_rich_text=header_html,
+            footer_rich_text=footer_html,
         )
+
+    def _on_layout_controls_changed(self, *_args: object) -> None:
+        if self._editor_loading:
+            return
+        self._refresh_preview()
+
+    def _on_overlay_visibility_changed(self, checked: bool) -> None:
+        self.editor_canvas.set_overlay_visibility(bool(checked))
+        if self._editor_loading:
+            return
+        self._refresh_preview()
+
+    def _on_page_preview_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._current_preview_slices):
+            return
+        top, bottom = self._current_preview_slices[row]
+        self.editor_canvas.focus_on_y((float(top) + float(bottom)) / 2.0)
+
+    def _sync_page_preview_list(
+        self,
+        preview: Image.Image,
+        slices: list[tuple[int, int]],
+    ) -> None:
+        selected_row = self.page_preview_list.currentRow()
+        with QSignalBlocker(self.page_preview_list):
+            self.page_preview_list.clear()
+            for index, (top, bottom) in enumerate(slices, start=1):
+                cropped = preview.crop((0, top, preview.width, bottom))
+                thumbnail = pil_to_qpixmap(cropped).scaled(
+                    self.page_preview_list.iconSize(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                item = QListWidgetItem(f"Page {index} ({max(1, bottom - top)} px)")
+                item.setIcon(QIcon(thumbnail))
+                item.setData(Qt.ItemDataRole.UserRole, (top, bottom))
+                self.page_preview_list.addItem(item)
+            if self.page_preview_list.count() > 0:
+                if selected_row < 0:
+                    self.page_preview_list.setCurrentRow(0)
+                else:
+                    self.page_preview_list.setCurrentRow(
+                        min(selected_row, self.page_preview_list.count() - 1)
+                    )
 
     def _set_editor_zoom_mode(self, mode: str, manual_percent: int | None = None) -> None:
         self.editor_canvas.set_zoom_mode(mode, manual_percent=manual_percent)
@@ -1631,6 +2078,10 @@ class MainWindow(QMainWindow):
     def _on_editor_tool_changed(self, button: QToolButton) -> None:
         tool = str(button.property("tool") or "pan")
         self.editor_canvas.set_tool(tool)
+        if tool == "split_edit":
+            self.status_label.setText(
+                "Split Edit active: click to add, drag to move, right-click to remove markers."
+            )
 
     def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
         keep_normalized = str(keep or "").strip().lower()
@@ -1703,6 +2154,10 @@ class MainWindow(QMainWindow):
         if item is None:
             self.editor_item_label.setText("No queue item selected.")
             self.editor_canvas.set_image(QPixmap())
+            self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
+            self._current_preview_slices = []
+            with QSignalBlocker(self.page_preview_list):
+                self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("No capture selected")
             return
@@ -1710,18 +2165,32 @@ class MainWindow(QMainWindow):
         if not item.image_path.exists():
             self.editor_item_label.setText(f"Editing: {item.title} [image missing]")
             self.editor_canvas.set_image(QPixmap())
+            self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
+            self._current_preview_slices = []
+            with QSignalBlocker(self.page_preview_list):
+                self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("Capture file missing")
             return
         image = Image.open(item.image_path).convert("RGB")
         edits = self._session_for_item(item.item_id)
+        layout = self._collect_layout()
         preview = apply_edit_transform(
             image,
-            PrintLayout(zoom_percent=100.0, rotate_degrees=0),
+            layout,
             edits,
         )
+        slices = compute_page_slices(preview, layout, self._split_markers())
+        self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
         full_pixmap = pil_to_qpixmap(preview)
         self.editor_canvas.set_image(full_pixmap)
+        self.editor_canvas.set_overlay_visibility(self.editor_overlay_toggle.isChecked())
+        self.editor_canvas.set_page_overlays(
+            self._split_markers(),
+            self._current_preview_slices,
+            printable_width_px=preview.width,
+        )
+        self._sync_page_preview_list(preview, self._current_preview_slices)
         self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
         thumb = full_pixmap.scaled(
             max(1, self.capture_tab_preview_label.width() - 8),
@@ -1801,50 +2270,70 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
         self.status_label.setText("Redactions cleared.")
 
+    def _on_split_list_row_changed(self, row: int) -> None:
+        marker = self._split_marker_at_row(row)
+        if marker is None:
+            return
+        with QSignalBlocker(self.split_spin):
+            self.split_spin.setValue(marker)
+
     def _add_split_marker(self) -> None:
-        edits = self._current_session()
-        if edits is None:
+        if self._current_session() is None:
             self.status_label.setText("Select queue item first.")
             return
         value = int(self.split_spin.value())
         if value <= 0:
             return
-        edits.split_markers_px = sorted({*edits.split_markers_px, value})
-        self._sync_split_marker_list()
-        self._refresh_preview()
+        markers = self._split_markers()
+        markers.append(value)
+        self._set_manual_split_markers(markers, selected_marker=value)
 
     def _remove_split_marker(self) -> None:
-        edits = self._current_session()
-        if edits is None:
+        if self._current_session() is None:
             return
-        row = self.split_list.currentRow()
-        if row < 0:
+        marker = self._split_marker_at_row(self.split_list.currentRow())
+        if marker is None:
             return
-        if row >= len(edits.split_markers_px):
+        markers = [value for value in self._split_markers() if value != marker]
+        self._set_manual_split_markers(markers)
+
+    def _on_canvas_split_marker_added(self, marker_y: int) -> None:
+        if self._current_session() is None:
             return
-        edits.split_markers_px.pop(row)
-        self._sync_split_marker_list()
-        self._refresh_preview()
+        markers = self._split_markers()
+        markers.append(int(marker_y))
+        self._set_manual_split_markers(markers, selected_marker=int(marker_y))
+        with QSignalBlocker(self.split_spin):
+            self.split_spin.setValue(int(marker_y))
+
+    def _on_canvas_split_marker_moved(self, from_y: int, to_y: int) -> None:
+        if self._current_session() is None:
+            return
+        markers = [value for value in self._split_markers() if value != int(from_y)]
+        markers.append(int(to_y))
+        self._set_manual_split_markers(markers, selected_marker=int(to_y))
+        with QSignalBlocker(self.split_spin):
+            self.split_spin.setValue(int(to_y))
+
+    def _on_canvas_split_marker_removed(self, marker_y: int) -> None:
+        if self._current_session() is None:
+            return
+        markers = [value for value in self._split_markers() if value != int(marker_y)]
+        self._set_manual_split_markers(markers)
 
     def _split_markers(self) -> list[int]:
         edits = self._current_session()
         if edits is None:
             return []
-        return sorted({int(v) for v in edits.split_markers_px if int(v) > 0})
+        return self._normalized_markers(edits.split_markers_px)
 
     def _preview_breaks(self) -> None:
         item = self._current_item()
         if item is None:
             self.status_label.setText("Select queue item first.")
             return
-        image = Image.open(item.image_path).convert("RGB")
-        transformed = apply_edit_transform(
-            image,
-            self._collect_layout(),
-            self._session_for_item(item.item_id),
-        )
-        slices = compute_page_slices(transformed, self._collect_layout(), self._split_markers())
-        self.status_label.setText(f"Predicted page slices: {len(slices)}")
+        self._refresh_preview()
+        self.status_label.setText(f"Predicted page slices: {len(self._current_preview_slices)}")
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1867,6 +2356,13 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Select queue item first.")
                 return
             captures = [item]
+        header_raw = self.header_input.toHtml()
+        footer_raw = self.footer_input.toHtml()
+        layout = self._collect_layout()
+        if header_raw.strip() and not layout.header_rich_text:
+            CAPTURE_UI_LOGGER.info("header rich text ignored: no meaningful content detected")
+        if footer_raw.strip() and not layout.footer_rich_text:
+            CAPTURE_UI_LOGGER.info("footer rich text ignored: no meaningful content detected")
         request = ExportRequest(
             captures=captures,
             combine_mode=self.combine_checkbox.isChecked(),
@@ -1881,21 +2377,53 @@ class MainWindow(QMainWindow):
             output_dir=Path(self.output_input.text().strip()),
             basename=sanitize_basename(f"{self.base_input.text().strip()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"),
             docx_pptx_mode=str(self.docx_mode_combo.currentData()),
-            layout=self._collect_layout(),
+            layout=layout,
             edits_by_item_id={
                 capture.item_id: self._session_for_item(capture.item_id).clone()
                 for capture in captures
             },
         )
-        if not any(vars(request.formats).values()):
+        selected_formats = [
+            name
+            for name, enabled in (
+                ("pdf", request.formats.pdf),
+                ("paged_images", request.formats.paged_images),
+                ("long_image", request.formats.long_image),
+                ("tiff", request.formats.tiff),
+                ("docx", request.formats.docx),
+                ("pptx", request.formats.pptx),
+            )
+            if enabled
+        ]
+        if not selected_formats:
             self.status_label.setText("Pick at least one output format.")
+            CAPTURE_UI_LOGGER.warning("export blocked: no output formats selected")
             return
+        CAPTURE_UI_LOGGER.info(
+            "export start formats=%s output_dir=%s basename=%s combine_mode=%s captures=%s",
+            ",".join(selected_formats),
+            request.output_dir,
+            request.basename,
+            request.combine_mode,
+            len(request.captures),
+        )
         try:
             result = run_export(request)
         except Exception as exc:
+            CAPTURE_UI_LOGGER.exception(
+                "export failed formats=%s output_dir=%s basename=%s",
+                ",".join(selected_formats),
+                request.output_dir,
+                request.basename,
+            )
             self.status_label.setText(f"Export failed: {exc}")
             return
         self.status_label.setText(f"Exported {len(result.generated_paths)} file(s).")
+        CAPTURE_UI_LOGGER.info(
+            "export success generated=%s first_path=%s",
+            len(result.generated_paths),
+            result.generated_paths[0] if result.generated_paths else "n/a",
+        )
         if result.generated_paths:
             with suppress(OSError):
                 os.startfile(str(result.generated_paths[0]))
@@ -1912,6 +2440,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._request_stop()
+        self._window_state_timer.stop()
+        self._persist_window_state_snapshot()
         for key, value in self._collect_settings_payload().items():
             self._settings.setValue(key, value)
         self._settings.sync()
