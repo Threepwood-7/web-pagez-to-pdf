@@ -32,6 +32,7 @@ WHEEL_INJECTION_MODES = (
     "legacy_message_wheel",
 )
 DEFAULT_AUTO_TRIM_FIXED_STRIPS = True
+DEFAULT_AUTO_TRIM_SCROLLBAR = True
 DEFAULT_CAPTURE_LOG_LEVEL = "DEBUG"
 CAPTURE_LOG_LEVELS = (
     "INFO",
@@ -55,8 +56,8 @@ LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 class ScrollCaptureOptions:
     """Configuration for full-page browser auto-scroll capture."""
 
-    delay_ms: int = 380
-    max_capture_pages: int = 18
+    delay_ms: int = 333
+    max_capture_pages: int = 50
     capture_backend: str = "screen_region_gdi"
     scroll_mode: str = DEFAULT_SCROLL_MODE
     wheel_injection_mode: str = DEFAULT_WHEEL_INJECTION_MODE
@@ -65,6 +66,7 @@ class ScrollCaptureOptions:
     include_mouse_cursor: bool = False
     scroll_to_top_on_full: bool = True
     auto_trim_fixed_strips: bool = DEFAULT_AUTO_TRIM_FIXED_STRIPS
+    auto_trim_scrollbar: bool = DEFAULT_AUTO_TRIM_SCROLLBAR
     repeated_frame_score_threshold: float = 1.8
     repeated_frame_stop_count: int = 2
 
@@ -140,10 +142,11 @@ def run_full_page_capture(
     include_mouse_cursor = bool(options.include_mouse_cursor)
     scroll_to_top_on_full = bool(options.scroll_to_top_on_full)
     auto_trim_fixed_strips = bool(options.auto_trim_fixed_strips)
+    auto_trim_scrollbar = bool(options.auto_trim_scrollbar)
     LOGGER.info(
         "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
         "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s include_mouse_cursor=%s "
-        "scroll_to_top=%s auto_trim_fixed_strips=%s max_pages=%s delay_ms=%s",
+        "scroll_to_top=%s auto_trim_fixed_strips=%s auto_trim_scrollbar=%s max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
@@ -156,6 +159,7 @@ def run_full_page_capture(
         include_mouse_cursor,
         scroll_to_top_on_full,
         auto_trim_fixed_strips,
+        auto_trim_scrollbar,
         max_pages,
         delay_ms,
     )
@@ -197,12 +201,21 @@ def run_full_page_capture(
 
         frames: list[Image.Image] = [first_frame]
         output_frames: list[Image.Image] = [
-            _prepare_output_frame(first_frame, trim_top_px=0, trim_bottom_px=0)
+            _prepare_output_frame(
+                first_frame,
+                trim_top_px=0,
+                trim_bottom_px=0,
+                trim_right_px=0,
+            )
         ]
         trim_top_px = 0
         trim_bottom_px = 0
+        trim_right_px = 0
         trim_top_locked = False
         trim_bottom_locked = False
+        trim_right_locked = False
+        trim_right_candidate_px = 0
+        trim_right_candidate_hits = 0
         repeated_count = 0
         stop_reason = STOP_REASON_RUNNING
         LOGGER.info(
@@ -279,6 +292,7 @@ def run_full_page_capture(
                 include_mouse_cursor=include_mouse_cursor,
                 trim_top_px=trim_top_px,
                 trim_bottom_px=trim_bottom_px,
+                trim_right_px=trim_right_px,
                 auto_trim_probe=(
                     auto_trim_fixed_strips
                     and frame_region == "client_area"
@@ -421,9 +435,45 @@ def run_full_page_capture(
                                 item,
                                 trim_top_px=trim_top_px,
                                 trim_bottom_px=trim_bottom_px,
+                                trim_right_px=trim_right_px,
                             )
                             for item in frames
                         ]
+                if auto_trim_scrollbar and frame_region == "client_area" and not trim_right_locked:
+                    estimated_right = _estimate_right_scrollbar_trim_from_pair(frames[-1], frame)
+                    if estimated_right > 0:
+                        if trim_right_candidate_px <= 0:
+                            trim_right_candidate_px = int(estimated_right)
+                            trim_right_candidate_hits = 1
+                        elif abs(trim_right_candidate_px - int(estimated_right)) <= 1:
+                            trim_right_candidate_px = int(
+                                round((float(trim_right_candidate_px) + float(estimated_right)) / 2.0)
+                            )
+                            trim_right_candidate_hits += 1
+                        else:
+                            trim_right_candidate_px = int(estimated_right)
+                            trim_right_candidate_hits = 1
+                    else:
+                        trim_right_candidate_px = 0
+                        trim_right_candidate_hits = 0
+
+                    if trim_right_candidate_hits >= 2 and trim_right_candidate_px > 0:
+                        trim_right_px = int(trim_right_candidate_px)
+                        trim_right_locked = True
+                        output_frames = [
+                            _prepare_output_frame(
+                                item,
+                                trim_top_px=trim_top_px,
+                                trim_bottom_px=trim_bottom_px,
+                                trim_right_px=trim_right_px,
+                            )
+                            for item in frames
+                        ]
+                        LOGGER.info(
+                            "[capture-session:%s] auto-trim lock edge=right cols=%s",
+                            session_id,
+                            trim_right_px,
+                        )
 
             frames.append(frame)
             output_frames.append(
@@ -431,6 +481,7 @@ def run_full_page_capture(
                     frame,
                     trim_top_px=trim_top_px,
                     trim_bottom_px=trim_bottom_px,
+                    trim_right_px=trim_right_px,
                 )
             )
             _emit_progress(
@@ -453,12 +504,13 @@ def run_full_page_capture(
 
         stitched = stitch_frames(output_frames).image
         LOGGER.info(
-            "[capture-session:%s] full-capture complete stop_reason=%s frames=%s trim_top_px=%s trim_bottom_px=%s",
+            "[capture-session:%s] full-capture complete stop_reason=%s frames=%s trim_top_px=%s trim_bottom_px=%s trim_right_px=%s",
             session_id,
             stop_reason,
             len(frames),
             trim_top_px,
             trim_bottom_px,
+            trim_right_px,
         )
         return ScrollCaptureResult(
             image=stitched,
@@ -486,6 +538,7 @@ def _capture_after_scroll_ladder(
     include_mouse_cursor: bool,
     trim_top_px: int,
     trim_bottom_px: int,
+    trim_right_px: int,
     auto_trim_probe: bool,
     threshold: float,
 ) -> _ScrollStepOutcome:
@@ -512,6 +565,7 @@ def _capture_after_scroll_ladder(
             include_mouse_cursor=include_mouse_cursor,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -529,6 +583,7 @@ def _capture_after_scroll_ladder(
             threshold=threshold,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
             auto_trim_probe=auto_trim_probe,
             session_id=session_id,
             frame_index=frame_index,
@@ -567,6 +622,7 @@ def _capture_after_scroll_ladder(
         include_mouse_cursor=include_mouse_cursor,
         trim_top_px=trim_top_px,
         trim_bottom_px=trim_bottom_px,
+        trim_right_px=trim_right_px,
     )
     if frame is None:
         return _ScrollStepOutcome(
@@ -584,6 +640,7 @@ def _capture_after_scroll_ladder(
         threshold=threshold,
         trim_top_px=trim_top_px,
         trim_bottom_px=trim_bottom_px,
+        trim_right_px=trim_right_px,
         auto_trim_probe=auto_trim_probe,
         session_id=session_id,
         frame_index=frame_index,
@@ -633,6 +690,7 @@ def _capture_after_scroll_ladder(
             include_mouse_cursor=include_mouse_cursor,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
         )
         if frame_after_click is None:
             return _ScrollStepOutcome(
@@ -652,6 +710,7 @@ def _capture_after_scroll_ladder(
             threshold=threshold,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
             auto_trim_probe=auto_trim_probe,
             session_id=session_id,
             frame_index=frame_index,
@@ -719,6 +778,7 @@ def _capture_after_scroll_ladder(
             include_mouse_cursor=include_mouse_cursor,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -737,6 +797,7 @@ def _capture_after_scroll_ladder(
             threshold=threshold,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
             auto_trim_probe=auto_trim_probe,
             session_id=session_id,
             frame_index=frame_index,
@@ -812,17 +873,24 @@ def _run_scroll_to_top_preflight(
         )
 
 
-def _prepare_output_frame(frame: Image.Image, trim_top_px: int, trim_bottom_px: int) -> Image.Image:
-    if trim_top_px <= 0 and trim_bottom_px <= 0:
+def _prepare_output_frame(
+    frame: Image.Image,
+    trim_top_px: int,
+    trim_bottom_px: int,
+    trim_right_px: int,
+) -> Image.Image:
+    if trim_top_px <= 0 and trim_bottom_px <= 0 and trim_right_px <= 0:
         return frame
     width, height = frame.size
     safe_top, safe_bottom = _safe_trim_values(height, trim_top_px, trim_bottom_px)
-    if safe_top <= 0 and safe_bottom <= 0:
+    safe_right = _safe_right_trim_value(width, trim_right_px)
+    if safe_top <= 0 and safe_bottom <= 0 and safe_right <= 0:
         return frame
     bottom_edge = max(safe_top + 1, height - safe_bottom)
-    if bottom_edge <= safe_top:
+    right_edge = max(1, width - safe_right)
+    if bottom_edge <= safe_top or right_edge <= 0:
         return frame
-    return frame.crop((0, safe_top, width, bottom_edge))
+    return frame.crop((0, safe_top, right_edge, bottom_edge))
 
 
 def _estimate_fixed_vertical_strips(
@@ -890,6 +958,7 @@ def _capture_frame_with_diff(
     include_mouse_cursor: bool,
     trim_top_px: int,
     trim_bottom_px: int,
+    trim_right_px: int,
 ) -> tuple[Image.Image | None, str, float | None]:
     service.wait_after_scroll(delay_ms)
     frame, backend = _capture_frame(
@@ -909,6 +978,7 @@ def _capture_frame_with_diff(
             frame,
             trim_top_px=trim_top_px,
             trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
         ),
     )
 
@@ -1021,22 +1091,240 @@ def _safe_trim_values(height: int, trim_top_px: int, trim_bottom_px: int) -> tup
     return (top, bottom)
 
 
+def _safe_right_trim_value(width: int, trim_right_px: int) -> int:
+    if width <= 2:
+        return 0
+    max_right = min(180, max(0, int(width * 0.18)))
+    right = max(0, min(int(trim_right_px), max_right))
+    if right >= width - 1:
+        return 0
+    return right
+
+
+def _average(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values)) / float(len(values))
+
+
+def _boundary_contrast(
+    pixels,
+    *,
+    boundary_x: int,
+    height: int,
+    y_step: int,
+) -> float:
+    if boundary_x <= 0:
+        return 0.0
+    samples: list[float] = []
+    for y_pos in range(0, height, y_step):
+        left_value = int(pixels[boundary_x - 1, y_pos])
+        right_value = int(pixels[boundary_x, y_pos])
+        samples.append(abs(left_value - right_value))
+    return _average(samples)
+
+
+def _horizontal_band_activity(
+    pixels,
+    *,
+    start_x: int,
+    end_x: int,
+    height: int,
+    y_step: int,
+) -> float:
+    if end_x - start_x < 2:
+        return 0.0
+    samples: list[float] = []
+    for x_pos in range(start_x, end_x - 1):
+        for y_pos in range(0, height, y_step):
+            left_value = int(pixels[x_pos, y_pos])
+            right_value = int(pixels[x_pos + 1, y_pos])
+            samples.append(abs(left_value - right_value))
+    return _average(samples)
+
+
+def detect_right_scrollbar_trim_single_frame(frame: Image.Image) -> int:
+    """Estimate right-edge scrollbar width from one frame with conservative confidence checks."""
+
+    width, height = frame.size
+    min_width = 4
+    max_width = min(140, max(0, int(width * 0.16)))
+    if max_width < min_width or height < 80:
+        return 0
+
+    gray = frame.convert("L")
+    pixels = gray.load()
+    y_step = max(1, height // 260)
+    scan_start = max(0, width - max_width - 36)
+
+    col_activity: dict[int, float] = {}
+    col_luma: dict[int, float] = {}
+    for x_pos in range(scan_start, width):
+        vertical_deltas: list[float] = []
+        luminance_samples: list[float] = []
+        previous_value: int | None = None
+        for y_pos in range(0, height, y_step):
+            value = int(pixels[x_pos, y_pos])
+            luminance_samples.append(float(value))
+            if previous_value is not None:
+                vertical_deltas.append(abs(value - previous_value))
+            previous_value = value
+        col_activity[x_pos] = _average(vertical_deltas)
+        col_luma[x_pos] = _average(luminance_samples)
+
+    best_trim = 0
+    best_score = 0.0
+    for candidate_width in range(min_width, max_width + 1):
+        boundary_x = width - candidate_width
+        if boundary_x <= scan_start + 1:
+            continue
+
+        band_activity_values = [col_activity.get(x_pos, 255.0) for x_pos in range(boundary_x, width)]
+        band_activity = _average(band_activity_values)
+
+        left_window_width = min(24, max(8, candidate_width + 4))
+        left_start = max(scan_start, boundary_x - left_window_width)
+        left_end = boundary_x
+        if left_end - left_start < 3:
+            continue
+        left_activity_values = [col_activity.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
+        left_activity = _average(left_activity_values)
+        if left_activity <= 0.0:
+            continue
+
+        activity_ratio = band_activity / float(max(0.1, left_activity))
+        if activity_ratio > 0.78:
+            continue
+
+        edge_contrast = _boundary_contrast(
+            pixels,
+            boundary_x=boundary_x,
+            height=height,
+            y_step=y_step,
+        )
+        band_horizontal_activity = _horizontal_band_activity(
+            pixels,
+            start_x=boundary_x,
+            end_x=width,
+            height=height,
+            y_step=y_step,
+        )
+        band_luma = _average([col_luma.get(x_pos, 0.0) for x_pos in range(boundary_x, width)])
+        left_luma = _average([col_luma.get(x_pos, 0.0) for x_pos in range(left_start, left_end)])
+        luma_delta = abs(left_luma - band_luma)
+
+        confidence = 0.0
+        if activity_ratio <= 0.56:
+            confidence += 1.2
+        elif activity_ratio <= 0.68:
+            confidence += 0.7
+        if (left_activity - band_activity) >= 2.2:
+            confidence += 0.8
+        elif (left_activity - band_activity) >= 1.2:
+            confidence += 0.4
+        if edge_contrast >= 2.2:
+            confidence += 0.7
+        elif edge_contrast >= 1.3:
+            confidence += 0.35
+        if band_horizontal_activity >= 0.7:
+            confidence += 0.35
+        if luma_delta >= 2.0:
+            confidence += 0.35
+        if candidate_width > 36:
+            confidence -= 0.25
+
+        if confidence >= 2.0 and confidence > best_score:
+            best_score = confidence
+            best_trim = candidate_width
+
+    if best_trim <= 0:
+        return 0
+    return _safe_right_trim_value(width, best_trim)
+
+
+def _estimate_right_scrollbar_trim_from_pair(
+    previous_frame: Image.Image,
+    current_frame: Image.Image,
+) -> int:
+    """Estimate right scrollbar width from two frames using right-edge stability vs left movement."""
+
+    width = min(previous_frame.width, current_frame.width)
+    height = min(previous_frame.height, current_frame.height)
+    min_width = 6
+    max_width = min(140, max(0, int(width * 0.16)))
+    if max_width < min_width or height < 80:
+        return 0
+    prev_gray = previous_frame.convert("L")
+    curr_gray = current_frame.convert("L")
+    prev_pixels = prev_gray.load()
+    curr_pixels = curr_gray.load()
+    y_step = max(1, height // 240)
+    start_x = max(0, width - max_width - 28)
+
+    col_delta: dict[int, float] = {}
+    for x_pos in range(start_x, width):
+        delta_sum = 0.0
+        samples = 0
+        for y_pos in range(0, height, y_step):
+            delta_sum += abs(int(prev_pixels[x_pos, y_pos]) - int(curr_pixels[x_pos, y_pos]))
+            samples += 1
+        col_delta[x_pos] = delta_sum / float(max(1, samples))
+
+    stable_cols = 0
+    for x_pos in range(width - 1, width - max_width - 1, -1):
+        if x_pos < start_x:
+            break
+        if col_delta.get(x_pos, 255.0) <= 2.0:
+            stable_cols += 1
+            continue
+        break
+    if stable_cols < min_width:
+        return 0
+
+    moving_left_start = max(start_x, width - stable_cols - 24)
+    moving_left_end = max(moving_left_start + 1, width - stable_cols - 2)
+    movement_sum = 0.0
+    movement_count = 0
+    for x_pos in range(moving_left_start, moving_left_end):
+        movement_sum += col_delta.get(x_pos, 0.0)
+        movement_count += 1
+    left_movement = movement_sum / float(max(1, movement_count))
+    if left_movement < 4.5:
+        return 0
+
+    boundary_x = width - stable_cols
+    if boundary_x <= 0 or boundary_x >= width:
+        return 0
+    contrast_sum = 0.0
+    contrast_count = 0
+    for y_pos in range(0, height, y_step):
+        contrast_sum += abs(int(prev_pixels[boundary_x - 1, y_pos]) - int(prev_pixels[boundary_x, y_pos]))
+        contrast_count += 1
+    boundary_contrast = contrast_sum / float(max(1, contrast_count))
+    if boundary_contrast < 2.5:
+        return 0
+    return _safe_right_trim_value(width, stable_cols)
+
+
 def _compute_diff_score(
     previous_frame: Image.Image,
     current_frame: Image.Image,
     *,
     trim_top_px: int,
     trim_bottom_px: int,
+    trim_right_px: int,
 ) -> float:
     prepared_previous = _prepare_output_frame(
         previous_frame,
         trim_top_px=trim_top_px,
         trim_bottom_px=trim_bottom_px,
+        trim_right_px=trim_right_px,
     )
     prepared_current = _prepare_output_frame(
         current_frame,
         trim_top_px=trim_top_px,
         trim_bottom_px=trim_bottom_px,
+        trim_right_px=trim_right_px,
     )
     return frame_diff_score(prepared_previous, prepared_current)
 
@@ -1049,6 +1337,7 @@ def _evaluate_movement(
     threshold: float,
     trim_top_px: int,
     trim_bottom_px: int,
+    trim_right_px: int,
     auto_trim_probe: bool,
     session_id: str,
     frame_index: int,
@@ -1070,6 +1359,7 @@ def _evaluate_movement(
                 current_frame,
                 trim_top_px=probe_top,
                 trim_bottom_px=probe_bottom,
+                trim_right_px=trim_right_px,
             )
             LOGGER.debug(
                 "[capture-session:%s] frame=%s stage=%s auto-trim probe top=%s bottom=%s "

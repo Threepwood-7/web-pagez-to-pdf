@@ -347,8 +347,8 @@ class SettingsWindow(QDialog):
     def set_values(self, values: dict[str, object]) -> None:
         """Load settings payload into controls."""
 
-        self.capture_max_pages_spin.setValue(int(values.get("capture.max_pages", 18)))
-        self.capture_delay_spin.setValue(int(values.get("capture.delay_ms", 380)))
+        self.capture_max_pages_spin.setValue(int(values.get("capture.max_pages", 50)))
+        self.capture_delay_spin.setValue(int(values.get("capture.delay_ms", 333)))
         self._set_combo_value(
             self.capture_backend_combo,
             str(values.get("capture.backend_primary", "screen_region_gdi")),

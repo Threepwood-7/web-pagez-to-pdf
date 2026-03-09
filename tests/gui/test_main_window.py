@@ -66,13 +66,53 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:capture_auto_trim_fixed_checkbox"
     )
     assert (
+        window.capture_viewport_options_group.property("widget_id")
+        == "window:main:control:capture_viewport_options_group"
+    )
+    assert (
+        window.capture_full_scroll_options_group.property("widget_id")
+        == "window:main:control:capture_full_scroll_options_group"
+    )
+    assert (
+        window.capture_shared_diagnostics_group.property("widget_id")
+        == "window:main:control:capture_shared_diagnostics_group"
+    )
+    assert (
+        window.capture_viewport_hint_label.property("widget_id")
+        == "window:main:control:capture_viewport_hint_label"
+    )
+    assert (
         window.capture_tab_preview_label.property("widget_id")
         == "window:main:control:capture_tab_preview_label"
+    )
+    assert (
+        window.capture_target_actions_group.property("widget_id")
+        == "window:main:control:capture_target_actions_group"
+    )
+    assert (
+        window.capture_thumbnail_group.property("widget_id")
+        == "window:main:control:capture_thumbnail_group"
+    )
+    assert (
+        window.capture_log_group.property("widget_id")
+        == "window:main:control:capture_log_group"
     )
     assert window.capture_log_list.property("widget_id") == "window:main:control:capture_log_list"
     assert (
         window.layout_preview_group.property("widget_id")
         == "window:main:control:layout_preview_group"
+    )
+    assert (
+        window.export_formats_group.property("widget_id")
+        == "window:main:control:export_formats_group"
+    )
+    assert (
+        window.export_output_group.property("widget_id")
+        == "window:main:control:export_output_group"
+    )
+    assert (
+        window.export_run_group.property("widget_id")
+        == "window:main:control:export_run_group"
     )
     assert (
         window.editor_overlay_toggle.property("widget_id")
@@ -95,6 +135,30 @@ def test_capture_advanced_group_is_visible_and_not_checkable(qtbot: QtBot) -> No
 
     assert window.capture_advanced_group.isVisible()
     assert not window.capture_advanced_group.isCheckable()
+    assert window.capture_viewport_options_group.isVisible()
+    assert window.capture_full_scroll_options_group.isVisible()
+    assert window.capture_shared_diagnostics_group.isVisible()
+
+
+def test_capture_advanced_controls_grouped_by_capture_type(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert _is_descendant(window.capture_viewport_hint_label, window.capture_viewport_options_group)
+
+    assert _is_descendant(window.max_pages_spin, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_delay_spin, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_scroll_mode_combo, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_scroll_to_top_checkbox, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_auto_trim_fixed_checkbox, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_wheel_injection_combo, window.capture_full_scroll_options_group)
+    assert _is_descendant(window.capture_cursor_hold_combo, window.capture_full_scroll_options_group)
+
+    assert _is_descendant(window.capture_backend_combo, window.capture_shared_diagnostics_group)
+    assert _is_descendant(window.capture_frame_region_combo, window.capture_shared_diagnostics_group)
+    assert _is_descendant(window.capture_include_mouse_checkbox, window.capture_shared_diagnostics_group)
+    assert _is_descendant(window.capture_log_level_combo, window.capture_shared_diagnostics_group)
 
 
 def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_path: Path) -> None:
@@ -103,7 +167,9 @@ def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_
     window.show()
     window.output_input.setText(str(tmp_path))
 
-    def _resolve_second_last(_own_hwnd: int) -> int | None:
+    def _resolve_alt_tab_target(_own_hwnd: int, *, retries: int = 1, settle_ms: int = 180) -> int | None:
+        _unused = retries
+        _unused2 = settle_ms
         return 4242
 
     def _window_title(_hwnd: int) -> str:
@@ -123,7 +189,7 @@ def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_
         pixmap.fill(Qt.GlobalColor.white)
         return (pixmap, primary_backend)
 
-    window._capture_service.resolve_second_last_window = _resolve_second_last  # type: ignore[method-assign]
+    window._capture_service.resolve_alt_tab_target = _resolve_alt_tab_target  # type: ignore[method-assign]
     window._capture_service.window_title = _window_title  # type: ignore[method-assign]
     window._capture_service.activate_window = _activate_window  # type: ignore[method-assign]
     window._capture_service.capture_window = _capture_window  # type: ignore[method-assign]
@@ -134,6 +200,45 @@ def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_
     assert window._selected_target.hwnd == 4242
     assert len(window._queue) == 1
     assert "captured selected viewport" in window.status_label.text().lower()
+
+
+def test_capture_last_selected_restores_focus_to_app(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+
+    window._capture_service.resolve_alt_tab_target = (  # type: ignore[method-assign]
+        lambda _own_hwnd, retries=1, settle_ms=180: 5151
+    )
+    window._capture_service.window_title = lambda _hwnd: "alt-tab-target"  # type: ignore[method-assign]
+    window._capture_service.activate_window = lambda _hwnd: (True, "")  # type: ignore[method-assign]
+
+    ensured: dict[str, int] = {"hwnd": 0}
+
+    def _ensure_window_foreground(hwnd: int) -> tuple[bool, str]:
+        ensured["hwnd"] = hwnd
+        return (True, "")
+
+    def _capture_window(
+        _hwnd: int,
+        *,
+        primary_backend: str = "screen_region_gdi",
+        frame_region: str = "client_area",
+        include_mouse_cursor: bool = False,
+    ) -> tuple[QPixmap | None, str]:
+        _unused = frame_region
+        _unused2 = include_mouse_cursor
+        pixmap = QPixmap(220, 140)
+        pixmap.fill(Qt.GlobalColor.white)
+        return (pixmap, primary_backend)
+
+    window._capture_service.ensure_window_foreground = _ensure_window_foreground  # type: ignore[method-assign]
+    window._capture_service.capture_window = _capture_window  # type: ignore[method-assign]
+
+    qtbot.mouseClick(window.capture_last_selected_button, Qt.MouseButton.LeftButton)
+
+    assert ensured["hwnd"] == int(window.winId())
 
 
 def test_capture_tab_thumbnail_updates_from_selected_queue_item(
@@ -220,6 +325,15 @@ def test_auto_trim_fixed_checkbox_defaults_enabled(qtbot: QtBot) -> None:
     assert window.capture_auto_trim_fixed_checkbox.isChecked()
 
 
+def test_capture_defaults_max_pages_and_delay(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.max_pages_spin.value() == 50
+    assert window.capture_delay_spin.value() == 333
+
+
 def test_capture_log_level_combo_normalizes_values(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -241,16 +355,40 @@ def test_pick_button_uses_menu_and_crosshair_button_removed(qtbot: QtBot) -> Non
     assert not hasattr(window, "pick_crosshair_button")
 
 
-def test_toolbar_has_expected_buttons_and_no_quick_export_strip(qtbot: QtBot) -> None:
+def test_capture_actions_live_in_capture_tab_and_no_toolbar(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
 
-    assert window.top_toolbar is not None
-    assert window.top_toolbar.widgetForAction(window.top_toolbar.actions()[0]) is window.target_label
-    assert window.top_toolbar.actions()
+    capture_tab = window.tabs.widget(0)
+    assert not hasattr(window, "top_toolbar")
+    assert _is_descendant(window.capture_target_actions_group, capture_tab)
+    assert _is_descendant(window.target_label, capture_tab)
+    assert _is_descendant(window.pick_list_button, capture_tab)
+    assert _is_descendant(window.capture_button, capture_tab)
+    assert _is_descendant(window.capture_full_button, capture_tab)
+    assert _is_descendant(window.capture_last_selected_button, capture_tab)
+    assert _is_descendant(window.stop_button, capture_tab)
+    assert _is_descendant(window.import_button, capture_tab)
     assert not hasattr(window, "quick_export_button")
     assert not hasattr(window, "quick_pdf_checkbox")
+
+
+def test_capture_target_row_places_picker_before_target_label(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    group_layout = window.capture_target_actions_group.layout()
+    assert group_layout is not None
+    first_row_item = group_layout.itemAt(0)
+    assert first_row_item is not None
+    first_row_layout = first_row_item.layout()
+    assert first_row_layout is not None
+    first_widget = first_row_layout.itemAt(0).widget()
+    second_widget = first_row_layout.itemAt(1).widget()
+    assert first_widget is window.pick_list_button
+    assert second_widget is window.target_label
 
 
 def test_pick_menu_sorted_and_target_label_format(
@@ -382,6 +520,90 @@ def test_viewport_capture_auto_resolves_target_when_none_selected(
     assert window._selected_target is not None
     assert window._selected_target.hwnd == 5151
     assert len(window._queue) == 1
+
+
+def test_viewport_capture_does_not_auto_trim_scrollbar(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._set_target(PickedWindow(hwnd=7070, label="viewport-target", title="viewport-target"))
+
+    window._capture_service.activate_window = lambda _hwnd: (True, "")  # type: ignore[method-assign]
+
+    def _capture_window(
+        _hwnd: int,
+        *,
+        primary_backend: str = "screen_region_gdi",
+        frame_region: str = "client_area",
+        include_mouse_cursor: bool = False,
+    ) -> tuple[QPixmap | None, str]:
+        _unused = frame_region
+        _unused2 = include_mouse_cursor
+        pixmap = QPixmap(161, 91)
+        pixmap.fill(Qt.GlobalColor.white)
+        return (pixmap, primary_backend)
+
+    window._capture_service.capture_window = _capture_window  # type: ignore[method-assign]
+
+    window._capture_selected_viewport()
+
+    assert len(window._queue) == 1
+    captured = Image.open(window._queue[0].image_path).convert("RGB")
+    assert captured.width == 161
+    assert "auto-trim scrollbar" not in window.status_label.text().lower()
+    messages = [
+        window.capture_log_list.item(index).text().lower()
+        for index in range(window.capture_log_list.count())
+    ]
+    assert not any("auto-trimmed right scrollbar" in text for text in messages)
+
+
+def test_full_capture_forces_scrollbar_auto_trim_enabled(qtbot: QtBot) -> None:
+    class _DummySignal:
+        def connect(self, _slot) -> None:
+            return
+
+    captured_options: list[object] = []
+
+    class _FakeWorker:
+        def __init__(self, capture_service, target_hwnd, options, stop_event) -> None:
+            _unused = capture_service
+            _unused2 = target_hwnd
+            _unused3 = stop_event
+            captured_options.append(options)
+            self.started = _DummySignal()
+            self.capture_succeeded = _DummySignal()
+            self.capture_failed = _DummySignal()
+            self.capture_progress = _DummySignal()
+            self.finished = _DummySignal()
+
+        def start(self) -> None:
+            return
+
+        def isRunning(self) -> bool:
+            return False
+
+        def run(self) -> None:
+            return
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._set_target(PickedWindow(hwnd=6060, label="full-target"))
+    window._capture_service.ensure_window_foreground = lambda _hwnd: (True, "")  # type: ignore[method-assign]
+
+    import web_pagez_to_pdf.main_window as main_window_module
+
+    old_worker = main_window_module.FullCaptureWorker
+    try:
+        main_window_module.FullCaptureWorker = _FakeWorker  # type: ignore[assignment]
+        window._capture_full_scroll()
+    finally:
+        main_window_module.FullCaptureWorker = old_worker  # type: ignore[assignment]
+
+    assert captured_options
+    assert bool(getattr(captured_options[0], "auto_trim_scrollbar", False)) is True
 
 
 def test_full_capture_auto_resolves_target_when_none_selected(qtbot: QtBot) -> None:

@@ -153,6 +153,10 @@ web-pagez-to-pdf/
 - Split GUI tests by feature domain instead of building one large end-to-end test file.
 - See `docs/architecture/qt_composition_playbook.md` for the reusable Qt decomposition workflow.
 
+## Future Work
+
+- Add an optional Chromium CDP capture backend (when a debugging endpoint is available) while keeping the current Win32 client-area pipeline as the default and fallback.
+
 ## Development
 
 ```bat

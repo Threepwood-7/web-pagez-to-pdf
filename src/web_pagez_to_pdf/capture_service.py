@@ -21,6 +21,8 @@ HISTORY_LIMIT = 80
 MAX_Z_ORDER_HOPS = 96
 VK_NEXT = 0x22
 VK_HOME = 0x24
+VK_TAB = 0x09
+VK_MENU = 0x12
 KEYEVENTF_KEYUP = 0x0002
 WM_MOUSEWHEEL = 0x020A
 WHEEL_DELTA = 120
@@ -128,6 +130,14 @@ PSAPI.GetModuleBaseNameW.restype = wintypes.DWORD
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
+ALT_TAB_EXCLUDED_CLASSES = {
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "Progman",
+    "WorkerW",
+    "MultitaskingViewFrame",
+    "TaskSwitcherWnd",
+}
 LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
@@ -231,6 +241,39 @@ class WindowCaptureService:
 
         start_hwnd = current_hwnd or own_hwnd
         return self._previous_visible_window(start_hwnd=start_hwnd, own_hwnd=own_hwnd)
+
+    def resolve_alt_tab_target(
+        self,
+        own_hwnd: int,
+        *,
+        retries: int = 1,
+        settle_ms: int = 180,
+    ) -> int | None:
+        """Switch to previous app via Alt+Tab and return a capture-safe foreground hwnd."""
+
+        attempt_count = max(1, int(retries) + 1)
+        settle_s = max(0.05, float(settle_ms) / 1000.0)
+        for attempt in range(attempt_count):
+            self._emit_alt_tab_shortcut()
+            time.sleep(settle_s)
+            candidate = _hwnd_to_int(USER32.GetForegroundWindow())
+            if self._is_alt_tab_target_candidate(candidate, own_hwnd):
+                LOGGER.info(
+                    "alt-tab target resolved hwnd=%s attempt=%s/%s",
+                    candidate,
+                    attempt + 1,
+                    attempt_count,
+                )
+                self.record_foreground_window()
+                return candidate
+            LOGGER.warning(
+                "alt-tab target rejected hwnd=%s class=%r attempt=%s/%s",
+                candidate,
+                self.window_class_name(candidate),
+                attempt + 1,
+                attempt_count,
+            )
+        return None
 
     def list_top_windows(self, own_hwnd: int) -> list[WindowInfo]:
         """Enumerate currently visible top-level windows."""
@@ -365,6 +408,15 @@ class WindowCaptureService:
         USER32.keybd_event(VK_NEXT, 0, 0, 0)
         USER32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
         LOGGER.debug("page_down injected via keybd_event")
+
+    @staticmethod
+    def _emit_alt_tab_shortcut() -> None:
+        """Inject Alt+Tab to switch to the previous task."""
+
+        USER32.keybd_event(VK_MENU, 0, 0, 0)
+        USER32.keybd_event(VK_TAB, 0, 0, 0)
+        USER32.keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, 0)
+        USER32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
 
     @staticmethod
     def send_home() -> bool:
@@ -784,6 +836,17 @@ class WindowCaptureService:
             return False
         return bool(USER32.IsWindowVisible(hwnd)) and not bool(USER32.IsIconic(hwnd))
 
+    @classmethod
+    def _is_alt_tab_target_candidate(cls, hwnd: int, own_hwnd: int) -> bool:
+        if hwnd <= 0 or int(hwnd) == int(own_hwnd):
+            return False
+        if not cls._is_capture_candidate(int(hwnd)):
+            return False
+        class_name = cls.window_class_name(int(hwnd))
+        if class_name in ALT_TAB_EXCLUDED_CLASSES:
+            return False
+        return True
+
     @staticmethod
     def _focus_window(hwnd: int) -> None:
         USER32.BringWindowToTop(hwnd)
@@ -932,6 +995,7 @@ class WindowCaptureService:
     def _capture_rect(self, hwnd: int, frame_region: str) -> tuple[int, int, int, int] | None:
         normalized = self._normalize_frame_region(frame_region)
         if normalized == "client_area":
+            # Prefer client-area bounds so browser chrome/toolbars/status bars are excluded by default.
             client_rect = self._client_rect(hwnd)
             if client_rect is not None:
                 return client_rect

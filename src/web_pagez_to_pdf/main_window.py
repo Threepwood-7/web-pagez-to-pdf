@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextEdit,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -208,7 +207,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setMinimumSize(1120, 680)
         self._build_menu()
-        self._build_toolbar()
+        self._build_capture_action_controls()
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -242,8 +241,43 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.queue_summary_label)
         right = QWidget(self.capture_splitter)
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("Latest / Selected Thumbnail"))
-        self.capture_tab_preview_label = QLabel("No capture selected", right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        self.capture_target_actions_group = QGroupBox("Target & Actions", right)
+        self._assign_control_identity(
+            self.capture_target_actions_group,
+            "capture_target_actions_group",
+            "capture_target_actions_group",
+        )
+        target_actions_layout = QVBoxLayout(self.capture_target_actions_group)
+        target_actions_layout.setContentsMargins(8, 8, 8, 8)
+        target_actions_layout.setSpacing(6)
+        target_row = QHBoxLayout()
+        target_row.addWidget(self.pick_list_button)
+        target_row.addWidget(self.target_label, 1)
+        target_actions_layout.addLayout(target_row)
+        capture_action_row = QHBoxLayout()
+        capture_action_row.addWidget(self.capture_button)
+        capture_action_row.addWidget(self.capture_full_button)
+        capture_action_row.addWidget(self.capture_last_selected_button)
+        target_actions_layout.addLayout(capture_action_row)
+        import_stop_row = QHBoxLayout()
+        import_stop_row.addWidget(self.stop_button)
+        import_stop_row.addWidget(self.import_button)
+        import_stop_row.addStretch(1)
+        target_actions_layout.addLayout(import_stop_row)
+        right_layout.addWidget(self.capture_target_actions_group)
+
+        self.capture_thumbnail_group = QGroupBox("Latest / Selected Thumbnail", right)
+        self._assign_control_identity(
+            self.capture_thumbnail_group,
+            "capture_thumbnail_group",
+            "capture_thumbnail_group",
+        )
+        thumbnail_layout = QVBoxLayout(self.capture_thumbnail_group)
+        thumbnail_layout.setContentsMargins(8, 8, 8, 8)
+        self.capture_tab_preview_label = QLabel("No capture selected", self.capture_thumbnail_group)
         self.capture_tab_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.capture_tab_preview_label.setMinimumHeight(220)
         self.capture_tab_preview_label.setStyleSheet(
@@ -254,16 +288,19 @@ class MainWindow(QMainWindow):
             "capture_tab_preview_label",
             "capture_tab_preview_label",
         )
-        right_layout.addWidget(self.capture_tab_preview_label)
+        thumbnail_layout.addWidget(self.capture_tab_preview_label)
+        right_layout.addWidget(self.capture_thumbnail_group)
 
         self.capture_advanced_group = QGroupBox("Advanced Capture", right)
         cap_adv_layout = QVBoxLayout(self.capture_advanced_group)
-        cap_grid = QGridLayout()
+        cap_adv_layout.setContentsMargins(8, 8, 8, 8)
+        cap_adv_layout.setSpacing(8)
         self.max_pages_spin = QSpinBox()
         self.max_pages_spin.setRange(2, 300)
-        self.max_pages_spin.setValue(18)
+        self.max_pages_spin.setValue(50)
         self.capture_delay_spin = QSpinBox()
         self.capture_delay_spin.setRange(120, 2000)
+        self.capture_delay_spin.setValue(333)
         self.capture_delay_spin.setSuffix(" ms")
         self.capture_backend_combo = QComboBox()
         self.capture_backend_combo.addItem("Screen Region (GDI)", "screen_region_gdi")
@@ -343,29 +380,75 @@ class MainWindow(QMainWindow):
             "capture_auto_trim_fixed_checkbox",
             "capture_auto_trim_fixed_checkbox",
         )
-        cap_grid.addWidget(QLabel("Max pages"), 0, 0)
-        cap_grid.addWidget(self.max_pages_spin, 0, 1)
-        cap_grid.addWidget(QLabel("Scroll delay"), 1, 0)
-        cap_grid.addWidget(self.capture_delay_spin, 1, 1)
-        cap_grid.addWidget(QLabel("Capture backend"), 2, 0)
-        cap_grid.addWidget(self.capture_backend_combo, 2, 1)
-        cap_grid.addWidget(QLabel("Scroll mode"), 3, 0)
-        cap_grid.addWidget(self.capture_scroll_mode_combo, 3, 1)
-        cap_grid.addWidget(self.capture_scroll_to_top_checkbox, 4, 0, 1, 2)
-        cap_grid.addWidget(self.capture_auto_trim_fixed_checkbox, 5, 0, 1, 2)
-        cap_grid.addWidget(QLabel("Frame region"), 6, 0)
-        cap_grid.addWidget(self.capture_frame_region_combo, 6, 1)
-        cap_grid.addWidget(QLabel("Wheel injection"), 7, 0)
-        cap_grid.addWidget(self.capture_wheel_injection_combo, 7, 1)
-        cap_grid.addWidget(QLabel("Cursor hold"), 8, 0)
-        cap_grid.addWidget(self.capture_cursor_hold_combo, 8, 1)
-        cap_grid.addWidget(QLabel("Diagnostics log level"), 9, 0)
-        cap_grid.addWidget(self.capture_log_level_combo, 9, 1)
-        cap_grid.addWidget(self.capture_include_mouse_checkbox, 10, 0, 1, 2)
-        cap_adv_layout.addLayout(cap_grid)
+
+        self.capture_viewport_options_group = QGroupBox("Viewport Capture", self.capture_advanced_group)
+        self._assign_control_identity(
+            self.capture_viewport_options_group,
+            "capture_viewport_options_group",
+            "capture_viewport_options_group",
+        )
+        viewport_layout = QVBoxLayout(self.capture_viewport_options_group)
+        viewport_layout.setContentsMargins(8, 8, 8, 8)
+        viewport_layout.setSpacing(4)
+        self.capture_viewport_hint_label = QLabel(
+            "No viewport-only controls. Use Shared / Diagnostics options below.",
+            self.capture_viewport_options_group,
+        )
+        self.capture_viewport_hint_label.setWordWrap(True)
+        self._assign_control_identity(
+            self.capture_viewport_hint_label,
+            "capture_viewport_hint_label",
+            "capture_viewport_hint_label",
+        )
+        viewport_layout.addWidget(self.capture_viewport_hint_label)
+        cap_adv_layout.addWidget(self.capture_viewport_options_group)
+
+        self.capture_full_scroll_options_group = QGroupBox("Full-Scroll Capture", self.capture_advanced_group)
+        self._assign_control_identity(
+            self.capture_full_scroll_options_group,
+            "capture_full_scroll_options_group",
+            "capture_full_scroll_options_group",
+        )
+        full_scroll_layout = QFormLayout(self.capture_full_scroll_options_group)
+        full_scroll_layout.setContentsMargins(8, 8, 8, 8)
+        full_scroll_layout.setSpacing(6)
+        full_scroll_layout.addRow("Max pages", self.max_pages_spin)
+        full_scroll_layout.addRow("Scroll delay", self.capture_delay_spin)
+        full_scroll_layout.addRow("Scroll mode", self.capture_scroll_mode_combo)
+        full_scroll_layout.addRow(self.capture_scroll_to_top_checkbox)
+        full_scroll_layout.addRow(self.capture_auto_trim_fixed_checkbox)
+        full_scroll_layout.addRow("Wheel injection", self.capture_wheel_injection_combo)
+        full_scroll_layout.addRow("Cursor hold", self.capture_cursor_hold_combo)
+        cap_adv_layout.addWidget(self.capture_full_scroll_options_group)
+
+        self.capture_shared_diagnostics_group = QGroupBox(
+            "Shared / Diagnostics",
+            self.capture_advanced_group,
+        )
+        self._assign_control_identity(
+            self.capture_shared_diagnostics_group,
+            "capture_shared_diagnostics_group",
+            "capture_shared_diagnostics_group",
+        )
+        shared_layout = QFormLayout(self.capture_shared_diagnostics_group)
+        shared_layout.setContentsMargins(8, 8, 8, 8)
+        shared_layout.setSpacing(6)
+        shared_layout.addRow("Capture backend", self.capture_backend_combo)
+        shared_layout.addRow("Frame region", self.capture_frame_region_combo)
+        shared_layout.addRow(self.capture_include_mouse_checkbox)
+        shared_layout.addRow("Diagnostics log level", self.capture_log_level_combo)
+        cap_adv_layout.addWidget(self.capture_shared_diagnostics_group)
         right_layout.addWidget(self.capture_advanced_group)
-        right_layout.addWidget(QLabel("Capture Log"))
-        self.capture_log_list = QListWidget(right)
+
+        self.capture_log_group = QGroupBox("Capture Log", right)
+        self._assign_control_identity(
+            self.capture_log_group,
+            "capture_log_group",
+            "capture_log_group",
+        )
+        capture_log_layout = QVBoxLayout(self.capture_log_group)
+        capture_log_layout.setContentsMargins(8, 8, 8, 8)
+        self.capture_log_list = QListWidget(self.capture_log_group)
         self.capture_log_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.capture_log_list.setAlternatingRowColors(True)
         self.capture_log_list.setMinimumHeight(140)
@@ -374,7 +457,8 @@ class MainWindow(QMainWindow):
             "capture_log_list",
             "capture_log_list",
         )
-        right_layout.addWidget(self.capture_log_list, 1)
+        capture_log_layout.addWidget(self.capture_log_list, 1)
+        right_layout.addWidget(self.capture_log_group, 1)
         right_layout.addStretch(1)
         self.capture_splitter.setStretchFactor(0, 3)
         self.capture_splitter.setStretchFactor(1, 2)
@@ -631,8 +715,8 @@ class MainWindow(QMainWindow):
 
         export_tab = QWidget(self)
         export_layout = QVBoxLayout(export_tab)
-        export = QWidget()
-        export_grid = QGridLayout(export)
+        export_layout.setContentsMargins(0, 0, 0, 0)
+        export_layout.setSpacing(8)
         self.combine_checkbox = QCheckBox("Combine queue")
         self.combine_checkbox.setChecked(True)
         self.pdf_checkbox = QCheckBox("PDF")
@@ -650,28 +734,49 @@ class MainWindow(QMainWindow):
         self.output_browse_button = QPushButton("Browse")
         self.export_button = QPushButton("Export")
         self._assign_control_identity(self.export_button, "export_button", "export_button")
-
-        export_grid.addWidget(self.combine_checkbox, 0, 0)
-        export_grid.addWidget(self.pdf_checkbox, 0, 1)
-        export_grid.addWidget(self.paged_images_checkbox, 0, 2)
-        export_grid.addWidget(self.long_image_checkbox, 0, 3)
-        export_grid.addWidget(self.tiff_checkbox, 1, 0)
-        export_grid.addWidget(self.docx_checkbox, 1, 1)
-        export_grid.addWidget(self.pptx_checkbox, 1, 2)
-        export_grid.addWidget(QLabel("DOCX/PPTX mode"), 2, 0)
-        export_grid.addWidget(self.docx_mode_combo, 2, 1)
-        export_grid.addWidget(QLabel("Base Name"), 2, 2)
-        export_grid.addWidget(self.base_input, 2, 3)
-        export_grid.addWidget(QLabel("Output Folder"), 3, 0)
-        export_grid.addWidget(
-            self._row_widget([self.output_input, self.output_browse_button]),
-            3,
-            1,
-            1,
-            3,
+        self.export_formats_group = QGroupBox("Formats", export_tab)
+        self._assign_control_identity(
+            self.export_formats_group,
+            "export_formats_group",
+            "export_formats_group",
         )
-        export_grid.addWidget(self.export_button, 4, 3)
-        export_layout.addWidget(export)
+        export_formats_layout = QGridLayout(self.export_formats_group)
+        export_formats_layout.addWidget(self.combine_checkbox, 0, 0, 1, 3)
+        export_formats_layout.addWidget(self.pdf_checkbox, 1, 0)
+        export_formats_layout.addWidget(self.paged_images_checkbox, 1, 1)
+        export_formats_layout.addWidget(self.long_image_checkbox, 1, 2)
+        export_formats_layout.addWidget(self.tiff_checkbox, 2, 0)
+        export_formats_layout.addWidget(self.docx_checkbox, 2, 1)
+        export_formats_layout.addWidget(self.pptx_checkbox, 2, 2)
+        export_formats_layout.addWidget(QLabel("DOCX/PPTX mode"), 3, 0)
+        export_formats_layout.addWidget(self.docx_mode_combo, 3, 1, 1, 2)
+        export_layout.addWidget(self.export_formats_group)
+
+        self.export_output_group = QGroupBox("Output", export_tab)
+        self._assign_control_identity(
+            self.export_output_group,
+            "export_output_group",
+            "export_output_group",
+        )
+        export_output_layout = QFormLayout(self.export_output_group)
+        export_output_layout.addRow("Base Name", self.base_input)
+        export_output_layout.addRow(
+            "Output Folder",
+            self._row_widget([self.output_input, self.output_browse_button]),
+        )
+        export_layout.addWidget(self.export_output_group)
+
+        self.export_run_group = QGroupBox("Run Export", export_tab)
+        self._assign_control_identity(
+            self.export_run_group,
+            "export_run_group",
+            "export_run_group",
+        )
+        export_run_layout = QHBoxLayout(self.export_run_group)
+        export_run_layout.addStretch(1)
+        export_run_layout.addWidget(self.export_button)
+        export_layout.addWidget(self.export_run_group)
+
         self.export_advanced_group, exp_adv_layout = self._new_collapsible_group(
             "Export Notes",
             expanded=not self._bool_setting("ui.export_adv_collapsed", True),
@@ -681,6 +786,7 @@ class MainWindow(QMainWindow):
             QLabel("Paper/layout preview settings are configured in the Editor tab.")
         )
         export_layout.addWidget(self.export_advanced_group)
+        export_layout.addStretch(1)
         self.tabs.addTab(export_tab, "Export")
 
         self.status_label = QLabel("Ready.")
@@ -762,20 +868,14 @@ class MainWindow(QMainWindow):
         self._hotkeys.stop_capture_requested.connect(self._request_stop)
         self._stop_overlay.stop_requested.connect(self._request_stop)
 
-    def _build_toolbar(self) -> None:
-        self.top_toolbar = QToolBar("Capture", self)
-        self.top_toolbar.setMovable(False)
-        self.top_toolbar.setFloatable(False)
-        self.top_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.top_toolbar)
-
+    def _build_capture_action_controls(self) -> None:
         self.target_label = QLabel("Target: none")
         self.pick_list_button = QPushButton("Pick")
         self.pick_target_menu = QMenu(self.pick_list_button)
-        self.capture_button = QPushButton("Capture (Ctrl+Shift+C)")
-        self.capture_full_button = QPushButton("Capture Full (Ctrl+Shift+S)")
-        self.capture_last_selected_button = QPushButton("Capture Last Selected Window")
-        self.stop_button = QPushButton("Stop (Ctrl+Shift+X)")
+        self.capture_button = QPushButton("Capture")
+        self.capture_full_button = QPushButton("Capture Full")
+        self.capture_last_selected_button = QPushButton("Capture Last Selected")
+        self.stop_button = QPushButton("Stop")
         self.import_button = QPushButton("Import")
 
         for widget, control in (
@@ -790,15 +890,6 @@ class MainWindow(QMainWindow):
             self._assign_control_identity(widget, control, control)
 
         self.pick_list_button.setMenu(self.pick_target_menu)
-        self.top_toolbar.addWidget(self.target_label)
-        self.top_toolbar.addWidget(self.pick_list_button)
-        self.top_toolbar.addSeparator()
-        self.top_toolbar.addWidget(self.capture_button)
-        self.top_toolbar.addWidget(self.capture_full_button)
-        self.top_toolbar.addWidget(self.capture_last_selected_button)
-        self.top_toolbar.addWidget(self.stop_button)
-        self.top_toolbar.addSeparator()
-        self.top_toolbar.addWidget(self.import_button)
 
     @staticmethod
     def _set_tooltip(widget: QWidget, text: str) -> None:
@@ -808,10 +899,16 @@ class MainWindow(QMainWindow):
     def _apply_control_tooltips(self) -> None:
         tooltip_map: list[tuple[QWidget, str]] = [
             (self.pick_list_button, "Choose the window to capture."),
-            (self.capture_button, "Capture the currently visible viewport of the selected window."),
-            (self.capture_full_button, "Capture a full scrolling page from the selected window."),
+            (
+                self.capture_button,
+                "Capture the currently visible viewport of the selected window (Ctrl+Shift+C).",
+            ),
+            (
+                self.capture_full_button,
+                "Capture a full scrolling page from the selected window (Ctrl+Shift+S).",
+            ),
             (self.capture_last_selected_button, "Capture the last window you selected in the OS."),
-            (self.stop_button, "Stop an active full-page capture."),
+            (self.stop_button, "Stop an active full-page capture (Ctrl+Shift+X)."),
             (self.import_button, "Import existing image files into the queue."),
             (self.queue_list, "Queue of captured/imported images used by Editor and Export."),
             (self.up_button, "Move the selected queue item up."),
@@ -985,8 +1082,8 @@ class MainWindow(QMainWindow):
     def _load_runtime_settings(self) -> None:
         self._editor_loading = True
         try:
-            self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 18)))
-            self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 380)))
+            self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 50)))
+            self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 333)))
             backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
             self._set_capture_backend_combo(backend)
             scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
@@ -1000,6 +1097,8 @@ class MainWindow(QMainWindow):
                     DEFAULT_AUTO_TRIM_FIXED_STRIPS,
                 )
             )
+            if self._settings.contains("capture.auto_trim_scrollbar"):
+                self._settings.remove("capture.auto_trim_scrollbar")
             frame_region = str(
                 self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
             )
@@ -1471,12 +1570,17 @@ class MainWindow(QMainWindow):
 
     def _capture_last_selected_window(self) -> None:
         CAPTURE_UI_LOGGER.info("quick capture requested: capture_last_selected_window")
-        hwnd = self._capture_service.resolve_second_last_window(int(self.winId()))
+        hwnd = self._capture_service.resolve_alt_tab_target(
+            int(self.winId()),
+            retries=1,
+        )
         if hwnd is None:
-            CAPTURE_UI_LOGGER.error("quick capture failed: no second-last active window")
-            self.status_label.setText("No second-last active window found for quick capture.")
+            CAPTURE_UI_LOGGER.error("quick capture failed: Alt+Tab did not resolve a valid target")
+            self.status_label.setText("Alt+Tab did not resolve a valid target window.")
+            self._append_capture_log("Alt+Tab quick capture failed: no valid foreground target.")
             return
         self._set_target(self._picked_window_from_hwnd(hwnd))
+        self._append_capture_log(f"Alt+Tab selected target: {self._selected_target.label}.")
         self._capture_selected_viewport()
 
     def _set_target(self, target: PickedWindow) -> None:
@@ -1509,34 +1613,39 @@ class MainWindow(QMainWindow):
             )
             self.status_label.setText(message)
             return
-        pixmap, backend_used = self._capture_service.capture_window(
-            self._selected_target.hwnd,
-            primary_backend=self._capture_backend_primary(),
-            frame_region=self._capture_frame_region(),
-            include_mouse_cursor=self._capture_include_mouse_cursor(),
-        )
-        if pixmap is None:
-            CAPTURE_UI_LOGGER.error(
-                "viewport capture failed hwnd=%s backend=%s",
+        try:
+            pixmap, backend_used = self._capture_service.capture_window(
                 self._selected_target.hwnd,
-                backend_used or self._capture_backend_primary(),
+                primary_backend=self._capture_backend_primary(),
+                frame_region=self._capture_frame_region(),
+                include_mouse_cursor=self._capture_include_mouse_cursor(),
             )
-            self.status_label.setText("Capture failed.")
-            return
-        image = ImageQt.fromqpixmap(pixmap).convert("RGB")
-        capture_title = self._selected_target.title or self._selected_target.label
-        self._add_capture(
-            image=image,
-            title=capture_title,
-            source_hwnd=self._selected_target.hwnd,
-            frame_count=1,
-        )
-        CAPTURE_UI_LOGGER.info(
-            "viewport capture complete hwnd=%s backend=%s",
-            self._selected_target.hwnd,
-            backend_used or "unknown",
-        )
-        self.status_label.setText(f"Captured selected viewport ({backend_used or 'unknown backend'}).")
+            if pixmap is None:
+                CAPTURE_UI_LOGGER.error(
+                    "viewport capture failed hwnd=%s backend=%s",
+                    self._selected_target.hwnd,
+                    backend_used or self._capture_backend_primary(),
+                )
+                self.status_label.setText("Capture failed.")
+                return
+            image = ImageQt.fromqpixmap(pixmap).convert("RGB")
+            capture_title = self._selected_target.title or self._selected_target.label
+            self._add_capture(
+                image=image,
+                title=capture_title,
+                source_hwnd=self._selected_target.hwnd,
+                frame_count=1,
+            )
+            CAPTURE_UI_LOGGER.info(
+                "viewport capture complete hwnd=%s backend=%s",
+                self._selected_target.hwnd,
+                backend_used or "unknown",
+            )
+            self.status_label.setText(
+                f"Captured selected viewport ({backend_used or 'unknown backend'})."
+            )
+        finally:
+            self._restore_focus_to_app()
 
     def _capture_full_scroll(self) -> None:
         CAPTURE_UI_LOGGER.info("full capture requested")
@@ -1547,7 +1656,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s auto_trim=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s auto_trim=%s auto_trim_scrollbar=%s",
             self._selected_target.hwnd,
             self._selected_target.label,
             self._capture_backend_primary(),
@@ -1558,6 +1667,7 @@ class MainWindow(QMainWindow):
             self._capture_include_mouse_cursor(),
             self._capture_scroll_to_top_on_full(),
             self._capture_auto_trim_fixed_strips(),
+            True,
         )
         effective_wheel_mode = self._capture_wheel_injection_mode()
         if effective_wheel_mode == "legacy_message_wheel":
@@ -1598,6 +1708,7 @@ class MainWindow(QMainWindow):
                 include_mouse_cursor=self._capture_include_mouse_cursor(),
                 scroll_to_top_on_full=self._capture_scroll_to_top_on_full(),
                 auto_trim_fixed_strips=self._capture_auto_trim_fixed_strips(),
+                auto_trim_scrollbar=True,
             ),
             stop_event=self._stop_event,
         )
@@ -1618,7 +1729,8 @@ class MainWindow(QMainWindow):
             f"frame_region={self._capture_frame_region()}, "
             f"include_cursor={self._capture_include_mouse_cursor()}, "
             f"scroll_to_top={self._capture_scroll_to_top_on_full()}, "
-            f"auto_trim={self._capture_auto_trim_fixed_strips()})."
+            f"auto_trim={self._capture_auto_trim_fixed_strips()}, "
+            "auto_trim_scrollbar=True)."
         )
         try:
             CAPTURE_UI_LOGGER.info("full capture show stop overlay")
@@ -1712,7 +1824,7 @@ class MainWindow(QMainWindow):
         CAPTURE_UI_LOGGER.info("full capture finished cleanup")
         self._stop_overlay.hide()
         self._capture_worker = None
-        self._restore_focus_after_full_capture()
+        self._restore_focus_to_app()
 
     def _on_full_capture_worker_started(self) -> None:
         CAPTURE_UI_LOGGER.info("full capture worker started signal received")
@@ -1724,7 +1836,7 @@ class MainWindow(QMainWindow):
         if not running:
             self._append_capture_log("Full capture worker is not running after start.")
 
-    def _restore_focus_after_full_capture(self) -> None:
+    def _restore_focus_to_app(self) -> None:
         own_hwnd = int(self.winId())
         self.raise_()
         self.activateWindow()

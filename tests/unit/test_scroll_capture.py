@@ -631,3 +631,181 @@ def test_auto_trim_keeps_movement_detection_with_fixed_top_and_bottom(monkeypatc
 
     assert result.stop_reason == "max_pages"
     assert any("captured via" in payload.message.lower() for payload in progress)
+
+
+def _make_right_scrollbar_frame(
+    *,
+    width: int,
+    height: int,
+    scrollbar_width: int,
+    offset: int,
+    page_base: tuple[int, int, int] = (255, 255, 255),
+    page_noise: tuple[int, int, int] = (32, 32, 32),
+    track_color: tuple[int, int, int] = (232, 232, 232),
+    thumb_color: tuple[int, int, int] = (168, 168, 168),
+    noise_mod: int = 13,
+) -> Image.Image:
+    image = Image.new("RGB", (width, height), page_base)
+    for y_pos in range(height):
+        for x_pos in range(width - scrollbar_width):
+            if (x_pos + y_pos + offset) % max(3, noise_mod) == 0:
+                image.putpixel((x_pos, y_pos), page_noise)
+    for y_pos in range(height):
+        for x_pos in range(width - scrollbar_width, width):
+            image.putpixel((x_pos, y_pos), track_color)
+    thumb_top = max(8, height // 4)
+    thumb_bottom = min(height - 8, thumb_top + max(24, height // 5))
+    for y_pos in range(thumb_top, thumb_bottom):
+        for x_pos in range(width - scrollbar_width + 2, width - 2):
+            image.putpixel((x_pos, y_pos), thumb_color)
+    return image
+
+
+def test_estimate_right_scrollbar_trim_from_pair_detects_stable_band() -> None:
+    left = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
+    right = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=7)
+
+    trim = scroll_capture._estimate_right_scrollbar_trim_from_pair(left, right)
+
+    assert 10 <= trim <= 18
+
+
+def test_estimate_right_scrollbar_trim_from_pair_returns_zero_without_left_movement() -> None:
+    left = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
+    right = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
+
+    trim = scroll_capture._estimate_right_scrollbar_trim_from_pair(left, right)
+
+    assert trim == 0
+
+
+def test_detect_right_scrollbar_trim_single_frame_detects_band() -> None:
+    frame = _make_right_scrollbar_frame(width=200, height=160, scrollbar_width=12, offset=4)
+
+    trim = scroll_capture.detect_right_scrollbar_trim_single_frame(frame)
+
+    assert 8 <= trim <= 16
+
+
+def test_detect_right_scrollbar_trim_single_frame_detects_dark_theme_band() -> None:
+    frame = _make_right_scrollbar_frame(
+        width=220,
+        height=170,
+        scrollbar_width=10,
+        offset=3,
+        page_base=(34, 34, 34),
+        page_noise=(86, 86, 86),
+        track_color=(58, 58, 58),
+        thumb_color=(118, 118, 118),
+        noise_mod=11,
+    )
+
+    trim = scroll_capture.detect_right_scrollbar_trim_single_frame(frame)
+
+    assert 6 <= trim <= 14
+
+
+def test_detect_right_scrollbar_trim_single_frame_detects_low_contrast_band() -> None:
+    frame = _make_right_scrollbar_frame(
+        width=224,
+        height=168,
+        scrollbar_width=12,
+        offset=5,
+        page_base=(214, 214, 214),
+        page_noise=(198, 198, 198),
+        track_color=(206, 206, 206),
+        thumb_color=(192, 192, 192),
+        noise_mod=9,
+    )
+
+    trim = scroll_capture.detect_right_scrollbar_trim_single_frame(frame)
+
+    assert 7 <= trim <= 16
+
+
+def test_detect_right_scrollbar_trim_single_frame_returns_zero_for_uncertain_right_strip() -> None:
+    frame = Image.new("RGB", (220, 160), (205, 205, 205))
+    for y_pos in range(frame.height):
+        for x_pos in range(frame.width):
+            value = 205
+            if (x_pos + y_pos) % 19 == 0:
+                value = 200
+            if x_pos > frame.width - 14:
+                value = 206
+            frame.putpixel((x_pos, y_pos), (value, value, value))
+
+    trim = scroll_capture.detect_right_scrollbar_trim_single_frame(frame)
+
+    assert trim == 0
+
+
+def test_auto_trim_scrollbar_reduces_output_width_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+    monkeypatch.setattr(scroll_capture, "frame_diff_score", lambda _a, _b: 12.0)
+
+    output_widths: list[int] = []
+
+    def _stitch_frames(frames: list[Image.Image]):
+        output_widths.extend(frame.width for frame in frames)
+        return SimpleNamespace(image=frames[-1])
+
+    monkeypatch.setattr(scroll_capture, "stitch_frames", _stitch_frames)
+
+    service = _FakeService(
+        captures=[
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=0), "screen_region_gdi"),
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=5), "screen_region_gdi"),
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=10), "screen_region_gdi"),
+        ],
+    )
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=3,
+            scroll_mode="wheel_then_pagedown",
+            auto_trim_scrollbar=True,
+            auto_trim_fixed_strips=False,
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert output_widths
+    assert max(output_widths) < 210
+
+
+def test_auto_trim_scrollbar_keeps_output_width_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+    monkeypatch.setattr(scroll_capture, "frame_diff_score", lambda _a, _b: 12.0)
+
+    output_widths: list[int] = []
+
+    def _stitch_frames(frames: list[Image.Image]):
+        output_widths.extend(frame.width for frame in frames)
+        return SimpleNamespace(image=frames[-1])
+
+    monkeypatch.setattr(scroll_capture, "stitch_frames", _stitch_frames)
+
+    service = _FakeService(
+        captures=[
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=0), "screen_region_gdi"),
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=5), "screen_region_gdi"),
+            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=10), "screen_region_gdi"),
+        ],
+    )
+    result = scroll_capture.run_full_page_capture(
+        service=service,
+        target_hwnd=4242,
+        options=scroll_capture.ScrollCaptureOptions(
+            max_capture_pages=3,
+            scroll_mode="wheel_then_pagedown",
+            auto_trim_scrollbar=False,
+            auto_trim_fixed_strips=False,
+        ),
+        stop_requested=lambda: False,
+    )
+
+    assert result.stop_reason == "max_pages"
+    assert output_widths
+    assert all(width_value == 210 for width_value in output_widths)
