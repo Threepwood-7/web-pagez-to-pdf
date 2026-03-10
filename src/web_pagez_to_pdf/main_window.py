@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageQt
+from PIL import Image, ImageDraw, ImageQt
 from PySide6.QtCore import (
     QByteArray,
     QEvent,
@@ -47,6 +47,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
+    QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from reportlab.lib.units import mm
 from threep_commons.paths import resolve_app_data_dir
 
 from . import widget_naming
@@ -117,6 +120,11 @@ BROWSER_PROCESS_PRIORITY = (
     "arc.exe",
 )
 DEFAULT_SCROLL_TO_TOP_ON_FULL = True
+DEFAULT_CROSSHAIR_MAGNIFIER = 12
+DEFAULT_SPLITTER_RIGHT_PANE_PX = 300
+THUMBNAIL_MARGIN_CUE_COLOR = (255, 80, 30, 255)
+THUMBNAIL_GUTTER_CUE_COLOR = (0, 220, 255, 255)
+THUMBNAIL_BORDER_CUE_COLOR = (255, 255, 255, 240)
 CAPTURE_UI_LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
@@ -171,6 +179,21 @@ class FullCaptureWorker(QThread):
         self.capture_succeeded.emit(result)
 
 
+class ThumbnailPreviewList(QListWidget):
+    """Icon grid list with Ctrl+wheel zoom shortcuts."""
+
+    zoom_delta_requested = Signal(int)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = int(event.angleDelta().y())
+            if delta != 0:
+                self.zoom_delta_requested.emit(10 if delta > 0 else -10)
+                event.accept()
+                return
+        super().wheelEvent(event)
+
+
 @dataclass(slots=True)
 class _EditorHistoryEntry:
     edits_by_item_id: dict[str, EditAdjustments]
@@ -216,6 +239,7 @@ class MainWindow(QMainWindow):
         self._preview_update_timer = QTimer(self)
         self._preview_update_timer.setSingleShot(True)
         self._preview_update_timer.timeout.connect(self._flush_debounced_preview_update)
+        self._preview_page_hover_overlays: dict[int, QPixmap] = {}
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -264,6 +288,9 @@ class MainWindow(QMainWindow):
         self.queue_summary_label = QLabel("Queue: 0 item(s)")
         left_layout.addWidget(self.queue_summary_label)
         right = QWidget(self.capture_splitter)
+        right_policy = right.sizePolicy()
+        right_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        right.setSizePolicy(right_policy)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
@@ -484,6 +511,9 @@ class MainWindow(QMainWindow):
         capture_log_layout.addWidget(self.capture_log_list, 1)
         right_layout.addWidget(self.capture_log_group, 1)
         right_layout.addStretch(1)
+        self.capture_splitter.setChildrenCollapsible(False)
+        self.capture_splitter.setCollapsible(0, False)
+        self.capture_splitter.setCollapsible(1, False)
         self.capture_splitter.setStretchFactor(0, 3)
         self.capture_splitter.setStretchFactor(1, 2)
         self.tabs.addTab(capture_tab, "Capture")
@@ -504,6 +534,9 @@ class MainWindow(QMainWindow):
         editor_left_layout.addWidget(self.editor_canvas, stretch=1)
 
         editor_right = QWidget(self.editor_splitter)
+        editor_right_policy = editor_right.sizePolicy()
+        editor_right_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        editor_right.setSizePolicy(editor_right_policy)
         editor_right_layout = QVBoxLayout(editor_right)
         editor_right_layout.setContentsMargins(0, 0, 0, 0)
         editor_right_layout.setSpacing(8)
@@ -519,6 +552,11 @@ class MainWindow(QMainWindow):
         self.zoom_100_button = QPushButton("100%", view_group)
         self.zoom_out_button = QPushButton("-", view_group)
         self.zoom_in_button = QPushButton("+", view_group)
+        self.editor_view_zoom_spin = QSpinBox(view_group)
+        self.editor_view_zoom_spin.setRange(10, 400)
+        self.editor_view_zoom_spin.setSingleStep(10)
+        self.editor_view_zoom_spin.setValue(100)
+        self.editor_view_zoom_spin.setSuffix(" %")
         self.zoom_status_label = QLabel("Fit Width", view_group)
         for widget, control in (
             (self.zoom_fit_height_button, "zoom_fit_height_button"),
@@ -526,6 +564,7 @@ class MainWindow(QMainWindow):
             (self.zoom_100_button, "zoom_100_button"),
             (self.zoom_out_button, "zoom_out_button"),
             (self.zoom_in_button, "zoom_in_button"),
+            (self.editor_view_zoom_spin, "editor_view_zoom_spin"),
             (self.zoom_status_label, "zoom_status_label"),
         ):
             self._assign_control_identity(widget, control, control)
@@ -534,6 +573,7 @@ class MainWindow(QMainWindow):
         view_layout.addWidget(self.zoom_100_button)
         view_layout.addWidget(self.zoom_out_button)
         view_layout.addWidget(self.zoom_in_button)
+        view_layout.addWidget(self.editor_view_zoom_spin)
         view_layout.addWidget(self.zoom_status_label, 1)
         editor_right_layout.addWidget(view_group)
 
@@ -542,7 +582,6 @@ class MainWindow(QMainWindow):
         self.editor_tool_buttons = QButtonGroup(self)
         self.editor_tool_buttons.setExclusive(True)
         self.pan_tool_button = self._new_editor_tool_button("Pan", "pan", checked=True)
-        self.split_edit_tool_button = self._new_editor_tool_button("Split Edit", "split_edit")
         self.vertical_crop_tool_button = self._new_editor_tool_button(
             "Vertical Border Crop",
             "crop_vertical_band",
@@ -552,7 +591,6 @@ class MainWindow(QMainWindow):
         self.redact_tool_button = self._new_editor_tool_button("Redact", "redact")
         for widget, control in (
             (self.pan_tool_button, "pan_tool_button"),
-            (self.split_edit_tool_button, "split_edit_tool_button"),
             (self.vertical_crop_tool_button, "vertical_crop_tool_button"),
             (self.rect_crop_tool_button, "rect_crop_tool_button"),
             (self.free_crop_tool_button, "free_crop_tool_button"),
@@ -561,7 +599,6 @@ class MainWindow(QMainWindow):
             self._assign_control_identity(widget, control, control)
         for button in (
             self.pan_tool_button,
-            self.split_edit_tool_button,
             self.vertical_crop_tool_button,
             self.rect_crop_tool_button,
             self.free_crop_tool_button,
@@ -593,6 +630,12 @@ class MainWindow(QMainWindow):
         )
         layout_preview_layout = QVBoxLayout(self.layout_preview_group)
         layout_form = QFormLayout()
+        layout_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layout_form.setFormAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout_form.setHorizontalSpacing(10)
+        layout_form.setVerticalSpacing(6)
+        self.layout_preview_form = layout_form
         self.paper_combo = QComboBox(self.layout_preview_group)
         for paper_name in sorted(PAPER_SIZES.keys()):
             self.paper_combo.addItem(paper_name)
@@ -635,29 +678,45 @@ class MainWindow(QMainWindow):
             (self.footer_input, "footer_input"),
         ):
             self._assign_control_identity(widget, control, control)
+        self.layout_paper_orientation_row = self._row_widget(
+            [self.paper_combo, self.orientation_combo],
+            stretch=True,
+        )
+        self.layout_margins_gutter_row = self._row_widget(
+            [
+                self.margin_top_spin,
+                self.margin_bottom_spin,
+                self.margin_left_spin,
+                self.margin_right_spin,
+                self.gutter_spin,
+            ],
+            stretch=True,
+        )
+        self.layout_blank_search_row = self._row_widget(
+            [self.blank_spin, self.search_spin],
+            stretch=True,
+        )
         layout_form.addRow(
             "Paper / Orientation",
-            self._row_widget([self.paper_combo, self.orientation_combo]),
+            self.layout_paper_orientation_row,
         )
         layout_form.addRow(
             "Margins + Gutter",
-            self._row_widget(
-                [
-                    self.margin_top_spin,
-                    self.margin_bottom_spin,
-                    self.margin_left_spin,
-                    self.margin_right_spin,
-                    self.gutter_spin,
-                ]
-            ),
+            self.layout_margins_gutter_row,
         )
         layout_form.addRow(
             "Blank / Search",
-            self._row_widget([self.blank_spin, self.search_spin]),
+            self.layout_blank_search_row,
         )
-        layout_form.addRow("Header", self.header_input)
-        layout_form.addRow("Footer", self.footer_input)
         layout_preview_layout.addLayout(layout_form)
+        self.header_label = QLabel("Header", self.layout_preview_group)
+        self.footer_label = QLabel("Footer", self.layout_preview_group)
+        self._assign_control_identity(self.header_label, "header_label", "header_label")
+        self._assign_control_identity(self.footer_label, "footer_label", "footer_label")
+        layout_preview_layout.addWidget(self.header_label)
+        layout_preview_layout.addWidget(self.header_input)
+        layout_preview_layout.addWidget(self.footer_label)
+        layout_preview_layout.addWidget(self.footer_input)
         self.editor_overlay_toggle = QCheckBox(
             "Show split/page overlays",
             self.layout_preview_group,
@@ -668,8 +727,26 @@ class MainWindow(QMainWindow):
             "editor_overlay_toggle",
             "editor_overlay_toggle",
         )
-        layout_preview_layout.addWidget(self.editor_overlay_toggle)
-        self.page_preview_list = QListWidget(self.layout_preview_group)
+        self.thumbnail_zoom_slider = QSlider(Qt.Orientation.Horizontal, self.layout_preview_group)
+        self.thumbnail_zoom_slider.setRange(90, 320)
+        self.thumbnail_zoom_slider.setSingleStep(10)
+        self.thumbnail_zoom_slider.setPageStep(20)
+        self.thumbnail_zoom_slider.setValue(150)
+        self._assign_control_identity(
+            self.thumbnail_zoom_slider,
+            "thumbnail_zoom_slider",
+            "thumbnail_zoom_slider",
+        )
+        thumbnail_controls = QWidget(self.layout_preview_group)
+        thumbnail_controls_layout = QHBoxLayout(thumbnail_controls)
+        thumbnail_controls_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_controls_layout.setSpacing(8)
+        thumbnail_controls_layout.addWidget(self.editor_overlay_toggle)
+        thumbnail_controls_layout.addStretch(1)
+        thumbnail_controls_layout.addWidget(QLabel("Thumbnail Zoom", thumbnail_controls))
+        thumbnail_controls_layout.addWidget(self.thumbnail_zoom_slider, 1)
+        layout_preview_layout.addWidget(thumbnail_controls)
+        self.page_preview_list = ThumbnailPreviewList(self.layout_preview_group)
         self.page_preview_list.setViewMode(QListView.ViewMode.IconMode)
         self.page_preview_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.page_preview_list.setMovement(QListView.Movement.Static)
@@ -677,6 +754,8 @@ class MainWindow(QMainWindow):
         self.page_preview_list.setWordWrap(True)
         self.page_preview_list.setSpacing(8)
         self.page_preview_list.setMinimumHeight(220)
+        self.page_preview_list.setMouseTracking(True)
+        self.page_preview_list.setUniformItemSizes(True)
         self._assign_control_identity(
             self.page_preview_list,
             "page_preview_list",
@@ -759,6 +838,9 @@ class MainWindow(QMainWindow):
         editor_right_layout.addWidget(ops_group)
         editor_right_layout.addStretch(1)
 
+        self.editor_splitter.setChildrenCollapsible(False)
+        self.editor_splitter.setCollapsible(0, False)
+        self.editor_splitter.setCollapsible(1, False)
         self.editor_splitter.setStretchFactor(0, 5)
         self.editor_splitter.setStretchFactor(1, 2)
         self.tabs.addTab(editor_tab, "Editor")
@@ -886,6 +968,7 @@ class MainWindow(QMainWindow):
         self.editor_canvas.split_marker_added.connect(self._on_canvas_split_marker_added)
         self.editor_canvas.split_marker_moved.connect(self._on_canvas_split_marker_moved)
         self.editor_canvas.split_marker_removed.connect(self._on_canvas_split_marker_removed)
+        self.editor_canvas.zoom_changed.connect(self._on_editor_canvas_zoom_changed)
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
@@ -894,6 +977,7 @@ class MainWindow(QMainWindow):
         self.zoom_100_button.clicked.connect(lambda: self._set_editor_zoom_mode("manual", 100))
         self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
+        self.editor_view_zoom_spin.valueChanged.connect(self._on_editor_view_zoom_spin_changed)
         self.paper_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
         self.orientation_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
         self.margin_top_spin.valueChanged.connect(self._on_layout_controls_changed)
@@ -906,7 +990,11 @@ class MainWindow(QMainWindow):
         self.header_input.textChanged.connect(self._on_layout_controls_changed)
         self.footer_input.textChanged.connect(self._on_layout_controls_changed)
         self.editor_overlay_toggle.toggled.connect(self._on_overlay_visibility_changed)
+        self.thumbnail_zoom_slider.valueChanged.connect(self._on_thumbnail_zoom_slider_changed)
+        self.page_preview_list.zoom_delta_requested.connect(self._on_thumbnail_zoom_delta_requested)
         self.page_preview_list.currentRowChanged.connect(self._on_page_preview_selected)
+        self.page_preview_list.itemEntered.connect(self._on_page_preview_item_hovered)
+        self.page_preview_list.viewport().installEventFilter(self)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.capture_splitter.splitterMoved.connect(self._persist_splitter_sizes)
         self.editor_splitter.splitterMoved.connect(self._persist_splitter_sizes)
@@ -998,11 +1086,8 @@ class MainWindow(QMainWindow):
             (self.zoom_100_button, "Show preview at 100% zoom."),
             (self.zoom_out_button, "Zoom out by 10%."),
             (self.zoom_in_button, "Zoom in by 10%."),
-            (self.pan_tool_button, "Pan/scroll the preview without editing."),
-            (
-                self.split_edit_tool_button,
-                "Split Edit mode: click to add, drag marker lines to move, right-click a line to remove.",
-            ),
+            (self.editor_view_zoom_spin, "Manual editor view zoom percent."),
+            (self.pan_tool_button, "Pan/scroll the preview and drag split markers."),
             (self.vertical_crop_tool_button, "Draw a vertical crop band."),
             (self.rect_crop_tool_button, "Draw a rectangular crop area."),
             (self.free_crop_tool_button, "Draw free-form crop points, then double-click to apply."),
@@ -1022,6 +1107,7 @@ class MainWindow(QMainWindow):
             (self.header_input, "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
             (self.footer_input, "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
             (self.editor_overlay_toggle, "Toggle page-break guides, split markers, labels, and printable area guides."),
+            (self.thumbnail_zoom_slider, "Scale the bottom thumbnail preview row."),
             (self.page_preview_list, "Live page thumbnails generated from current edit and layout settings."),
             (self.split_spin, "Pixel Y position for adding a manual split marker."),
             (self.add_split_button, "Add a manual split marker at the selected Y position."),
@@ -1277,11 +1363,14 @@ class MainWindow(QMainWindow):
             overlay_visible = self._bool_setting("ui.editor_overlay_visible", True)
             self.editor_overlay_toggle.setChecked(overlay_visible)
             self.editor_canvas.set_overlay_visibility(overlay_visible)
+            self._apply_thumbnail_icon_size(self.thumbnail_zoom_slider.value())
+            self._apply_magnifier_visibility_for_tool()
             self._editor_preview_debounce_ms = self._clamp_preview_debounce_ms(
                 self._settings.value("editor.preview_debounce_ms", 333)
             )
             self._preview_update_timer.setInterval(self._editor_preview_debounce_ms)
             self._restore_splitter_sizes()
+            QTimer.singleShot(0, self._enforce_default_splitter_sizes_if_unsaved)
 
             self.tabs.setCurrentIndex(0)
             self.editor_advanced_group.setChecked(
@@ -1295,12 +1384,13 @@ class MainWindow(QMainWindow):
             self._editor_loading = False
 
     @staticmethod
-    def _row_widget(widgets: list[QWidget]) -> QWidget:
+    def _row_widget(widgets: list[QWidget], *, stretch: bool = False) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         for widget in widgets:
-            layout.addWidget(widget)
+            layout.addWidget(widget, 1 if stretch else 0)
         return row
 
     def _new_collapsible_group(
@@ -1358,18 +1448,49 @@ class MainWindow(QMainWindow):
         self._settings.setValue("ui.capture_splitter_sizes", self.capture_splitter.sizes())
         self._settings.setValue("ui.editor_splitter_sizes", self.editor_splitter.sizes())
 
+    @staticmethod
+    def _set_splitter_right_pane_width(splitter: QSplitter, right_width_px: int) -> None:
+        total_width = int(splitter.width())
+        if total_width <= 0:
+            sizes = splitter.sizes()
+            total_width = int(sum(sizes))
+        if total_width <= 0:
+            total_width = int(right_width_px) * 3
+        right = max(120, min(int(right_width_px), max(120, total_width - 120)))
+        handle_pos = max(120, total_width - right)
+        splitter.moveSplitter(handle_pos, 1)
+
+    def _apply_capture_splitter_default(self) -> None:
+        self._set_splitter_right_pane_width(self.capture_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
+
+    def _apply_editor_splitter_default(self) -> None:
+        self._set_splitter_right_pane_width(self.editor_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
+
+    def _apply_default_splitter_sizes(self) -> None:
+        self._apply_capture_splitter_default()
+        self._apply_editor_splitter_default()
+
+    def _enforce_default_splitter_sizes_if_unsaved(self) -> None:
+        if len(self._int_list_setting("ui.capture_splitter_sizes")) < 2:
+            self._apply_capture_splitter_default()
+        if (
+            self.tabs.currentIndex() == 1
+            and len(self._int_list_setting("ui.editor_splitter_sizes")) < 2
+        ):
+            self._apply_editor_splitter_default()
+
     def _restore_splitter_sizes(self) -> None:
         capture_sizes = self._int_list_setting("ui.capture_splitter_sizes")
         if len(capture_sizes) >= 2:
             self.capture_splitter.setSizes(capture_sizes)
         else:
-            self.capture_splitter.setSizes([560, 420])
+            self._set_splitter_right_pane_width(self.capture_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
 
         editor_sizes = self._int_list_setting("ui.editor_splitter_sizes")
         if len(editor_sizes) >= 2:
             self.editor_splitter.setSizes(editor_sizes)
         else:
-            self.editor_splitter.setSizes([980, 360])
+            self.editor_splitter.setSizes([980, DEFAULT_SPLITTER_RIGHT_PANE_PX])
 
     def _reset_view_state(self) -> None:
         keys = (
@@ -1384,9 +1505,10 @@ class MainWindow(QMainWindow):
         self._window_state_restore_in_progress = True
         try:
             self.showNormal()
-            self.capture_splitter.setSizes([560, 420])
-            self.editor_splitter.setSizes([980, 360])
+            self._apply_default_splitter_sizes()
             self.showMaximized()
+            self._apply_default_splitter_sizes()
+            QTimer.singleShot(50, self._apply_default_splitter_sizes)
         finally:
             self._window_state_restore_in_progress = False
         self._persist_window_state_snapshot()
@@ -1596,6 +1718,15 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             self._schedule_window_state_snapshot()
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if (
+            watched is self.page_preview_list.viewport()
+            and isinstance(event, QEvent)
+            and event.type() == QEvent.Type.Leave
+        ):
+            self._clear_page_preview_hover_overlay()
+        return super().eventFilter(watched, event)
 
     def _load_defaults(self) -> None:
         output_dir = resolve_app_data_dir(APP_IDENTITY) / "captures"
@@ -2091,10 +2222,13 @@ class MainWindow(QMainWindow):
         self._refresh_queue_summary()
 
     def _on_tab_changed(self, index: int) -> None:
-        if index != 1 or not self._editor_scroll_to_top_pending:
-            return
-        self._editor_scroll_to_top_pending = False
-        QTimer.singleShot(0, self.editor_canvas.scroll_to_top)
+        if index == 0 and len(self._int_list_setting("ui.capture_splitter_sizes")) < 2:
+            QTimer.singleShot(0, self._apply_capture_splitter_default)
+        if index == 1 and len(self._int_list_setting("ui.editor_splitter_sizes")) < 2:
+            QTimer.singleShot(0, self._apply_editor_splitter_default)
+        if index == 1 and self._editor_scroll_to_top_pending:
+            self._editor_scroll_to_top_pending = False
+            QTimer.singleShot(0, self.editor_canvas.scroll_to_top)
 
     def _session_for_item(self, item_id: str) -> EditAdjustments:
         existing = self._sessions.edits_by_item_id.get(item_id)
@@ -2448,23 +2582,174 @@ class MainWindow(QMainWindow):
             return
         self._refresh_preview()
 
+    def _on_thumbnail_zoom_slider_changed(self, value: int) -> None:
+        self._apply_thumbnail_icon_size(int(value))
+
+    def _on_thumbnail_zoom_delta_requested(self, delta: int) -> None:
+        next_value = int(self.thumbnail_zoom_slider.value()) + int(delta)
+        next_value = max(self.thumbnail_zoom_slider.minimum(), min(next_value, self.thumbnail_zoom_slider.maximum()))
+        self.thumbnail_zoom_slider.setValue(next_value)
+
+    def _apply_thumbnail_icon_size(self, value: int) -> None:
+        width = max(90, min(320, int(value)))
+        height = round(width * 1.4)
+        target_size = QSize(width, height)
+        self.page_preview_list.setIconSize(target_size)
+        pixmap_role = int(Qt.ItemDataRole.UserRole) + 1
+        for row in range(self.page_preview_list.count()):
+            item = self.page_preview_list.item(row)
+            if item is None:
+                continue
+            source_obj = item.data(pixmap_role)
+            if not isinstance(source_obj, QPixmap) or source_obj.isNull():
+                continue
+            item.setIcon(
+                QIcon(
+                    source_obj.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            )
+
+    def _clear_page_preview_hover_overlay(self) -> None:
+        self.editor_canvas.set_hover_overlay_pixmap(None)
+
+    def _on_page_preview_item_hovered(self, item: QListWidgetItem) -> None:
+        if item is None:
+            self._clear_page_preview_hover_overlay()
+            return
+        row = self.page_preview_list.row(item)
+        overlay = self._preview_page_hover_overlays.get(row)
+        if overlay is None or overlay.isNull():
+            self._clear_page_preview_hover_overlay()
+            return
+        self.editor_canvas.set_hover_overlay_pixmap(overlay)
+
     def _on_page_preview_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._current_preview_slices):
             return
         top, bottom = self._current_preview_slices[row]
         self.editor_canvas.focus_on_y((float(top) + float(bottom)) / 2.0)
 
+    def _decorate_page_thumbnail(
+        self,
+        page_image: Image.Image,
+        *,
+        layout: PrintLayout | None = None,
+    ) -> Image.Image:
+        active_layout = layout if layout is not None else self._collect_layout()
+        page_name = str(active_layout.paper_name or "A4").strip().upper()
+        page_w_pt, page_h_pt = PAPER_SIZES.get(page_name, PAPER_SIZES["A4"])
+        if str(active_layout.orientation or "portrait").strip().lower() == "landscape":
+            page_w_pt, page_h_pt = page_h_pt, page_w_pt
+
+        slice_w = max(1, int(page_image.width))
+        slice_h = max(1, int(page_image.height))
+        margin_left_pt = max(0.0, float(active_layout.margin_left_mm) * mm)
+        margin_right_pt = max(0.0, float(active_layout.margin_right_mm) * mm)
+        margin_top_pt = max(0.0, float(active_layout.margin_top_mm) * mm)
+        margin_bottom_pt = max(0.0, float(active_layout.margin_bottom_mm) * mm)
+        gutter_pt = max(0.0, float(active_layout.gutter_mm) * mm)
+        avail_w_pt = float(page_w_pt) - (margin_left_pt + margin_right_pt + gutter_pt)
+        if avail_w_pt <= 1.0:
+            avail_w_pt = 1.0
+        px_per_pt = float(slice_w) / float(avail_w_pt)
+
+        page_w_px = max(slice_w + 2, int(round(float(page_w_pt) * px_per_pt)))
+        page_h_px = max(slice_h + 2, int(round(float(page_h_pt) * px_per_pt)))
+        decorated = Image.new("RGB", (page_w_px, page_h_px), (244, 244, 244))
+        draw = ImageDraw.Draw(decorated, "RGBA")
+
+        image_left = max(0, min(page_w_px - 2, int(round(margin_left_pt * px_per_pt))))
+        image_top = max(0, min(page_h_px - 2, int(round(margin_top_pt * px_per_pt))))
+        image_right = max(
+            image_left + 1,
+            min(
+                page_w_px - 1,
+                int(round((float(page_w_pt) - margin_right_pt - gutter_pt) * px_per_pt)),
+            ),
+        )
+        printable_bottom = max(
+            image_top + 1,
+            min(
+                page_h_px - 1,
+                int(round((float(page_h_pt) - margin_bottom_pt) * px_per_pt)),
+            ),
+        )
+        right_margin_boundary = max(
+            image_right,
+            min(page_w_px - 1, int(round((float(page_w_pt) - margin_right_pt) * px_per_pt))),
+        )
+
+        image_width = max(1, min(int(slice_w), image_right - image_left))
+        visible_height = max(1, min(int(slice_h), printable_bottom - image_top))
+        image_crop = page_image.crop((0, 0, image_width, visible_height)).convert("RGB")
+        decorated.paste(image_crop, (image_left, image_top))
+
+        outer = (0, 0, max(0, page_w_px - 1), max(0, page_h_px - 1))
+        draw.rectangle(outer, outline=THUMBNAIL_BORDER_CUE_COLOR, width=2)
+        draw.rectangle(
+            (
+                image_left,
+                image_top,
+                max(image_left + 1, image_right),
+                max(image_top + 1, printable_bottom),
+            ),
+            outline=THUMBNAIL_MARGIN_CUE_COLOR,
+            width=3,
+        )
+        if right_margin_boundary > image_right:
+            draw.rectangle(
+                (
+                    image_right,
+                    image_top,
+                    right_margin_boundary,
+                    printable_bottom,
+                ),
+                fill=(
+                    int(THUMBNAIL_GUTTER_CUE_COLOR[0]),
+                    int(THUMBNAIL_GUTTER_CUE_COLOR[1]),
+                    int(THUMBNAIL_GUTTER_CUE_COLOR[2]),
+                    82,
+                ),
+                outline=THUMBNAIL_GUTTER_CUE_COLOR,
+                width=2,
+            )
+        legend_w = min(page_w_px - 4, max(96, round(page_w_px * 0.86)))
+        legend_h = 22
+        draw.rectangle((2, 2, legend_w, legend_h), fill=(0, 0, 0, 180))
+        legend_segments = (
+            ("Margins", THUMBNAIL_MARGIN_CUE_COLOR),
+            (" | ", (198, 198, 198, 236)),
+            ("Gutter", THUMBNAIL_GUTTER_CUE_COLOR),
+            (" | ", (198, 198, 198, 236)),
+            ("Border", THUMBNAIL_BORDER_CUE_COLOR),
+        )
+        cursor_x = 8.0
+        for text, color in legend_segments:
+            draw.text((cursor_x, 6), text, fill=color)
+            cursor_x += float(draw.textlength(text))
+        return decorated
+
     def _sync_page_preview_list(
         self,
         preview: Image.Image,
         slices: list[tuple[int, int]],
+        layout: PrintLayout,
     ) -> None:
+        self._clear_page_preview_hover_overlay()
+        pixmap_role = int(Qt.ItemDataRole.UserRole) + 1
         selected_row = self.page_preview_list.currentRow()
+        self._preview_page_hover_overlays = {}
         with QSignalBlocker(self.page_preview_list):
             self.page_preview_list.clear()
             for index, (top, bottom) in enumerate(slices, start=1):
                 cropped = preview.crop((0, top, preview.width, bottom))
-                thumbnail = pil_to_qpixmap(cropped).scaled(
+                decorated = self._decorate_page_thumbnail(cropped, layout=layout)
+                base_pixmap = pil_to_qpixmap(decorated)
+                thumbnail = base_pixmap.scaled(
                     self.page_preview_list.iconSize(),
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
@@ -2472,7 +2757,14 @@ class MainWindow(QMainWindow):
                 item = QListWidgetItem(f"Page {index} ({max(1, bottom - top)} px)")
                 item.setIcon(QIcon(thumbnail))
                 item.setData(Qt.ItemDataRole.UserRole, (top, bottom))
+                item.setData(pixmap_role, base_pixmap)
                 self.page_preview_list.addItem(item)
+                self._preview_page_hover_overlays[index - 1] = base_pixmap.scaled(
+                    720,
+                    1020,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             if self.page_preview_list.count() > 0:
                 if selected_row < 0:
                     self.page_preview_list.setCurrentRow(0)
@@ -2480,22 +2772,64 @@ class MainWindow(QMainWindow):
                     self.page_preview_list.setCurrentRow(
                         min(selected_row, self.page_preview_list.count() - 1)
                     )
+        self._apply_thumbnail_icon_size(self.thumbnail_zoom_slider.value())
 
-    def _set_editor_zoom_mode(self, mode: str, manual_percent: int | None = None) -> None:
+    def _set_editor_zoom_mode(
+        self,
+        mode: str,
+        manual_percent: int | None = None,
+        *,
+        refresh_preview: bool = True,
+    ) -> None:
         self.editor_canvas.set_zoom_mode(mode, manual_percent=manual_percent)
-        self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
-        self._refresh_preview()
+        self._sync_editor_view_zoom_controls()
+        if refresh_preview:
+            self._refresh_preview()
 
     def _adjust_editor_zoom(self, delta_percent: int) -> None:
         self.editor_canvas.adjust_manual_zoom(delta_percent)
+
+    def _sync_editor_view_zoom_controls(self) -> None:
         self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
+        with QSignalBlocker(self.editor_view_zoom_spin):
+            self.editor_view_zoom_spin.setValue(self.editor_canvas.manual_zoom_percent())
+        self.editor_view_zoom_spin.setEnabled(self.editor_canvas.zoom_mode() == "manual")
+
+    def _on_editor_canvas_zoom_changed(self, _mode: str, _manual_percent: int) -> None:
+        self._sync_editor_view_zoom_controls()
+
+    def _on_editor_view_zoom_spin_changed(self, value: int) -> None:
+        if self.editor_canvas.zoom_mode() == "manual" and self.editor_canvas.manual_zoom_percent() == int(
+            value
+        ):
+            return
+        self._set_editor_zoom_mode("manual", int(value), refresh_preview=False)
+
+    @staticmethod
+    def _tool_uses_crosshair_magnifier(tool: str) -> bool:
+        normalized = str(tool or "").strip().lower()
+        return normalized in {"crop_rect", "crop_vertical_band", "crop_free"}
+
+    def _current_editor_tool(self) -> str:
+        checked = self.editor_tool_buttons.checkedButton()
+        if checked is None:
+            return "pan"
+        return str(checked.property("tool") or "pan")
+
+    def _apply_magnifier_visibility_for_tool(self, tool: str | None = None) -> None:
+        active_tool = str(tool if tool is not None else self._current_editor_tool())
+        self.editor_canvas.set_magnifier_state(
+            enabled=self._tool_uses_crosshair_magnifier(active_tool),
+            zoom_factor=DEFAULT_CROSSHAIR_MAGNIFIER,
+        )
 
     def _on_editor_tool_changed(self, button: QToolButton) -> None:
         tool = str(button.property("tool") or "pan")
         self.editor_canvas.set_tool(tool)
-        if tool == "split_edit":
+        self._apply_magnifier_visibility_for_tool(tool)
+        if tool == "pan":
             self.status_label.setText(
-                "Split Edit active: click to add, drag to move, right-click to remove markers."
+                "Pan active: drag split markers directly on the image or ruler triangles."
             )
 
     def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
@@ -2582,7 +2916,9 @@ class MainWindow(QMainWindow):
             self.editor_item_label.setText("No queue item selected.")
             self.editor_canvas.set_image(QPixmap())
             self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
+            self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
+            self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
@@ -2593,7 +2929,9 @@ class MainWindow(QMainWindow):
             self.editor_item_label.setText(f"Editing: {item.title} [image missing]")
             self.editor_canvas.set_image(QPixmap())
             self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
+            self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
+            self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
@@ -2611,14 +2949,16 @@ class MainWindow(QMainWindow):
         self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
         full_pixmap = pil_to_qpixmap(preview)
         self.editor_canvas.set_image(full_pixmap)
+        self.editor_canvas.set_hover_overlay_pixmap(None)
         self.editor_canvas.set_overlay_visibility(self.editor_overlay_toggle.isChecked())
+        self._apply_magnifier_visibility_for_tool()
         self.editor_canvas.set_page_overlays(
             self._split_markers(),
             self._current_preview_slices,
             printable_width_px=preview.width,
         )
-        self._sync_page_preview_list(preview, self._current_preview_slices)
-        self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
+        self._sync_page_preview_list(preview, self._current_preview_slices, layout)
+        self._sync_editor_view_zoom_controls()
         thumb = full_pixmap.scaled(
             max(1, self.capture_tab_preview_label.width() - 8),
             max(1, self.capture_tab_preview_label.height() - 8),

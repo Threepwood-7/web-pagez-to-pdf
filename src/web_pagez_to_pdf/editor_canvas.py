@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -13,6 +14,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
     QPixmap,
+    QPolygon,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -33,6 +35,8 @@ class EditorCanvas(QGraphicsView):
     split_marker_added = Signal(int)
     split_marker_moved = Signal(int, int)
     split_marker_removed = Signal(int)
+    hover_scene_position_changed = Signal(object)
+    zoom_changed = Signal(str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -57,9 +61,21 @@ class EditorCanvas(QGraphicsView):
         self._checker_step_px = 24
         self._split_drag_original: int | None = None
         self._split_drag_current: int | None = None
+        self._hover_scene_point: QPointF | None = None
+        self._hover_view_point: QPoint = QPoint()
+        self._hover_inside_image = False
+        self._magnifier_enabled = True
+        self._magnifier_zoom = 12
+        self._magnifier_size_px = 170
+        self._hover_overlay_pixmap: QPixmap | None = None
+        self._snap_edge_vertical: np.ndarray | None = None
+        self._snap_edge_horizontal: np.ndarray | None = None
+        self._snap_radius_px = 12
+        self._snap_strength_threshold = 40.0
 
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setMouseTracking(True)
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Load pixmap and reset camera fit."""
@@ -71,9 +87,14 @@ class EditorCanvas(QGraphicsView):
             self._manual_markers_px = []
             self._page_slices_px = []
             self._printable_width_px = 0
+            self._hover_scene_point = None
+            self._hover_inside_image = False
+            self._snap_edge_vertical = None
+            self._snap_edge_horizontal = None
         else:
             pad = float(self._scene_padding_px)
             self._scene.setSceneRect(rect.adjusted(-pad, -pad, pad, pad))
+        self._rebuild_snap_cache(pixmap)
         self._apply_zoom()
         self._clear_overlay()
         self.viewport().update()
@@ -143,6 +164,7 @@ class EditorCanvas(QGraphicsView):
         if manual_percent is not None:
             self._manual_zoom_percent = max(10, min(400, int(manual_percent)))
         self._apply_zoom()
+        self.zoom_changed.emit(self._zoom_mode, int(self._manual_zoom_percent))
 
     def adjust_manual_zoom(self, delta_percent: int) -> None:
         """Adjust manual zoom by a relative percent step."""
@@ -160,6 +182,16 @@ class EditorCanvas(QGraphicsView):
             return "Fit Width"
         return f"{self._manual_zoom_percent}%"
 
+    def zoom_mode(self) -> str:
+        """Return current zoom mode."""
+
+        return self._zoom_mode
+
+    def manual_zoom_percent(self) -> int:
+        """Return current manual zoom percent."""
+
+        return int(self._manual_zoom_percent)
+
     def set_tool(self, tool: str) -> None:
         """Set active editing mode."""
 
@@ -172,6 +204,32 @@ class EditorCanvas(QGraphicsView):
         self._split_drag_current = None
         self._clear_overlay()
 
+    def set_magnifier_state(self, *, enabled: bool, zoom_factor: int) -> None:
+        """Configure floating magnifier visibility and scale."""
+
+        self._magnifier_enabled = bool(enabled)
+        self._magnifier_zoom = max(2, min(32, int(zoom_factor)))
+        self.viewport().update()
+
+    def sample_hover_zoom(self, *, zoom_factor: int, output_size: int = 220) -> QPixmap | None:
+        """Return a crosshair patch around last hover point for quick-zoom panel."""
+
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull() or self._hover_scene_point is None:
+            return None
+        return self._build_zoom_patch(
+            pixmap,
+            self._hover_scene_point,
+            zoom_factor=max(2, int(zoom_factor)),
+            output_size=max(48, int(output_size)),
+        )
+
+    def set_hover_overlay_pixmap(self, pixmap: QPixmap | None) -> None:
+        """Set temporary full-view overlay shown above editor image."""
+
+        self._hover_overlay_pixmap = pixmap
+        self.viewport().update()
+
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         delta = event.angleDelta().y()
         if delta == 0:
@@ -180,32 +238,16 @@ class EditorCanvas(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self._tool == "split_edit":
+        self._update_hover_state(event.position().toPoint())
+
+        if event.button() == Qt.MouseButton.LeftButton and self._tool == "pan":
             scene_point = self.mapToScene(event.position().toPoint())
-            if event.button() == Qt.MouseButton.RightButton:
-                marker = self._nearest_marker(scene_point.y())
-                if marker is not None:
-                    self._manual_markers_px = [value for value in self._manual_markers_px if value != marker]
-                    self.split_marker_removed.emit(marker)
-                    self.viewport().update()
-                event.accept()
-                return
-            if event.button() == Qt.MouseButton.LeftButton:
-                marker = self._nearest_marker(scene_point.y())
-                if marker is None:
-                    clamped = self._clamp_marker(scene_point.y())
-                    if clamped is not None and clamped not in self._manual_markers_px:
-                        self._manual_markers_px = sorted({*self._manual_markers_px, clamped})
-                        self.split_marker_added.emit(clamped)
-                        self.viewport().update()
-                    event.accept()
-                    return
+            marker = self._nearest_marker(scene_point.y())
+            if marker is not None and self._split_drag_hit(event.position().toPoint(), marker):
                 self._split_drag_original = marker
                 self._split_drag_current = marker
                 event.accept()
                 return
-            event.ignore()
-            return
 
         if event.button() != Qt.MouseButton.LeftButton or self._tool == "pan":
             super().mousePressEvent(event)
@@ -213,6 +255,12 @@ class EditorCanvas(QGraphicsView):
 
         scene_point = self.mapToScene(event.position().toPoint())
         if self._tool in {"crop_rect", "crop_vertical_band", "redact"}:
+            if self._tool in {"crop_rect", "crop_vertical_band"}:
+                scene_point = self._snap_scene_point(
+                    scene_point,
+                    tool=self._tool,
+                    modifiers=event.modifiers(),
+                )
             self._drag_origin = scene_point
             self._clear_overlay()
             self._rect_item = QGraphicsRectItem(QRectF(scene_point, scene_point))
@@ -221,13 +269,19 @@ class EditorCanvas(QGraphicsView):
             self._scene.addItem(self._rect_item)
             return
         if self._tool == "crop_free":
+            scene_point = self._snap_scene_point(
+                scene_point,
+                tool=self._tool,
+                modifiers=event.modifiers(),
+            )
             self._free_points.append(scene_point)
             self._refresh_free_path()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._tool == "split_edit" and self._split_drag_original is not None:
+        self._update_hover_state(event.position().toPoint())
+        if self._tool == "pan" and self._split_drag_original is not None:
             scene_point = self.mapToScene(event.position().toPoint())
             clamped = self._clamp_marker(scene_point.y())
             if clamped is None or clamped == self._split_drag_current:
@@ -239,12 +293,18 @@ class EditorCanvas(QGraphicsView):
             return
         if self._drag_origin is not None and self._rect_item is not None:
             scene_point = self.mapToScene(event.position().toPoint())
+            if self._tool in {"crop_rect", "crop_vertical_band"}:
+                scene_point = self._snap_scene_point(
+                    scene_point,
+                    tool=self._tool,
+                    modifiers=event.modifiers(),
+                )
             self._rect_item.setRect(QRectF(self._drag_origin, scene_point).normalized())
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._tool == "split_edit" and event.button() == Qt.MouseButton.LeftButton:
+        if self._tool == "pan" and event.button() == Qt.MouseButton.LeftButton:
             original = self._split_drag_original
             current = self._split_drag_current
             self._split_drag_original = None
@@ -267,6 +327,18 @@ class EditorCanvas(QGraphicsView):
                 self.rect_drawn.emit(tool, rect)
             return
         super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover_inside_image = False
+        self.hover_scene_position_changed.emit(
+            {
+                "inside": False,
+                "x": int(self._hover_scene_point.x()) if self._hover_scene_point is not None else -1,
+                "y": int(self._hover_scene_point.y()) if self._hover_scene_point is not None else -1,
+            }
+        )
+        self.viewport().update()
+        super().leaveEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._tool == "crop_free" and len(self._free_points) >= 3:
@@ -350,12 +422,15 @@ class EditorCanvas(QGraphicsView):
 
         if self._manual_markers_px:
             painter.save()
-            marker_pen = QPen(QColor(255, 145, 0, 230), 1, Qt.PenStyle.DashDotDotLine)
-            painter.setPen(marker_pen)
+            marker_shadow_pen = QPen(QColor(40, 40, 40, 210), 3, Qt.PenStyle.SolidLine)
+            marker_core_pen = QPen(QColor(255, 132, 0, 245), 2, Qt.PenStyle.SolidLine)
             for marker in self._manual_markers_px:
                 y_line = float(marker)
                 if y_line < 1.0 or y_line >= height:
                     continue
+                painter.setPen(marker_shadow_pen)
+                painter.drawLine(QPointF(0.0, y_line), QPointF(width, y_line))
+                painter.setPen(marker_core_pen)
                 painter.drawLine(QPointF(0.0, y_line), QPointF(width, y_line))
             painter.restore()
 
@@ -364,6 +439,8 @@ class EditorCanvas(QGraphicsView):
         painter = QPainter(self.viewport())
         try:
             self._paint_rulers(painter)
+            self._paint_main_hover_overlay(painter)
+            self._paint_floating_magnifier(painter)
         finally:
             painter.end()
 
@@ -406,6 +483,7 @@ class EditorCanvas(QGraphicsView):
             return
         self._paint_horizontal_ticks(painter, top_rect, pixmap.width())
         self._paint_vertical_ticks(painter, right_rect, pixmap.height())
+        self._paint_split_knobs(painter, right_rect)
 
     def _paint_horizontal_ticks(self, painter: QPainter, top_rect: QRect, image_width: int) -> None:
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
@@ -455,6 +533,29 @@ class EditorCanvas(QGraphicsView):
                 painter.drawText(QPoint(right_rect.left() + 2, view_y - 2), str(y_pos))
         painter.restore()
 
+    def _paint_split_knobs(self, painter: QPainter, right_rect: QRect) -> None:
+        if not self._manual_markers_px:
+            return
+        painter.save()
+        painter.setPen(QPen(QColor(64, 64, 64, 230), 1))
+        painter.setBrush(QColor(255, 132, 0, 240))
+        tri_height = 7
+        tri_width = max(9, right_rect.width() - 9)
+        for marker in self._manual_markers_px:
+            view_y = round(self.mapFromScene(QPointF(0.0, float(marker))).y())
+            if view_y < 0 or view_y > right_rect.bottom():
+                continue
+            tri_left = right_rect.left() + 2
+            triangle = QPolygon(
+                [
+                    QPoint(tri_left, view_y),
+                    QPoint(tri_left + tri_width, view_y - tri_height),
+                    QPoint(tri_left + tri_width, view_y + tri_height),
+                ]
+            )
+            painter.drawPolygon(triangle)
+        painter.restore()
+
     def _nearest_marker(self, y_pos: float) -> int | None:
         if not self._manual_markers_px:
             return None
@@ -470,11 +571,150 @@ class EditorCanvas(QGraphicsView):
             return None
         return nearest
 
+    def _split_drag_hit(self, view_pos: QPoint, marker: int) -> bool:
+        scene_point = self.mapToScene(view_pos)
+        if abs(scene_point.y() - float(marker)) <= self._split_hit_tolerance():
+            return True
+        ruler_left = max(0, self.viewport().width() - int(self._ruler_size_px) - 16)
+        marker_view_y = self.mapFromScene(QPointF(0.0, float(marker))).y()
+        return view_pos.x() >= ruler_left and abs(view_pos.y() - marker_view_y) <= 10
+
     def _split_hit_tolerance(self) -> float:
         scale = abs(float(self.transform().m22()))
         if scale <= 0.0001:
             scale = 1.0
         return max(4.0, 8.0 / scale)
+
+    def _update_hover_state(self, view_pos: QPoint) -> None:
+        self._hover_view_point = QPoint(int(view_pos.x()), int(view_pos.y()))
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull():
+            return
+        scene_point = self.mapToScene(view_pos)
+        image_rect = QRectF(0.0, 0.0, float(pixmap.width()), float(pixmap.height()))
+        if image_rect.contains(scene_point):
+            x_pos = max(0.0, min(float(pixmap.width() - 1), float(scene_point.x())))
+            y_pos = max(0.0, min(float(pixmap.height() - 1), float(scene_point.y())))
+            self._hover_scene_point = QPointF(x_pos, y_pos)
+            self._hover_inside_image = True
+            self.hover_scene_position_changed.emit(
+                {"inside": True, "x": round(x_pos), "y": round(y_pos)}
+            )
+        else:
+            self._hover_inside_image = False
+            self.hover_scene_position_changed.emit(
+                {
+                    "inside": False,
+                    "x": int(self._hover_scene_point.x()) if self._hover_scene_point is not None else -1,
+                    "y": int(self._hover_scene_point.y()) if self._hover_scene_point is not None else -1,
+                }
+            )
+        self.viewport().update()
+
+    def _rebuild_snap_cache(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            self._snap_edge_vertical = None
+            self._snap_edge_horizontal = None
+            return
+        image = pixmap.toImage().convertToFormat(pixmap.toImage().Format.Format_Grayscale8)
+        width = image.width()
+        height = image.height()
+        if width <= 1 or height <= 1:
+            self._snap_edge_vertical = None
+            self._snap_edge_horizontal = None
+            return
+        ptr = image.constBits()
+        gray = np.frombuffer(ptr, dtype=np.uint8).reshape((height, image.bytesPerLine()))[:, :width]
+        gray_f = gray.astype(np.float32)
+        vertical = np.abs(np.diff(gray_f, axis=1, prepend=gray_f[:, :1]))
+        horizontal = np.abs(np.diff(gray_f, axis=0, prepend=gray_f[:1, :]))
+        self._snap_edge_vertical = vertical
+        self._snap_edge_horizontal = horizontal
+
+    def _snap_scene_point(
+        self,
+        scene_point: QPointF,
+        *,
+        tool: str,
+        modifiers: Qt.KeyboardModifier | Qt.KeyboardModifiers,
+    ) -> QPointF:
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull():
+            return scene_point
+        normalized_tool = str(tool or "").strip().lower()
+        snap_x = normalized_tool in {"crop_rect", "crop_vertical_band", "crop_free"}
+        snap_y = normalized_tool in {"crop_rect", "crop_free"}
+        if not snap_x and not snap_y:
+            return scene_point
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            return scene_point
+        x_pos = round(scene_point.x())
+        y_pos = round(scene_point.y())
+        if x_pos < 0 or y_pos < 0 or x_pos >= pixmap.width() or y_pos >= pixmap.height():
+            return scene_point
+        snapped_x = x_pos
+        snapped_y = y_pos
+        if snap_x:
+            x_candidate = self._snap_axis_coordinate(
+                center_axis=x_pos,
+                fixed_axis=y_pos,
+                strength_map=self._snap_edge_vertical,
+                axis="x",
+            )
+            if x_candidate is not None:
+                snapped_x = x_candidate
+        if snap_y:
+            y_candidate = self._snap_axis_coordinate(
+                center_axis=y_pos,
+                fixed_axis=x_pos,
+                strength_map=self._snap_edge_horizontal,
+                axis="y",
+            )
+            if y_candidate is not None:
+                snapped_y = y_candidate
+        return QPointF(float(snapped_x), float(snapped_y))
+
+    def _snap_axis_coordinate(
+        self,
+        *,
+        center_axis: int,
+        fixed_axis: int,
+        strength_map: np.ndarray | None,
+        axis: str,
+    ) -> int | None:
+        if strength_map is None:
+            return None
+        radius = int(self._snap_radius_px)
+        height, width = strength_map.shape[:2]
+        if axis == "x":
+            x0 = max(0, center_axis - radius)
+            x1 = min(width, center_axis + radius + 1)
+            y0 = max(0, fixed_axis - radius)
+            y1 = min(height, fixed_axis + radius + 1)
+            region = strength_map[y0:y1, x0:x1]
+            if region.size == 0:
+                return None
+            axis_scores = region.max(axis=0)
+            idx = int(np.argmax(axis_scores))
+            score = float(axis_scores[idx])
+            candidate = x0 + idx
+        else:
+            y0 = max(0, center_axis - radius)
+            y1 = min(height, center_axis + radius + 1)
+            x0 = max(0, fixed_axis - radius)
+            x1 = min(width, fixed_axis + radius + 1)
+            region = strength_map[y0:y1, x0:x1]
+            if region.size == 0:
+                return None
+            axis_scores = region.max(axis=1)
+            idx = int(np.argmax(axis_scores))
+            score = float(axis_scores[idx])
+            candidate = y0 + idx
+        if score < float(self._snap_strength_threshold):
+            return None
+        if abs(int(candidate) - int(center_axis)) > radius:
+            return None
+        return int(candidate)
 
     def _clamp_marker(self, y_pos: float) -> int | None:
         pixmap = self._pixmap_item.pixmap()
@@ -488,6 +728,113 @@ class EditorCanvas(QGraphicsView):
         markers = [value for value in self._manual_markers_px if int(value) != int(old_value)]
         markers.append(int(new_value))
         self._manual_markers_px = sorted({int(value) for value in markers if int(value) > 0})
+
+    def _paint_main_hover_overlay(self, painter: QPainter) -> None:
+        pixmap = self._hover_overlay_pixmap
+        if pixmap is None or pixmap.isNull():
+            return
+        source = self._pixmap_item.pixmap()
+        if source.isNull():
+            return
+        viewport = self.viewport().rect()
+        if viewport.width() < 20 or viewport.height() < 20:
+            return
+        mapped_image = self.mapFromScene(
+            QRectF(0.0, 0.0, float(source.width()), float(source.height()))
+        ).boundingRect()
+        masked_region = mapped_image.intersected(viewport)
+        if not masked_region.isEmpty():
+            painter.fillRect(masked_region, QColor(18, 18, 18, 238))
+        max_width = max(80, int(viewport.width() * 0.62))
+        max_height = max(80, int(viewport.height() * 0.74))
+        scaled = pixmap.scaled(
+            max_width,
+            max_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        left = max(6, (viewport.width() - scaled.width()) // 2)
+        top = max(int(self._ruler_size_px) + 6, (viewport.height() - scaled.height()) // 2)
+        rect = QRect(left, top, scaled.width(), scaled.height())
+        painter.save()
+        painter.fillRect(rect.adjusted(-6, -6, 6, 6), QColor(0, 0, 0, 150))
+        painter.drawPixmap(rect.topLeft(), scaled)
+        painter.setPen(QPen(QColor(255, 255, 255, 240), 2))
+        painter.drawRect(rect)
+        painter.restore()
+
+    def _paint_floating_magnifier(self, painter: QPainter) -> None:
+        if not self._magnifier_enabled or not self._hover_inside_image or self._hover_scene_point is None:
+            return
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull():
+            return
+        patch = self._build_zoom_patch(
+            pixmap,
+            self._hover_scene_point,
+            zoom_factor=self._magnifier_zoom,
+            output_size=self._magnifier_size_px,
+        )
+        if patch is None or patch.isNull():
+            return
+        viewport = self.viewport().rect()
+        margin = 6
+        left = int(self._hover_view_point.x()) - patch.width() - 16
+        top = int(self._hover_view_point.y()) - (patch.height() // 2)
+        left = max(margin, min(left, viewport.width() - patch.width() - margin))
+        top = max(
+            int(self._ruler_size_px) + margin,
+            min(top, viewport.height() - patch.height() - margin),
+        )
+        rect = QRect(left, top, patch.width(), patch.height())
+        painter.save()
+        painter.fillRect(rect.adjusted(-4, -4, 4, 4), QColor(18, 18, 18, 210))
+        painter.drawPixmap(rect.topLeft(), patch)
+        painter.setPen(QPen(QColor(255, 255, 255, 245), 2))
+        painter.drawRect(rect)
+        painter.restore()
+
+    def _build_zoom_patch(
+        self,
+        source: QPixmap,
+        center: QPointF,
+        *,
+        zoom_factor: int,
+        output_size: int,
+    ) -> QPixmap | None:
+        if source.isNull():
+            return None
+        zoom = max(2, int(zoom_factor))
+        size = max(48, int(output_size))
+        sample_span = max(6, round(size / float(zoom)))
+        half_span = max(3, sample_span // 2)
+        x_pos = round(center.x()) - half_span
+        y_pos = round(center.y()) - half_span
+        max_x = max(0, source.width() - sample_span)
+        max_y = max(0, source.height() - sample_span)
+        x_pos = max(0, min(x_pos, max_x))
+        y_pos = max(0, min(y_pos, max_y))
+        cropped = source.copy(x_pos, y_pos, sample_span, sample_span)
+        if cropped.isNull():
+            return None
+        zoomed = cropped.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        painter = QPainter(zoomed)
+        try:
+            mid = size // 2
+            painter.setPen(QPen(QColor(0, 0, 0, 210), 3))
+            painter.drawLine(0, mid, size, mid)
+            painter.drawLine(mid, 0, mid, size)
+            painter.setPen(QPen(QColor(255, 255, 255, 250), 1))
+            painter.drawLine(0, mid, size, mid)
+            painter.drawLine(mid, 0, mid, size)
+        finally:
+            painter.end()
+        return zoomed
 
     def _clear_overlay(self) -> None:
         if self._rect_item is not None:

@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PIL import Image
-from PySide6.QtCore import QSettings, Qt
+from PIL import Image, ImageDraw
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFormLayout
+from reportlab.lib.units import mm
 
 from web_pagez_to_pdf.capture_service import WindowInfo
 from web_pagez_to_pdf.constants import APP_IDENTITY
 from web_pagez_to_pdf.exporters import ExportResult
-from web_pagez_to_pdf.image_processing import apply_edit_transform, compute_page_slices
-from web_pagez_to_pdf.main_window import MainWindow
+from web_pagez_to_pdf.image_processing import PAPER_SIZES, apply_edit_transform, compute_page_slices
+from web_pagez_to_pdf.main_window import (
+    THUMBNAIL_BORDER_CUE_COLOR,
+    THUMBNAIL_GUTTER_CUE_COLOR,
+    THUMBNAIL_MARGIN_CUE_COLOR,
+    MainWindow,
+)
+from web_pagez_to_pdf.models import PrintLayout
 from web_pagez_to_pdf.scroll_capture import ScrollCaptureProgress
 from web_pagez_to_pdf.target_picker import PickedWindow
 
@@ -20,6 +27,87 @@ if TYPE_CHECKING:
 
     from pytest import MonkeyPatch
     from pytestqt.qtbot import QtBot
+
+
+def _line_cue_image(width: int = 420, height: int = 280) -> Image.Image:
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    for x_pos in (120, 300):
+        draw.line((x_pos, 0, x_pos, height - 1), fill="black", width=2)
+    for y_pos in (80, 220):
+        draw.line((0, y_pos, width - 1, y_pos), fill="black", width=2)
+    return image
+
+
+def _has_near_color(image: Image.Image, target: tuple[int, int, int], tolerance: int = 16) -> bool:
+    rgb = image.convert("RGB")
+    px = rgb.load()
+    for y_pos in range(rgb.height):
+        for x_pos in range(rgb.width):
+            red, green, blue = px[x_pos, y_pos]
+            if (
+                abs(int(red) - int(target[0])) <= tolerance
+                and abs(int(green) - int(target[1])) <= tolerance
+                and abs(int(blue) - int(target[2])) <= tolerance
+            ):
+                return True
+    return False
+
+
+def _sample_viewport_pixel(widget, point: QPoint):
+    pixmap = widget.grab()
+    image = pixmap.toImage()
+    dpr = max(1.0, float(pixmap.devicePixelRatio()))
+    x_pos = int(round(float(point.x()) * dpr))
+    y_pos = int(round(float(point.y()) * dpr))
+    x_pos = max(0, min(image.width() - 1, x_pos))
+    y_pos = max(0, min(image.height() - 1, y_pos))
+    return image.pixelColor(x_pos, y_pos)
+
+
+def _find_color_bbox(
+    image: Image.Image,
+    *,
+    red_min: int,
+    green_max: int,
+    blue_max: int,
+) -> tuple[int, int, int, int] | None:
+    rgb = image.convert("RGB")
+    px = rgb.load()
+    min_x = rgb.width
+    min_y = rgb.height
+    max_x = -1
+    max_y = -1
+    for y_pos in range(rgb.height):
+        for x_pos in range(rgb.width):
+            red, green, blue = px[x_pos, y_pos]
+            if int(red) >= red_min and int(green) <= green_max and int(blue) <= blue_max:
+                min_x = min(min_x, x_pos)
+                min_y = min(min_y, y_pos)
+                max_x = max(max_x, x_pos)
+                max_y = max(max_y, y_pos)
+    if max_x < min_x or max_y < min_y:
+        return None
+    return (min_x, min_y, max_x, max_y)
+
+
+def _find_exact_color_bbox(image: Image.Image, color: tuple[int, int, int]) -> tuple[int, int, int, int] | None:
+    rgb = image.convert("RGB")
+    px = rgb.load()
+    min_x = rgb.width
+    min_y = rgb.height
+    max_x = -1
+    max_y = -1
+    for y_pos in range(rgb.height):
+        for x_pos in range(rgb.width):
+            if tuple(int(v) for v in px[x_pos, y_pos]) == tuple(int(v) for v in color):
+                min_x = min(min_x, x_pos)
+                min_y = min(min_y, y_pos)
+                max_x = max(max_x, x_pos)
+                max_y = max(max_y, y_pos)
+    if max_x < min_x or max_y < min_y:
+        return None
+    return (min_x, min_y, max_x, max_y)
 
 
 def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
@@ -127,9 +215,17 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         == "window:main:control:page_preview_list"
     )
     assert (
-        window.split_edit_tool_button.property("widget_id")
-        == "window:main:control:split_edit_tool_button"
+        window.thumbnail_zoom_slider.property("widget_id")
+        == "window:main:control:thumbnail_zoom_slider"
     )
+    assert (
+        window.editor_view_zoom_spin.property("widget_id")
+        == "window:main:control:editor_view_zoom_spin"
+    )
+    assert not hasattr(window, "split_edit_tool_button")
+    assert not hasattr(window, "quick_zoom_group")
+    assert not hasattr(window, "quick_zoom_spin")
+    assert not hasattr(window, "quick_zoom_preview_label")
     assert window.wizardry_group.property("widget_id") == "window:main:control:wizardry_group"
     assert (
         window.wizard_apply_queue_checkbox.property("widget_id")
@@ -743,9 +839,25 @@ def test_editor_zoom_defaults_fit_width_and_manual_controls(qtbot: QtBot, tmp_pa
     )
 
     assert "fit width" in window.zoom_status_label.text().lower()
+    assert not window.editor_view_zoom_spin.isEnabled()
 
     qtbot.mouseClick(window.zoom_100_button, Qt.MouseButton.LeftButton)
     assert "100%" in window.zoom_status_label.text()
+    assert window.editor_view_zoom_spin.isEnabled()
+    assert window.editor_view_zoom_spin.value() == 100
+
+    qtbot.mouseClick(window.zoom_in_button, Qt.MouseButton.LeftButton)
+    assert window.editor_view_zoom_spin.value() == 110
+
+    window.editor_view_zoom_spin.setValue(140)
+    assert "140%" in window.zoom_status_label.text()
+
+    window.editor_canvas.adjust_manual_zoom(-10)
+    assert window.editor_view_zoom_spin.value() == 130
+
+    qtbot.mouseClick(window.zoom_fit_width_button, Qt.MouseButton.LeftButton)
+    assert "fit width" in window.zoom_status_label.text().lower()
+    assert not window.editor_view_zoom_spin.isEnabled()
 
 
 def test_editor_has_no_mini_editor_entry_point(qtbot: QtBot) -> None:
@@ -1141,6 +1253,128 @@ def test_layout_controls_live_in_editor_tab_not_export_tab(qtbot: QtBot) -> None
     assert not _is_descendant(window.footer_input, export_tab)
 
 
+def test_layout_preview_has_no_quick_zoom_panel_and_header_footer_labels(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(80)
+
+    assert _is_descendant(window.paper_combo, window.layout_preview_group)
+    assert not hasattr(window, "quick_zoom_group")
+    assert isinstance(window.layout_preview_form, QFormLayout)
+    assert (
+        window.layout_preview_form.fieldGrowthPolicy()
+        == QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+    )
+    assert window.layout_paper_orientation_row.width() >= int(window.layout_preview_group.width() * 0.55)
+    header_parent = window.header_label.parentWidget()
+    footer_parent = window.footer_label.parentWidget()
+    assert header_parent is not None and header_parent.layout() is not None
+    assert footer_parent is not None and footer_parent.layout() is not None
+    header_layout = header_parent.layout()
+    footer_layout = footer_parent.layout()
+    assert header_layout.indexOf(window.header_label) < header_layout.indexOf(window.header_input)
+    assert footer_layout.indexOf(window.footer_label) < footer_layout.indexOf(window.footer_input)
+    assert _is_descendant(window.page_preview_list, window.layout_preview_group)
+
+
+def test_layout_preview_legend_colors_match_visual_cues(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    decorated = window._decorate_page_thumbnail(
+        Image.new("RGB", (260, 180), (16, 16, 16)),
+    )
+    legend_band = decorated.crop((0, 0, decorated.width, 26))
+
+    assert _has_near_color(
+        legend_band,
+        (
+            int(THUMBNAIL_MARGIN_CUE_COLOR[0]),
+            int(THUMBNAIL_MARGIN_CUE_COLOR[1]),
+            int(THUMBNAIL_MARGIN_CUE_COLOR[2]),
+        ),
+    )
+    assert _has_near_color(
+        legend_band,
+        (
+            int(THUMBNAIL_GUTTER_CUE_COLOR[0]),
+            int(THUMBNAIL_GUTTER_CUE_COLOR[1]),
+            int(THUMBNAIL_GUTTER_CUE_COLOR[2]),
+        ),
+    )
+    assert _has_near_color(
+        legend_band,
+        (
+            int(THUMBNAIL_BORDER_CUE_COLOR[0]),
+            int(THUMBNAIL_BORDER_CUE_COLOR[1]),
+            int(THUMBNAIL_BORDER_CUE_COLOR[2]),
+        ),
+    )
+
+
+def test_thumbnail_virtual_page_geometry_matches_export_layout(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    layout = PrintLayout(
+        paper_name="A4",
+        orientation="portrait",
+        margin_top_mm=20.0,
+        margin_bottom_mm=20.0,
+        margin_left_mm=15.0,
+        margin_right_mm=15.0,
+        gutter_mm=12.0,
+    )
+    source_color = (30, 170, 30)
+    source = Image.new("RGB", (260, 120), source_color)
+    decorated = window._decorate_page_thumbnail(source, layout=layout)
+
+    assert decorated.width > source.width
+    assert decorated.height > source.height
+    image_bbox = _find_exact_color_bbox(decorated, source_color)
+    assert image_bbox is not None
+    min_x, min_y, _max_x, max_y = image_bbox
+    assert min_x > 2
+    assert min_y > 2
+    assert max_y < decorated.height - 6
+
+    page_w_pt, page_h_pt = PAPER_SIZES["A4"]
+    avail_w_pt = page_w_pt - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    px_per_pt = float(source.width) / float(avail_w_pt)
+    expected_left = int(round(float(layout.margin_left_mm) * mm * px_per_pt))
+    expected_top = int(round(float(layout.margin_top_mm) * mm * px_per_pt))
+    expected_page_h = int(round(float(page_h_pt) * px_per_pt))
+    expected_printable_right = int(
+        round((float(page_w_pt) - (float(layout.margin_right_mm) + float(layout.gutter_mm)) * mm) * px_per_pt)
+    )
+    expected_right_margin_boundary = int(
+        round((float(page_w_pt) - float(layout.margin_right_mm) * mm) * px_per_pt)
+    )
+
+    assert abs(min_x - expected_left) <= 3
+    assert abs(min_y - expected_top) <= 3
+    assert abs(decorated.height - expected_page_h) <= 3
+
+    band_left = max(0, min(decorated.width - 2, expected_printable_right + 1))
+    band_right = max(band_left + 1, min(decorated.width - 1, expected_right_margin_boundary - 1))
+    band_top = max(28, expected_top + 8)
+    band_bottom = min(decorated.height - 1, band_top + 30)
+    assert band_right > band_left
+    assert band_bottom > band_top
+    gutter_band = decorated.crop((band_left, band_top, band_right, band_bottom))
+    assert _has_near_color(
+        gutter_band,
+        (
+            int(THUMBNAIL_GUTTER_CUE_COLOR[0]),
+            int(THUMBNAIL_GUTTER_CUE_COLOR[1]),
+            int(THUMBNAIL_GUTTER_CUE_COLOR[2]),
+        ),
+        tolerance=12,
+    )
+
+
 def test_overlay_toggle_defaults_on_and_updates_canvas(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1215,6 +1449,82 @@ def test_split_marker_and_layout_changes_refresh_page_preview_sidebar(
     window.orientation_combo.setCurrentText("landscape")
     qtbot.waitUntil(lambda: window.page_preview_list.count() != with_marker_count)
     assert window.page_preview_list.count() != initial_count
+
+
+def test_thumbnail_zoom_slider_and_zoom_signal_resize_preview_icons(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2200), "white"),
+        title="thumbnail-zoom",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    initial_width = window.page_preview_list.iconSize().width()
+
+    window.thumbnail_zoom_slider.setValue(initial_width + 40)
+    assert window.page_preview_list.iconSize().width() == initial_width + 40
+
+    window.page_preview_list.zoom_delta_requested.emit(-10)
+    assert window.page_preview_list.iconSize().width() == initial_width + 30
+
+
+def test_thumbnail_hover_overlay_appears_and_clears_on_leave(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), (220, 10, 10)),
+        title="thumbnail-hover",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(80)
+    image_pixmap = window.editor_canvas._pixmap_item.pixmap()
+    mapped_image = window.editor_canvas.mapFromScene(
+        QRectF(0.0, 0.0, float(image_pixmap.width()), float(image_pixmap.height()))
+    ).boundingRect()
+    probe_rect = mapped_image.intersected(window.editor_canvas.viewport().rect())
+    assert not probe_rect.isEmpty()
+    probe_x = min(probe_rect.right() - 1, probe_rect.left() + 8)
+    probe_view = QPoint(probe_x, probe_rect.center().y())
+    before = _sample_viewport_pixel(window.editor_canvas.viewport(), probe_view)
+    assert before.red() > 140
+
+    item = window.page_preview_list.item(0)
+    assert item is not None
+    window._on_page_preview_item_hovered(item)
+    qtbot.wait(50)
+    overlay = window.editor_canvas._hover_overlay_pixmap
+    assert overlay is not None
+    overlay_image = overlay.toImage()
+    sample = overlay_image.pixelColor(
+        max(1, overlay_image.width() // 6),
+        max(1, overlay_image.height() // 2),
+    )
+    assert sample.red() > 140
+    masked = _sample_viewport_pixel(window.editor_canvas.viewport(), probe_view)
+    assert masked.red() < 80
+    assert masked.green() < 80
+    assert masked.blue() < 80
+
+    QApplication.sendEvent(window.page_preview_list.viewport(), QEvent(QEvent.Type.Leave))
+    qtbot.wait(50)
+    assert window.editor_canvas._hover_overlay_pixmap is None
+    unmasked = _sample_viewport_pixel(window.editor_canvas.viewport(), probe_view)
+    assert unmasked.red() > 140
 
 
 def test_editor_scroll_resets_to_top_when_entering_editor_after_new_capture(
@@ -1374,6 +1684,37 @@ def test_window_starts_maximized_when_no_saved_state(qtbot: QtBot) -> None:
     _clear_window_state_settings()
 
 
+def test_capture_and_editor_splitters_are_non_collapsible(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert not window.capture_splitter.childrenCollapsible()
+    assert not window.capture_splitter.isCollapsible(0)
+    assert not window.capture_splitter.isCollapsible(1)
+    assert not window.editor_splitter.childrenCollapsible()
+    assert not window.editor_splitter.isCollapsible(0)
+    assert not window.editor_splitter.isCollapsible(1)
+
+
+def test_default_splitter_right_pane_width_is_300_without_saved_state(qtbot: QtBot) -> None:
+    _clear_window_state_settings()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.showNormal()
+    window._load_runtime_settings()
+    qtbot.wait(80)
+
+    capture_sizes = window.capture_splitter.sizes()
+    assert abs(capture_sizes[1] - 300) <= 40
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(80)
+    editor_sizes = window.editor_splitter.sizes()
+    assert abs(editor_sizes[1] - 300) <= 40
+    _clear_window_state_settings()
+
+
 def test_window_geometry_and_splitter_sizes_restore(qtbot: QtBot) -> None:
     _clear_window_state_settings()
     first = MainWindow()
@@ -1422,13 +1763,18 @@ def test_view_reset_action_restores_default_splitters(qtbot: QtBot) -> None:
     window._persist_window_state_snapshot()
 
     window._reset_view_state()
+    qtbot.wait(80)
 
     capture_sizes = window.capture_splitter.sizes()
-    editor_sizes = window.editor_splitter.sizes()
     assert capture_sizes[0] > 0 and capture_sizes[1] > 0
-    assert editor_sizes[0] > 0 and editor_sizes[1] > 0
     assert capture_sizes != [200, 900]
+    assert abs(capture_sizes[1] - 300) <= 40
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(80)
+    editor_sizes = window.editor_splitter.sizes()
+    assert editor_sizes[0] > 0 and editor_sizes[1] > 0
     assert editor_sizes != [300, 900]
+    assert abs(editor_sizes[1] - 300) <= 40
     assert "view reset to defaults" in window.status_label.text().lower()
     _clear_window_state_settings()
 
@@ -1549,28 +1895,186 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     window._settings.sync()
 
 
-def test_split_edit_signals_update_manual_markers(qtbot: QtBot, tmp_path: Path) -> None:
+def test_pan_tool_drag_moves_manual_split_markers(qtbot: QtBot, tmp_path: Path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
     window._add_capture(
         image=Image.new("RGB", (420, 1200), "white"),
-        title="split-edit",
+        title="split-pan-drag",
         source_hwnd=None,
         frame_count=1,
     )
     window.queue_list.setCurrentRow(0)
     window._refresh_preview()
-    window.split_edit_tool_button.click()
-
-    window.editor_canvas.split_marker_added.emit(210)
+    window.split_spin.setValue(210)
+    window._add_split_marker()
     assert 210 in window._split_markers()
-    window.editor_canvas.split_marker_moved.emit(210, 260)
+    window.pan_tool_button.click()
+    window.editor_canvas.focus_on_y(235.0)
+    qtbot.wait(50)
+
+    start_y = window.editor_canvas.mapFromScene(QPointF(0.0, 210.0)).y()
+    end_y = window.editor_canvas.mapFromScene(QPointF(0.0, 260.0)).y()
+    start = QPoint(window.editor_canvas.viewport().width() - 8, int(start_y))
+    end = QPoint(window.editor_canvas.viewport().width() - 8, int(end_y))
+    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(window.editor_canvas.viewport(), pos=end)
+    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    qtbot.waitUntil(lambda: any(marker != 210 for marker in window._split_markers()), timeout=1000)
+
     assert 210 not in window._split_markers()
-    assert 260 in window._split_markers()
-    window.editor_canvas.split_marker_removed.emit(260)
-    assert 260 not in window._split_markers()
+    assert len(window._split_markers()) == 1
+    assert window._split_markers()[0] > 210
+
+
+def test_split_marker_drag_is_disabled_for_non_pan_tools(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="split-non-pan",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    window.split_spin.setValue(220)
+    window._add_split_marker()
+    assert 220 in window._split_markers()
+
+    window.rect_crop_tool_button.click()
+    start = window.editor_canvas.mapFromScene(QPointF(20.0, 220.0))
+    end = window.editor_canvas.mapFromScene(QPointF(20.0, 280.0))
+    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(window.editor_canvas.viewport(), pos=end)
+    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+
+    assert 220 in window._split_markers()
+    assert 280 not in window._split_markers()
+
+
+def test_crop_snap_rect_vertical_and_free_with_shift_override(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=_line_cue_image(),
+        title="snap-cues",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    canvas = window.editor_canvas
+
+    rect_snapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_rect",
+        modifiers=Qt.KeyboardModifier.NoModifier,
+    )
+    assert abs(rect_snapped.x() - 120.0) <= 3.0
+    assert abs(rect_snapped.y() - 80.0) <= 3.0
+    rect_unsnapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_rect",
+        modifiers=Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert abs(rect_unsnapped.x() - 116.0) <= 0.6
+    assert abs(rect_unsnapped.y() - 77.0) <= 0.6
+
+    vertical_snapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_vertical_band",
+        modifiers=Qt.KeyboardModifier.NoModifier,
+    )
+    assert abs(vertical_snapped.x() - 120.0) <= 3.0
+    assert abs(vertical_snapped.y() - 77.0) <= 0.6
+    vertical_unsnapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_vertical_band",
+        modifiers=Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert abs(vertical_unsnapped.x() - 116.0) <= 0.6
+    assert abs(vertical_unsnapped.y() - 77.0) <= 0.6
+
+    free_snapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_free",
+        modifiers=Qt.KeyboardModifier.NoModifier,
+    )
+    assert abs(free_snapped.x() - 120.0) <= 3.0
+    assert abs(free_snapped.y() - 80.0) <= 3.0
+    free_unsnapped = canvas._snap_scene_point(
+        QPointF(116.0, 77.0),
+        tool="crop_free",
+        modifiers=Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert abs(free_unsnapped.x() - 116.0) <= 0.6
+    assert abs(free_unsnapped.y() - 77.0) <= 0.6
+
+
+def test_crosshair_magnifier_visible_only_for_crop_tools(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="magnifier-tool-visibility",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+
+    window.pan_tool_button.click()
+    assert not window.editor_canvas._magnifier_enabled
+
+    window.rect_crop_tool_button.click()
+    assert window.editor_canvas._magnifier_enabled
+
+    window.vertical_crop_tool_button.click()
+    assert window.editor_canvas._magnifier_enabled
+
+    window.free_crop_tool_button.click()
+    assert window.editor_canvas._magnifier_enabled
+
+    window.redact_tool_button.click()
+    assert not window.editor_canvas._magnifier_enabled
+
+
+def test_crosshair_magnifier_state_persists_across_refresh_and_runtime_reload(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="magnifier-refresh",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+
+    window.rect_crop_tool_button.click()
+    window._refresh_preview()
+    assert window.editor_canvas._magnifier_enabled
+
+    window.pan_tool_button.click()
+    window._refresh_preview()
+    assert not window.editor_canvas._magnifier_enabled
+
+    window._load_runtime_settings()
+    assert not window.editor_canvas._magnifier_enabled
 
 
 def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
@@ -1597,8 +2101,8 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.wizard_redo_button,
         window.editor_canvas,
         window.zoom_fit_width_button,
+        window.editor_view_zoom_spin,
         window.pan_tool_button,
-        window.split_edit_tool_button,
         window.rect_crop_tool_button,
         window.zoom_spin,
         window.paper_combo,
@@ -1607,6 +2111,7 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.header_input,
         window.footer_input,
         window.editor_overlay_toggle,
+        window.thumbnail_zoom_slider,
         window.page_preview_list,
         window.split_spin,
         window.add_split_button,
