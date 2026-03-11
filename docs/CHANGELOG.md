@@ -22,6 +22,8 @@
 - Split default right-pane widths: Capture keeps `300px`; Editor now defaults to `360px`.
 - Added Transform sizing modes (`Legacy Fit Width`, `Fit to Page`, `Stretch if Smaller`, `Original Size`) with per-item persistence and full preview/export parity.
 - Added mode-aware pagination and PDF placement using a shared 96-DPI sizing model while keeping legacy fit-width as the default fallback.
+- Updated Transform sizing behavior: `Legacy Fit Width` is now labeled `Fit Width`, `Fit to Page` always renders as a single page, and Transform `Scale` now affects print/page-preview geometry without changing editor view zoom.
+- Synced editor `View > Zoom` controls so fit-mode `+/-` and wheel zoom start from the current effective fit zoom, and fit/wheel actions keep the zoom spinner/status current.
 - Added `docs/REMOVEDFEATURES.md` to document removed Wizardry behavior and remaining alternatives.
 - Updated GUI/unit coverage for the new control contract, left-gutter geometry, header/footer thumbnail rendering, and legacy Wizard operation no-op handling.
 

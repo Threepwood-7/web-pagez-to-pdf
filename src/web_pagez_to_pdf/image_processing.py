@@ -81,6 +81,8 @@ def content_points_per_pixel(
     image_height_px: int,
     layout: PrintLayout,
     content_sizing_mode: str,
+    *,
+    scale_percent: float = 100.0,
 ) -> float:
     """Return rendered points-per-source-pixel for content sizing mode."""
 
@@ -88,8 +90,10 @@ def content_points_per_pixel(
     height_px = max(1, int(image_height_px))
     avail_w, avail_h = printable_content_area_points(layout)
     mode = normalize_content_sizing_mode(content_sizing_mode)
+    scale_factor = max(0.1, float(scale_percent) / 100.0)
     if mode == DEFAULT_CONTENT_SIZING_MODE:
-        return max(0.0001, float(avail_w) / float(width_px))
+        base = max(0.0001, float(avail_w) / float(width_px))
+        return max(0.0001, float(base) * float(scale_factor))
 
     natural_w = float(width_px) * NATIVE_POINTS_PER_PIXEL
     natural_h = float(height_px) * NATIVE_POINTS_PER_PIXEL
@@ -97,6 +101,7 @@ def content_points_per_pixel(
 
     if mode == "fit_to_page":
         mode_scale = max(0.0001, float(fit_scale))
+        return max(0.0001, float(NATIVE_POINTS_PER_PIXEL) * float(mode_scale))
     elif mode == "stretch_if_smaller":
         if natural_w < float(avail_w) and natural_h < float(avail_h):
             mode_scale = max(0.0001, float(fit_scale))
@@ -104,11 +109,16 @@ def content_points_per_pixel(
             mode_scale = 1.0
     else:
         mode_scale = 1.0
-    return max(0.0001, float(NATIVE_POINTS_PER_PIXEL) * float(mode_scale))
+    base = max(0.0001, float(NATIVE_POINTS_PER_PIXEL) * float(mode_scale))
+    return max(0.0001, float(base) * float(scale_factor))
 
 
 def apply_edit_transform(
-    image: Image.Image, layout: PrintLayout, edits: EditAdjustments
+    image: Image.Image,
+    layout: PrintLayout,
+    edits: EditAdjustments,
+    *,
+    include_scale: bool = True,
 ) -> Image.Image:
     """Apply non-destructive editor operations and print transform knobs."""
 
@@ -131,6 +141,8 @@ def apply_edit_transform(
             transformed = _apply_rotation(transformed, params)
             continue
         if op_type == "scale":
+            if not include_scale:
+                continue
             transformed = _apply_scale(transformed, params)
             continue
         if op_type in {"nav_auto_crop", "auto_vertical_border_crop"}:
@@ -168,7 +180,8 @@ def apply_edit_transform(
         )
 
     transformed = _apply_rotation(transformed, {"degrees": layout.rotate_degrees})
-    transformed = _apply_scale(transformed, {"percent": layout.zoom_percent})
+    if include_scale:
+        transformed = _apply_scale(transformed, {"percent": layout.zoom_percent})
     return transformed
 
 
@@ -437,31 +450,40 @@ def compute_page_slices(
     manual_markers: Iterable[int],
     *,
     content_sizing_mode: str = DEFAULT_CONTENT_SIZING_MODE,
+    scale_percent: float = 100.0,
 ) -> list[PageSlice]:
     """Compute vertical split points matching printable page height."""
+
+    mode = normalize_content_sizing_mode(content_sizing_mode)
+    image_height = max(0, int(image.height))
+    if image_height <= 0:
+        return [PageSlice(0, image_height)]
+    if mode == "fit_to_page":
+        return [PageSlice(0, image_height)]
 
     _avail_w, avail_h = printable_content_area_points(layout)
 
     if image.width <= 0:
-        return [PageSlice(0, image.height)]
+        return [PageSlice(0, image_height)]
     points_per_px = content_points_per_pixel(
         image.width,
-        image.height,
+        image_height,
         layout,
-        content_sizing_mode,
+        mode,
+        scale_percent=scale_percent,
     )
     max_slice_px = max(24, int(float(avail_h) / max(0.0001, float(points_per_px))))
 
     gray = np.asarray(image.convert("L"), dtype=np.uint8)
     row_mins = gray.min(axis=1)
     blank_rows = row_mins >= np.uint8(np.clip(layout.blank_row_threshold, 0, 255))
-    markers = sorted({int(m) for m in manual_markers if 0 < int(m) < image.height})
+    markers = sorted({int(m) for m in manual_markers if 0 < int(m) < image_height})
 
     slices: list[PageSlice] = []
     top = 0
     marker_idx = 0
-    while top < image.height:
-        ideal_bottom = min(top + max_slice_px, image.height)
+    while top < image_height:
+        ideal_bottom = min(top + max_slice_px, image_height)
         if marker_idx < len(markers):
             next_marker = markers[marker_idx]
             if top < next_marker <= ideal_bottom:
@@ -469,8 +491,8 @@ def compute_page_slices(
                 top = next_marker
                 marker_idx += 1
                 continue
-        if ideal_bottom >= image.height:
-            slices.append(PageSlice(top=top, bottom=image.height))
+        if ideal_bottom >= image_height:
+            slices.append(PageSlice(top=top, bottom=image_height))
             break
         cut = find_best_cut(blank_rows, ideal_bottom, max(40, int(layout.search_window_px)))
         if cut <= top:

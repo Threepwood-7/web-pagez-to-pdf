@@ -879,14 +879,35 @@ def test_editor_zoom_defaults_fit_width_and_manual_controls(qtbot: QtBot, tmp_pa
 
     assert "fit width" in window.zoom_status_label.text().lower()
     assert not window.editor_view_zoom_spin.isEnabled()
-
-    qtbot.mouseClick(window.zoom_100_button, Qt.MouseButton.LeftButton)
-    assert "100%" in window.zoom_status_label.text()
-    assert window.editor_view_zoom_spin.isEnabled()
-    assert window.editor_view_zoom_spin.value() == 100
+    fit_width_percent = int(window.editor_view_zoom_spin.value())
+    assert fit_width_percent >= 10
 
     qtbot.mouseClick(window.zoom_in_button, Qt.MouseButton.LeftButton)
-    assert window.editor_view_zoom_spin.value() == 110
+    assert "fit width" not in window.zoom_status_label.text().lower()
+    assert window.editor_view_zoom_spin.isEnabled()
+    assert window.editor_view_zoom_spin.value() == min(400, fit_width_percent + 10)
+
+    qtbot.mouseClick(window.zoom_fit_height_button, Qt.MouseButton.LeftButton)
+    assert "fit height" in window.zoom_status_label.text().lower()
+    assert not window.editor_view_zoom_spin.isEnabled()
+    fit_height_percent = int(window.editor_view_zoom_spin.value())
+
+    class _WheelEventStub:
+        def __init__(self, delta_y: int) -> None:
+            self._delta = int(delta_y)
+            self.accepted = False
+
+        def angleDelta(self) -> QPoint:
+            return QPoint(0, self._delta)
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    wheel_event = _WheelEventStub(120)
+    window.editor_canvas.wheelEvent(wheel_event)  # type: ignore[arg-type]
+    assert wheel_event.accepted
+    assert window.editor_view_zoom_spin.isEnabled()
+    assert window.editor_view_zoom_spin.value() == min(400, fit_height_percent + 10)
 
     window.editor_view_zoom_spin.setValue(140)
     assert "140%" in window.zoom_status_label.text()
@@ -1756,6 +1777,7 @@ def test_transform_sizing_mode_defaults_to_legacy_fit_width(qtbot: QtBot, tmp_pa
         frame_count=1,
     )
     assert str(window.content_sizing_mode_combo.currentData()) == "legacy_fit_width"
+    assert window.content_sizing_mode_combo.currentText() == "Fit Width"
     item = window._current_item()
     assert item is not None
     edits = window._session_for_item(item.item_id)
@@ -1826,6 +1848,65 @@ def test_transform_sizing_modes_update_preview_page_counts(qtbot: QtBot, tmp_pat
     assert stretch_idx >= 0
     window.content_sizing_mode_combo.setCurrentIndex(stretch_idx)
     qtbot.waitUntil(lambda: window.page_preview_list.count() == original_count, timeout=2000)
+
+
+def test_fit_to_page_forces_single_page_even_with_markers_and_scale(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="fit-to-page-one-page",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+    edits.split_markers_px = [400, 1200, 1800]
+    window._refresh_preview()
+    assert window.page_preview_list.count() > 1
+
+    window.zoom_spin.setValue(180)
+    fit_idx = window.content_sizing_mode_combo.findData("fit_to_page")
+    assert fit_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(fit_idx)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() == 1, timeout=2000)
+    assert window._current_preview_slices == [(0, window.editor_canvas._pixmap_item.pixmap().height())]
+
+
+def test_transform_scale_updates_page_preview_count_without_changing_view_zoom(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="scale-preview-only",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._set_editor_zoom_mode("manual", 100, refresh_preview=False)
+    assert window.editor_canvas.zoom_mode() == "manual"
+    assert window.editor_view_zoom_spin.value() == 100
+    baseline_status = window.zoom_status_label.text()
+
+    window.zoom_spin.setValue(100)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() > 0, timeout=1200)
+    baseline_count = window.page_preview_list.count()
+    window.zoom_spin.setValue(180)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() > baseline_count, timeout=2000)
+
+    assert window.editor_canvas.zoom_mode() == "manual"
+    assert window.editor_view_zoom_spin.value() == 100
+    assert window.zoom_status_label.text() == baseline_status
 
 
 def test_stretch_if_smaller_upscales_small_image_preview_scale(qtbot: QtBot, tmp_path: Path) -> None:

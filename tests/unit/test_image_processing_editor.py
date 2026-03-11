@@ -131,6 +131,29 @@ def test_content_points_per_pixel_scales_by_mode() -> None:
     assert stretch_small_ppp > original_small_ppp
 
 
+def test_content_points_per_pixel_applies_scale_except_fit_to_page() -> None:
+    layout = PrintLayout()
+    legacy_default = content_points_per_pixel(420, 2400, layout, "legacy_fit_width")
+    legacy_scaled = content_points_per_pixel(
+        420,
+        2400,
+        layout,
+        "legacy_fit_width",
+        scale_percent=150.0,
+    )
+    fit_default = content_points_per_pixel(420, 2400, layout, "fit_to_page")
+    fit_scaled = content_points_per_pixel(
+        420,
+        2400,
+        layout,
+        "fit_to_page",
+        scale_percent=150.0,
+    )
+
+    assert legacy_scaled > legacy_default
+    assert abs(fit_scaled - fit_default) <= 0.0001
+
+
 def test_compute_page_slices_supports_sizing_modes() -> None:
     image = Image.new("RGB", (420, 2400), "white")
     layout = PrintLayout()
@@ -165,3 +188,35 @@ def test_compute_page_slices_supports_sizing_modes() -> None:
     assert len(slices_fit) == 1
     assert len(slices_original) > 1
     assert len(slices_stretch) == len(slices_original)
+
+
+def test_compute_page_slices_fit_to_page_ignores_markers_and_scale() -> None:
+    image = Image.new("RGB", (420, 2400), "white")
+    layout = PrintLayout()
+
+    slices = compute_page_slices(
+        image,
+        layout,
+        [400, 1200, 1800],
+        content_sizing_mode="fit_to_page",
+        scale_percent=200.0,
+    )
+
+    assert len(slices) == 1
+    assert slices[0].top == 0
+    assert slices[0].bottom == 2400
+
+
+def test_compute_page_slices_respects_manual_marker_with_scale() -> None:
+    image = Image.new("RGB", (420, 2400), "white")
+    layout = PrintLayout()
+
+    slices = compute_page_slices(
+        image,
+        layout,
+        [600],
+        content_sizing_mode="legacy_fit_width",
+        scale_percent=150.0,
+    )
+
+    assert any(slice_obj.bottom == 600 for slice_obj in slices)

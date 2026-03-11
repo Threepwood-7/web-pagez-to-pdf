@@ -192,7 +192,7 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
     for item in request.captures:
         image = Image.open(item.image_path).convert("RGB")
         edits = _edits_for_item(request, item)
-        transformed = apply_edit_transform(image, request.layout, edits)
+        transformed = apply_edit_transform(image, request.layout, edits, include_scale=False)
         transformed_images.append((item, transformed))
 
     frames: list[PageFrame] = []
@@ -200,17 +200,20 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
         for item, image in transformed_images:
             edits = _edits_for_item(request, item)
             content_mode = _content_sizing_mode_for_edits(edits)
+            scale_percent = _scale_percent_for_edits(edits)
             points_per_px = content_points_per_pixel(
                 image.width,
                 image.height,
                 request.layout,
                 content_mode,
+                scale_percent=scale_percent,
             )
             slices = compute_page_slices(
                 image,
                 request.layout,
                 edits.split_markers_px,
                 content_sizing_mode=content_mode,
+                scale_percent=scale_percent,
             )
             frames.extend(
                 _frames_for_slices(
@@ -224,17 +227,20 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
         first_item, first_image = transformed_images[0]
         edits = _edits_for_item(request, first_item)
         content_mode = _content_sizing_mode_for_edits(edits)
+        scale_percent = _scale_percent_for_edits(edits)
         points_per_px = content_points_per_pixel(
             first_image.width,
             first_image.height,
             request.layout,
             content_mode,
+            scale_percent=scale_percent,
         )
         slices = compute_page_slices(
             first_image,
             request.layout,
             edits.split_markers_px,
             content_sizing_mode=content_mode,
+            scale_percent=scale_percent,
         )
         frames.extend(
             _frames_for_slices(
@@ -255,6 +261,16 @@ def _content_sizing_mode_for_edits(edits: EditAdjustments) -> str:
     mode_op = edits.get_operation("content_sizing_mode")
     mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
     return normalize_content_sizing_mode(mode_value)
+
+
+def _scale_percent_for_edits(edits: EditAdjustments) -> float:
+    scale_op = edits.get_operation("scale")
+    if scale_op is None:
+        return 100.0
+    try:
+        return max(10.0, float(scale_op.params.get("percent", 100.0)))
+    except (TypeError, ValueError):
+        return 100.0
 
 
 def _frames_for_slices(

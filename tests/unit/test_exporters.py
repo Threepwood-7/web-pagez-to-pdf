@@ -222,3 +222,27 @@ def test_export_pdf_uses_left_margin_plus_gutter_for_content_origin(tmp_path: Pa
     assert abs(width - expected_width) <= 0.001
     assert rich_text_x_positions
     assert all(abs(pos - expected_x) <= 0.001 for pos in rich_text_x_positions)
+
+
+def test_build_page_frames_preserves_manual_split_marker_with_scale(tmp_path: Path) -> None:
+    image_path = tmp_path / "input.png"
+    Image.new("RGB", (420, 2400), "white").save(image_path, format="PNG")
+    request = _request_for_image(
+        image_path=image_path,
+        output_dir=tmp_path,
+        basename="marker-scale",
+        formats=ExportFormats(pdf=False, paged_images=True),
+    )
+    item = request.captures[0]
+    edits = request.edits_by_item_id[item.item_id]
+    edits.split_markers_px = [600]
+    edits.set_operation("scale", {"percent": 180})
+
+    frames, _transformed = exporters.build_page_frames(request)
+    cumulative_bottom = 0
+    boundaries: list[int] = []
+    for frame in frames:
+        cumulative_bottom += int(frame.image.height)
+        boundaries.append(cumulative_bottom)
+
+    assert any(int(boundary) == 600 for boundary in boundaries)

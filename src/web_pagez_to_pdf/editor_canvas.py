@@ -172,16 +172,16 @@ class EditorCanvas(QGraphicsView):
         """Adjust manual zoom by a relative percent step."""
 
         if self._zoom_mode != "manual":
-            self._manual_zoom_percent = 100
+            self._manual_zoom_percent = self._current_transform_zoom_percent()
         self.set_zoom_mode("manual", manual_percent=self._manual_zoom_percent + int(delta_percent))
 
     def zoom_label_text(self) -> str:
         """Human-readable zoom label for side controls."""
 
         if self._zoom_mode == "fit_height":
-            return "Fit Height"
+            return f"Fit Height ({int(self._manual_zoom_percent)}%)"
         if self._zoom_mode == "fit_width":
-            return "Fit Width"
+            return f"Fit Width ({int(self._manual_zoom_percent)}%)"
         return f"{self._manual_zoom_percent}%"
 
     def zoom_mode(self) -> str:
@@ -394,6 +394,7 @@ class EditorCanvas(QGraphicsView):
     def resizeEvent(self, event) -> None:  # noqa: N802
         if self._zoom_mode in {"fit_height", "fit_width"}:
             self._apply_zoom()
+            self.zoom_changed.emit(self._zoom_mode, int(self._manual_zoom_percent))
         super().resizeEvent(event)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
@@ -911,4 +912,12 @@ class EditorCanvas(QGraphicsView):
         else:
             factor = max(0.1, float(self._manual_zoom_percent) / 100.0)
         self.scale(factor, factor)
+        if self._zoom_mode in {"fit_height", "fit_width"}:
+            self._manual_zoom_percent = self._current_transform_zoom_percent()
         self.centerOn(self._pixmap_item)
+
+    def _current_transform_zoom_percent(self) -> int:
+        scale = abs(float(self.transform().m11()))
+        if scale <= 0.0001:
+            return 100
+        return max(10, min(400, int(round(scale * 100.0))))

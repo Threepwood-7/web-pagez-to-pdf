@@ -79,6 +79,7 @@ from .image_processing import (
     content_points_per_pixel,
     compute_page_slices,
     normalize_content_sizing_mode,
+    printable_content_area_points,
     pil_to_qpixmap,
     suggest_auto_vertical_border_crop_with_confidence,
 )
@@ -640,7 +641,7 @@ class MainWindow(QMainWindow):
         transform_group = QGroupBox("Transform", editor_right)
         transform_layout = QFormLayout(transform_group)
         self.content_sizing_mode_combo = QComboBox(transform_group)
-        self.content_sizing_mode_combo.addItem("Legacy Fit Width", "legacy_fit_width")
+        self.content_sizing_mode_combo.addItem("Fit Width", "legacy_fit_width")
         self.content_sizing_mode_combo.addItem("Fit to Page", "fit_to_page")
         self.content_sizing_mode_combo.addItem("Stretch if Smaller", "stretch_if_smaller")
         self.content_sizing_mode_combo.addItem("Original Size", "original_size")
@@ -1102,11 +1103,14 @@ class MainWindow(QMainWindow):
             (self.redact_tool_button, "Persistent tool mode: draw redaction rectangles."),
             (
                 self.content_sizing_mode_combo,
-                "Persistent transform mode for print sizing: Legacy Fit Width keeps old behavior; "
-                "Fit to Page scales proportionally inside printable area; Stretch if Smaller upscales only when both "
+                "Persistent transform mode for print sizing: Fit Width scales content to printable width; "
+                "Fit to Page always prints the entire image on one page; Stretch if Smaller upscales only when both "
                 "dimensions are smaller; Original Size uses 96-DPI native size without auto scaling.",
             ),
-            (self.zoom_spin, "Scale transform applied before page slicing/export."),
+            (
+                self.zoom_spin,
+                "Print scaling percent for pagination/export and page thumbnails. Does not change editor view zoom.",
+            ),
             (self.rotate_spin, "Rotate image in whole degrees."),
             (self.straighten_spin, "Fine rotation used for straightening."),
             (self.paper_combo, "Target paper size for pagination and export."),
@@ -2456,6 +2460,18 @@ class MainWindow(QMainWindow):
         mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
         return normalize_content_sizing_mode(mode_value)
 
+    @staticmethod
+    def _scale_percent_for_edits(edits: EditAdjustments | None) -> float:
+        if edits is None:
+            return 100.0
+        scale_op = edits.get_operation("scale")
+        if scale_op is None:
+            return 100.0
+        try:
+            return max(10.0, float(scale_op.params.get("percent", 100.0)))
+        except (TypeError, ValueError):
+            return 100.0
+
     def _set_content_sizing_mode_operation(self, edits: EditAdjustments, mode: str) -> None:
         normalized = normalize_content_sizing_mode(mode)
         if normalized == DEFAULT_CONTENT_SIZING_MODE:
@@ -3178,19 +3194,23 @@ class MainWindow(QMainWindow):
             image,
             layout,
             edits,
+            include_scale=False,
         )
         content_sizing_mode = self._content_sizing_mode_for_edits(edits)
+        scale_percent = self._scale_percent_for_edits(edits)
         self._current_content_points_per_pixel = content_points_per_pixel(
             preview.width,
             preview.height,
             layout,
             content_sizing_mode,
+            scale_percent=scale_percent,
         )
         slices = compute_page_slices(
             preview,
             layout,
             self._split_markers(),
             content_sizing_mode=content_sizing_mode,
+            scale_percent=scale_percent,
         )
         self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
         self._effective_auto_split_markers = self._auto_split_markers_from_slices(
@@ -3203,10 +3223,14 @@ class MainWindow(QMainWindow):
         self.editor_canvas.set_hover_overlay_pixmap(None)
         self.editor_canvas.set_overlay_visibility(self.editor_overlay_toggle.isChecked())
         self._apply_magnifier_visibility_for_tool()
+        printable_w_pt, _printable_h_pt = printable_content_area_points(layout)
+        printable_width_px = int(
+            round(float(printable_w_pt) / max(0.0001, float(self._current_content_points_per_pixel)))
+        )
         self.editor_canvas.set_page_overlays(
             effective_markers,
             self._current_preview_slices,
-            printable_width_px=preview.width,
+            printable_width_px=max(1, printable_width_px),
         )
         self._sync_split_marker_list()
         self._sync_page_preview_list(
