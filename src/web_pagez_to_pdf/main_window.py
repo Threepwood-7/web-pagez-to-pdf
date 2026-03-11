@@ -117,7 +117,8 @@ BROWSER_PROCESS_PRIORITY = (
 )
 DEFAULT_SCROLL_TO_TOP_ON_FULL = True
 DEFAULT_CROSSHAIR_MAGNIFIER = 12
-DEFAULT_SPLITTER_RIGHT_PANE_PX = 300
+DEFAULT_CAPTURE_SPLITTER_RIGHT_PANE_PX = 300
+DEFAULT_EDITOR_SPLITTER_RIGHT_PANE_PX = 360
 THUMBNAIL_MARGIN_CUE_COLOR = (255, 80, 30, 255)
 THUMBNAIL_GUTTER_CUE_COLOR = (0, 220, 255, 255)
 THUMBNAIL_BORDER_CUE_COLOR = (255, 255, 255, 240)
@@ -234,6 +235,10 @@ class MainWindow(QMainWindow):
         self._window_state_timer.setSingleShot(True)
         self._window_state_timer.setInterval(300)
         self._window_state_timer.timeout.connect(self._persist_window_state_snapshot)
+        self._splitter_sizes_timer = QTimer(self)
+        self._splitter_sizes_timer.setSingleShot(True)
+        self._splitter_sizes_timer.setInterval(150)
+        self._splitter_sizes_timer.timeout.connect(self._persist_splitter_sizes)
         self._preview_update_timer = QTimer(self)
         self._preview_update_timer.setSingleShot(True)
         self._preview_update_timer.timeout.connect(self._flush_debounced_preview_update)
@@ -544,7 +549,7 @@ class MainWindow(QMainWindow):
         editor_right_layout.addWidget(self.editor_item_label)
 
         view_group = QGroupBox("View", editor_right)
-        view_layout = QHBoxLayout(view_group)
+        view_layout = QVBoxLayout(view_group)
         self.zoom_fit_height_button = QPushButton("Fit Height", view_group)
         self.zoom_fit_width_button = QPushButton("Fit Width", view_group)
         self.zoom_100_button = QPushButton("100%", view_group)
@@ -566,17 +571,22 @@ class MainWindow(QMainWindow):
             (self.zoom_status_label, "zoom_status_label"),
         ):
             self._assign_control_identity(widget, control, control)
-        view_layout.addWidget(self.zoom_fit_height_button)
-        view_layout.addWidget(self.zoom_fit_width_button)
-        view_layout.addWidget(self.zoom_100_button)
-        view_layout.addWidget(self.zoom_out_button)
-        view_layout.addWidget(self.zoom_in_button)
-        view_layout.addWidget(self.editor_view_zoom_spin)
-        view_layout.addWidget(self.zoom_status_label, 1)
+        view_top_row = QHBoxLayout()
+        view_top_row.addWidget(self.zoom_fit_height_button)
+        view_top_row.addWidget(self.zoom_fit_width_button)
+        view_top_row.addWidget(self.zoom_100_button)
+        view_top_row.addStretch(1)
+        view_bottom_row = QHBoxLayout()
+        view_bottom_row.addWidget(self.zoom_out_button)
+        view_bottom_row.addWidget(self.zoom_in_button)
+        view_bottom_row.addWidget(self.editor_view_zoom_spin)
+        view_bottom_row.addWidget(self.zoom_status_label, 1)
+        view_layout.addLayout(view_top_row)
+        view_layout.addLayout(view_bottom_row)
         editor_right_layout.addWidget(view_group)
 
         tools_group = QGroupBox("Tools", editor_right)
-        tools_layout = QHBoxLayout(tools_group)
+        tools_layout = QVBoxLayout(tools_group)
         self.editor_tool_buttons = QButtonGroup(self)
         self.editor_tool_buttons.setExclusive(True)
         self.pan_tool_button = self._new_editor_tool_button("Pan", "pan", checked=True)
@@ -597,15 +607,30 @@ class MainWindow(QMainWindow):
             (self.redact_tool_button, "redact_tool_button"),
         ):
             self._assign_control_identity(widget, control, control)
+        tool_modes_top_row = QHBoxLayout()
         for button in (
             self.pan_tool_button,
-            self.vertical_crop_tool_button,
-            self.vertical_border_crop_button,
             self.rect_crop_tool_button,
             self.free_crop_tool_button,
+        ):
+            tool_modes_top_row.addWidget(button)
+        tool_modes_top_row.addStretch(1)
+        tool_modes_bottom_row = QHBoxLayout()
+        for button in (
+            self.vertical_crop_tool_button,
             self.redact_tool_button,
         ):
-            tools_layout.addWidget(button)
+            tool_modes_bottom_row.addWidget(button)
+        tool_modes_bottom_row.addStretch(1)
+        tool_action_row = QHBoxLayout()
+        tool_action_label = QLabel("One-shot action", tools_group)
+        self._assign_control_identity(tool_action_label, "tool_action_label", "tool_action_label")
+        tool_action_row.addWidget(tool_action_label)
+        tool_action_row.addWidget(self.vertical_border_crop_button)
+        tool_action_row.addStretch(1)
+        tools_layout.addLayout(tool_modes_top_row)
+        tools_layout.addLayout(tool_modes_bottom_row)
+        tools_layout.addLayout(tool_action_row)
         editor_right_layout.addWidget(tools_group)
 
         transform_group = QGroupBox("Transform", editor_right)
@@ -810,6 +835,7 @@ class MainWindow(QMainWindow):
         self.editor_splitter.setCollapsible(1, False)
         self.editor_splitter.setStretchFactor(0, 5)
         self.editor_splitter.setStretchFactor(1, 2)
+        self.editor_splitter.setOpaqueResize(False)
         self.tabs.addTab(editor_tab, "Editor")
 
         export_tab = QWidget(self)
@@ -956,8 +982,8 @@ class MainWindow(QMainWindow):
         self.page_preview_list.itemEntered.connect(self._on_page_preview_item_hovered)
         self.page_preview_list.viewport().installEventFilter(self)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.capture_splitter.splitterMoved.connect(self._persist_splitter_sizes)
-        self.editor_splitter.splitterMoved.connect(self._persist_splitter_sizes)
+        self.capture_splitter.splitterMoved.connect(self._schedule_splitter_sizes_persist)
+        self.editor_splitter.splitterMoved.connect(self._schedule_splitter_sizes_persist)
         self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
         self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
         self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
@@ -1047,11 +1073,17 @@ class MainWindow(QMainWindow):
             (self.zoom_out_button, "Zoom out by 10%."),
             (self.zoom_in_button, "Zoom in by 10%."),
             (self.editor_view_zoom_spin, "Manual editor view zoom percent."),
-            (self.pan_tool_button, "Pan/scroll the preview image."),
-            (self.vertical_crop_tool_button, "Draw a vertical crop band."),
-            (self.rect_crop_tool_button, "Draw a rectangular crop area."),
-            (self.free_crop_tool_button, "Draw free-form crop points, then double-click to apply."),
-            (self.redact_tool_button, "Draw redaction rectangles."),
+            (self.pan_tool_button, "Persistent tool mode: pan/scroll the preview while left mouse is pressed."),
+            (
+                self.vertical_crop_tool_button,
+                "Persistent tool mode: draw a manual vertical crop band for the selected item.",
+            ),
+            (self.rect_crop_tool_button, "Persistent tool mode: draw a rectangular crop area."),
+            (
+                self.free_crop_tool_button,
+                "Persistent tool mode: draw free-form crop points, then double-click to apply.",
+            ),
+            (self.redact_tool_button, "Persistent tool mode: draw redaction rectangles."),
             (self.zoom_spin, "Scale transform applied before page slicing/export."),
             (self.rotate_spin, "Rotate image in whole degrees."),
             (self.straighten_spin, "Fine rotation used for straightening."),
@@ -1092,10 +1124,10 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.vertical_border_crop_button,
-                "Auto Vertical Border Crop: detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
+                "One-shot action: auto-detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
             ),
-            (self.clear_redactions_button, "Remove all redactions for the selected item."),
-            (self.reset_item_edits_button, "Reset all editor operations for the selected item."),
+            (self.clear_redactions_button, "One-shot action: remove all redactions for the selected item."),
+            (self.reset_item_edits_button, "One-shot action: reset all editor operations for the selected item."),
             (self.combine_checkbox, "Export all queue items as one combined job."),
             (self.pdf_checkbox, "Export PDF output."),
             (self.paged_images_checkbox, "Export one PNG file per computed page slice."),
@@ -1406,6 +1438,9 @@ class MainWindow(QMainWindow):
         self._settings.setValue("ui.capture_splitter_sizes", self.capture_splitter.sizes())
         self._settings.setValue("ui.editor_splitter_sizes", self.editor_splitter.sizes())
 
+    def _schedule_splitter_sizes_persist(self, *_args: object) -> None:
+        self._splitter_sizes_timer.start()
+
     @staticmethod
     def _set_splitter_right_pane_width(splitter: QSplitter, right_width_px: int) -> None:
         total_width = int(splitter.width())
@@ -1419,10 +1454,16 @@ class MainWindow(QMainWindow):
         splitter.moveSplitter(handle_pos, 1)
 
     def _apply_capture_splitter_default(self) -> None:
-        self._set_splitter_right_pane_width(self.capture_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
+        self._set_splitter_right_pane_width(
+            self.capture_splitter,
+            DEFAULT_CAPTURE_SPLITTER_RIGHT_PANE_PX,
+        )
 
     def _apply_editor_splitter_default(self) -> None:
-        self._set_splitter_right_pane_width(self.editor_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
+        self._set_splitter_right_pane_width(
+            self.editor_splitter,
+            DEFAULT_EDITOR_SPLITTER_RIGHT_PANE_PX,
+        )
 
     def _apply_default_splitter_sizes(self) -> None:
         self._apply_capture_splitter_default()
@@ -1442,13 +1483,16 @@ class MainWindow(QMainWindow):
         if len(capture_sizes) >= 2:
             self.capture_splitter.setSizes(capture_sizes)
         else:
-            self._set_splitter_right_pane_width(self.capture_splitter, DEFAULT_SPLITTER_RIGHT_PANE_PX)
+            self._set_splitter_right_pane_width(
+                self.capture_splitter,
+                DEFAULT_CAPTURE_SPLITTER_RIGHT_PANE_PX,
+            )
 
         editor_sizes = self._int_list_setting("ui.editor_splitter_sizes")
         if len(editor_sizes) >= 2:
             self.editor_splitter.setSizes(editor_sizes)
         else:
-            self.editor_splitter.setSizes([980, DEFAULT_SPLITTER_RIGHT_PANE_PX])
+            self.editor_splitter.setSizes([980, DEFAULT_EDITOR_SPLITTER_RIGHT_PANE_PX])
 
     def _reset_view_state(self) -> None:
         keys = (
@@ -1660,6 +1704,7 @@ class MainWindow(QMainWindow):
     def _persist_window_state_snapshot(self) -> None:
         if self._window_state_restore_in_progress:
             return
+        self._splitter_sizes_timer.stop()
         self._settings.setValue("ui.window_geometry", self.saveGeometry())
         self._settings.setValue("ui.window_is_maximized", self.isMaximized())
         self._persist_splitter_sizes()
@@ -3364,6 +3409,7 @@ class MainWindow(QMainWindow):
         self._flush_debounced_preview_update()
         self._request_stop()
         self._window_state_timer.stop()
+        self._splitter_sizes_timer.stop()
         self._persist_window_state_snapshot()
         for key, value in self._collect_settings_payload().items():
             self._settings.setValue(key, value)

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from PIL import Image, ImageChops, ImageDraw
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QApplication, QFormLayout
+from PySide6.QtWidgets import QApplication, QFormLayout, QHBoxLayout, QVBoxLayout
 from reportlab.lib.units import mm
 
 from web_pagez_to_pdf.capture_service import WindowInfo
@@ -1513,9 +1513,11 @@ def test_capture_and_editor_splitters_are_non_collapsible(qtbot: QtBot) -> None:
     assert not window.editor_splitter.childrenCollapsible()
     assert not window.editor_splitter.isCollapsible(0)
     assert not window.editor_splitter.isCollapsible(1)
+    assert window.capture_splitter.opaqueResize()
+    assert not window.editor_splitter.opaqueResize()
 
 
-def test_default_splitter_right_pane_width_is_300_without_saved_state(qtbot: QtBot) -> None:
+def test_default_splitter_right_pane_widths_without_saved_state(qtbot: QtBot) -> None:
     _clear_window_state_settings()
     window = MainWindow()
     qtbot.addWidget(window)
@@ -1529,7 +1531,7 @@ def test_default_splitter_right_pane_width_is_300_without_saved_state(qtbot: QtB
     window.tabs.setCurrentIndex(1)
     qtbot.wait(80)
     editor_sizes = window.editor_splitter.sizes()
-    assert abs(editor_sizes[1] - 300) <= 40
+    assert abs(editor_sizes[1] - 360) <= 40
     _clear_window_state_settings()
 
 
@@ -1592,9 +1594,34 @@ def test_view_reset_action_restores_default_splitters(qtbot: QtBot) -> None:
     editor_sizes = window.editor_splitter.sizes()
     assert editor_sizes[0] > 0 and editor_sizes[1] > 0
     assert editor_sizes != [300, 900]
-    assert abs(editor_sizes[1] - 300) <= 40
+    assert abs(editor_sizes[1] - 360) <= 40
     assert "view reset to defaults" in window.status_label.text().lower()
     _clear_window_state_settings()
+
+
+def test_editor_view_and_tools_groups_use_multi_row_layouts(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(50)
+
+    view_group = window.zoom_fit_height_button.parentWidget()
+    assert view_group is not None
+    view_layout = view_group.layout()
+    assert isinstance(view_layout, QVBoxLayout)
+    assert view_layout.count() >= 2
+    assert isinstance(view_layout.itemAt(0).layout(), QHBoxLayout)
+    assert isinstance(view_layout.itemAt(1).layout(), QHBoxLayout)
+
+    tools_group = window.pan_tool_button.parentWidget()
+    assert tools_group is not None
+    tools_layout = tools_group.layout()
+    assert isinstance(tools_layout, QVBoxLayout)
+    assert tools_layout.count() >= 3
+    assert isinstance(tools_layout.itemAt(0).layout(), QHBoxLayout)
+    assert isinstance(tools_layout.itemAt(1).layout(), QHBoxLayout)
+    assert isinstance(tools_layout.itemAt(2).layout(), QHBoxLayout)
 
 
 def test_export_xlsx_setting_persists_and_defaults_false(qtbot: QtBot) -> None:
