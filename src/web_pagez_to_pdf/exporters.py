@@ -19,10 +19,13 @@ from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph
 
 from .image_processing import (
+    DEFAULT_CONTENT_SIZING_MODE,
     PAPER_SIZES,
     PageSlice,
     apply_edit_transform,
+    content_points_per_pixel,
     compute_page_slices,
+    normalize_content_sizing_mode,
 )
 from .models import EditAdjustments
 
@@ -95,6 +98,7 @@ class PageFrame:
     source_item: CaptureItem
     page_index_in_item: int
     page_count_in_item: int
+    content_points_per_pixel: float = 0.0
 
 
 @dataclass(slots=True)
@@ -195,13 +199,51 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
     if request.combine_mode:
         for item, image in transformed_images:
             edits = _edits_for_item(request, item)
-            slices = compute_page_slices(image, request.layout, edits.split_markers_px)
-            frames.extend(_frames_for_slices(item, image, slices))
+            content_mode = _content_sizing_mode_for_edits(edits)
+            points_per_px = content_points_per_pixel(
+                image.width,
+                image.height,
+                request.layout,
+                content_mode,
+            )
+            slices = compute_page_slices(
+                image,
+                request.layout,
+                edits.split_markers_px,
+                content_sizing_mode=content_mode,
+            )
+            frames.extend(
+                _frames_for_slices(
+                    item,
+                    image,
+                    slices,
+                    content_points_per_pixel=points_per_px,
+                )
+            )
     else:
         first_item, first_image = transformed_images[0]
         edits = _edits_for_item(request, first_item)
-        slices = compute_page_slices(first_image, request.layout, edits.split_markers_px)
-        frames.extend(_frames_for_slices(first_item, first_image, slices))
+        content_mode = _content_sizing_mode_for_edits(edits)
+        points_per_px = content_points_per_pixel(
+            first_image.width,
+            first_image.height,
+            request.layout,
+            content_mode,
+        )
+        slices = compute_page_slices(
+            first_image,
+            request.layout,
+            edits.split_markers_px,
+            content_sizing_mode=content_mode,
+        )
+        frames.extend(
+            _frames_for_slices(
+                first_item,
+                first_image,
+                slices,
+                content_points_per_pixel=points_per_px,
+            )
+        )
     return (frames, transformed_images)
 
 
@@ -209,7 +251,19 @@ def _edits_for_item(request: ExportRequest, item: CaptureItem) -> EditAdjustment
     return request.edits_by_item_id.get(item.item_id) or request.edits or EditAdjustments()
 
 
-def _frames_for_slices(item: CaptureItem, image: Image.Image, slices: list[PageSlice]) -> list[PageFrame]:
+def _content_sizing_mode_for_edits(edits: EditAdjustments) -> str:
+    mode_op = edits.get_operation("content_sizing_mode")
+    mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
+    return normalize_content_sizing_mode(mode_value)
+
+
+def _frames_for_slices(
+    item: CaptureItem,
+    image: Image.Image,
+    slices: list[PageSlice],
+    *,
+    content_points_per_pixel: float,
+) -> list[PageFrame]:
     frames: list[PageFrame] = []
     page_total = len(slices)
     for idx, slice_info in enumerate(slices):
@@ -221,6 +275,7 @@ def _frames_for_slices(item: CaptureItem, image: Image.Image, slices: list[PageS
                 source_item=item,
                 page_index_in_item=idx + 1,
                 page_count_in_item=page_total,
+                content_points_per_pixel=float(content_points_per_pixel),
             )
         )
     return frames
@@ -240,10 +295,13 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
     avail_w = page_w - (request.layout.margin_left_mm + request.layout.margin_right_mm + request.layout.gutter_mm) * mm
     content_x = (request.layout.margin_left_mm + request.layout.gutter_mm) * mm
     for page_index, frame in enumerate(frames, start=1):
-        scale = avail_w / float(frame.image.width)
-        rendered_h = frame.image.height * scale
+        points_per_px = float(frame.content_points_per_pixel)
+        if points_per_px <= 0.0:
+            points_per_px = float(avail_w) / float(max(1, int(frame.image.width)))
+        rendered_w = float(frame.image.width) * points_per_px
+        rendered_h = float(frame.image.height) * points_per_px
         y = page_h - request.layout.margin_top_mm * mm - rendered_h
-        pdf.drawInlineImage(frame.image, content_x, y, width=avail_w, height=rendered_h)
+        pdf.drawInlineImage(frame.image, content_x, y, width=rendered_w, height=rendered_h)
 
         context = {
             "title": frame.title,

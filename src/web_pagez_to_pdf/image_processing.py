@@ -27,6 +27,16 @@ PAPER_SIZES: dict[str, tuple[float, float]] = {
     "LEGAL": LEGAL,
     "TABLOID": TABLOID,
 }
+DEFAULT_CONTENT_SIZING_MODE = "legacy_fit_width"
+CONTENT_SIZING_MODES = {
+    "legacy_fit_width",
+    "fit_to_page",
+    "stretch_if_smaller",
+    "original_size",
+}
+NATIVE_PIXELS_PER_INCH = 96.0
+POINTS_PER_INCH = 72.0
+NATIVE_POINTS_PER_PIXEL = POINTS_PER_INCH / NATIVE_PIXELS_PER_INCH
 
 
 @dataclass(slots=True)
@@ -41,6 +51,60 @@ def pil_to_qpixmap(image: Image.Image):
     """Convert PIL image to Qt pixmap."""
 
     return ImageQt.toqpixmap(image)
+
+
+def normalize_content_sizing_mode(mode: object) -> str:
+    """Return a supported content sizing mode value."""
+
+    normalized = str(mode or "").strip().lower()
+    if normalized in CONTENT_SIZING_MODES:
+        return normalized
+    return DEFAULT_CONTENT_SIZING_MODE
+
+
+def printable_content_area_points(layout: PrintLayout) -> tuple[float, float]:
+    """Return printable content width/height in PDF points."""
+
+    page_size = PAPER_SIZES.get(layout.paper_name.upper(), A4)
+    page_w, page_h = page_size
+    if layout.orientation.lower() == "landscape":
+        page_w, page_h = page_h, page_w
+    avail_w = page_w - (
+        layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm
+    ) * mm
+    avail_h = page_h - (layout.margin_top_mm + layout.margin_bottom_mm) * mm
+    return (max(1.0, float(avail_w)), max(1.0, float(avail_h)))
+
+
+def content_points_per_pixel(
+    image_width_px: int,
+    image_height_px: int,
+    layout: PrintLayout,
+    content_sizing_mode: str,
+) -> float:
+    """Return rendered points-per-source-pixel for content sizing mode."""
+
+    width_px = max(1, int(image_width_px))
+    height_px = max(1, int(image_height_px))
+    avail_w, avail_h = printable_content_area_points(layout)
+    mode = normalize_content_sizing_mode(content_sizing_mode)
+    if mode == DEFAULT_CONTENT_SIZING_MODE:
+        return max(0.0001, float(avail_w) / float(width_px))
+
+    natural_w = float(width_px) * NATIVE_POINTS_PER_PIXEL
+    natural_h = float(height_px) * NATIVE_POINTS_PER_PIXEL
+    fit_scale = min(float(avail_w) / natural_w, float(avail_h) / natural_h)
+
+    if mode == "fit_to_page":
+        mode_scale = max(0.0001, float(fit_scale))
+    elif mode == "stretch_if_smaller":
+        if natural_w < float(avail_w) and natural_h < float(avail_h):
+            mode_scale = max(0.0001, float(fit_scale))
+        else:
+            mode_scale = 1.0
+    else:
+        mode_scale = 1.0
+    return max(0.0001, float(NATIVE_POINTS_PER_PIXEL) * float(mode_scale))
 
 
 def apply_edit_transform(
@@ -368,24 +432,25 @@ def _scan_row_content_edge(
 
 
 def compute_page_slices(
-    image: Image.Image, layout: PrintLayout, manual_markers: Iterable[int]
+    image: Image.Image,
+    layout: PrintLayout,
+    manual_markers: Iterable[int],
+    *,
+    content_sizing_mode: str = DEFAULT_CONTENT_SIZING_MODE,
 ) -> list[PageSlice]:
     """Compute vertical split points matching printable page height."""
 
-    page_size = PAPER_SIZES.get(layout.paper_name.upper(), A4)
-    page_w, page_h = page_size
-    if layout.orientation.lower() == "landscape":
-        page_w, page_h = page_h, page_w
-
-    avail_w = page_w - (
-        layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm
-    ) * mm
-    avail_h = page_h - (layout.margin_top_mm + layout.margin_bottom_mm) * mm
+    _avail_w, avail_h = printable_content_area_points(layout)
 
     if image.width <= 0:
         return [PageSlice(0, image.height)]
-    scale = avail_w / float(image.width)
-    max_slice_px = max(24, int(avail_h / scale))
+    points_per_px = content_points_per_pixel(
+        image.width,
+        image.height,
+        layout,
+        content_sizing_mode,
+    )
+    max_slice_px = max(24, int(float(avail_h) / max(0.0001, float(points_per_px))))
 
     gray = np.asarray(image.convert("L"), dtype=np.uint8)
     row_mins = gray.min(axis=1)

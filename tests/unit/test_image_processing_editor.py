@@ -4,6 +4,9 @@ from PIL import Image
 
 from web_pagez_to_pdf.image_processing import (
     apply_edit_transform,
+    content_points_per_pixel,
+    compute_page_slices,
+    normalize_content_sizing_mode,
     suggest_auto_vertical_border_crop_with_confidence,
     suggest_navigation_crop,
     suggest_navigation_crop_with_confidence,
@@ -105,3 +108,60 @@ def test_legacy_nav_auto_crop_operation_still_applies() -> None:
 
     assert transformed.width == 150
     assert transformed.height == 120
+
+
+def test_normalize_content_sizing_mode_defaults_to_legacy_fit_width() -> None:
+    assert normalize_content_sizing_mode(None) == "legacy_fit_width"
+    assert normalize_content_sizing_mode("unknown-mode") == "legacy_fit_width"
+    assert normalize_content_sizing_mode("Fit_To_Page") == "fit_to_page"
+
+
+def test_content_points_per_pixel_scales_by_mode() -> None:
+    layout = PrintLayout()
+    legacy_ppp = content_points_per_pixel(420, 2400, layout, "legacy_fit_width")
+    fit_ppp = content_points_per_pixel(420, 2400, layout, "fit_to_page")
+    original_ppp = content_points_per_pixel(420, 2400, layout, "original_size")
+    stretch_large_ppp = content_points_per_pixel(420, 2400, layout, "stretch_if_smaller")
+    stretch_small_ppp = content_points_per_pixel(200, 120, layout, "stretch_if_smaller")
+    original_small_ppp = content_points_per_pixel(200, 120, layout, "original_size")
+
+    assert legacy_ppp > original_ppp
+    assert fit_ppp < original_ppp
+    assert abs(stretch_large_ppp - original_ppp) <= 0.0001
+    assert stretch_small_ppp > original_small_ppp
+
+
+def test_compute_page_slices_supports_sizing_modes() -> None:
+    image = Image.new("RGB", (420, 2400), "white")
+    layout = PrintLayout()
+
+    slices_legacy_default = compute_page_slices(image, layout, [])
+    slices_legacy_explicit = compute_page_slices(
+        image,
+        layout,
+        [],
+        content_sizing_mode="legacy_fit_width",
+    )
+    slices_fit = compute_page_slices(
+        image,
+        layout,
+        [],
+        content_sizing_mode="fit_to_page",
+    )
+    slices_original = compute_page_slices(
+        image,
+        layout,
+        [],
+        content_sizing_mode="original_size",
+    )
+    slices_stretch = compute_page_slices(
+        image,
+        layout,
+        [],
+        content_sizing_mode="stretch_if_smaller",
+    )
+
+    assert len(slices_legacy_default) == len(slices_legacy_explicit)
+    assert len(slices_fit) == 1
+    assert len(slices_original) > 1
+    assert len(slices_stretch) == len(slices_original)

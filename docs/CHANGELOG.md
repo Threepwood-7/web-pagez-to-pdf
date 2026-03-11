@@ -20,6 +20,8 @@
 - Refreshed Editor right-panel control layout: `View` and `Tools` are now multi-row to reduce button crowding and clarify persistent tool modes vs one-shot actions.
 - Updated Editor splitter behavior to non-opaque resize and debounced splitter-size persistence for smoother drag without UI blocking.
 - Split default right-pane widths: Capture keeps `300px`; Editor now defaults to `360px`.
+- Added Transform sizing modes (`Legacy Fit Width`, `Fit to Page`, `Stretch if Smaller`, `Original Size`) with per-item persistence and full preview/export parity.
+- Added mode-aware pagination and PDF placement using a shared 96-DPI sizing model while keeping legacy fit-width as the default fallback.
 - Added `docs/REMOVEDFEATURES.md` to document removed Wizardry behavior and remaining alternatives.
 - Updated GUI/unit coverage for the new control contract, left-gutter geometry, header/footer thumbnail rendering, and legacy Wizard operation no-op handling.
 

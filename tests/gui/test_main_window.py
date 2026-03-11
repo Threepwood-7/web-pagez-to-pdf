@@ -242,6 +242,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         window.editor_view_zoom_spin.property("widget_id")
         == "window:main:control:editor_view_zoom_spin"
     )
+    assert (
+        window.content_sizing_mode_combo.property("widget_id")
+        == "window:main:control:content_sizing_mode_combo"
+    )
     assert not hasattr(window, "split_edit_tool_button")
     assert not hasattr(window, "quick_zoom_group")
     assert not hasattr(window, "quick_zoom_spin")
@@ -1740,6 +1744,128 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     window._settings.sync()
 
 
+def test_transform_sizing_mode_defaults_to_legacy_fit_width(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="sizing-default",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    assert str(window.content_sizing_mode_combo.currentData()) == "legacy_fit_width"
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+    assert edits.get_operation("content_sizing_mode") is None
+
+
+def test_transform_sizing_mode_persists_per_item(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="sizing-item-1",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window._add_capture(
+        image=Image.new("RGB", (420, 1600), "white"),
+        title="sizing-item-2",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    fit_index = window.content_sizing_mode_combo.findData("fit_to_page")
+    assert fit_index >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(fit_index)
+    item_a = window._current_item()
+    assert item_a is not None
+    qtbot.waitUntil(
+        lambda: window._session_for_item(item_a.item_id).get_operation("content_sizing_mode") is not None,
+        timeout=1200,
+    )
+    window.queue_list.setCurrentRow(1)
+    assert str(window.content_sizing_mode_combo.currentData()) == "legacy_fit_width"
+    window.queue_list.setCurrentRow(0)
+    assert str(window.content_sizing_mode_combo.currentData()) == "fit_to_page"
+
+
+def test_transform_sizing_modes_update_preview_page_counts(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="sizing-modes-preview",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    legacy_count = window.page_preview_list.count()
+    assert legacy_count > 1
+
+    fit_idx = window.content_sizing_mode_combo.findData("fit_to_page")
+    assert fit_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(fit_idx)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() == 1, timeout=2000)
+
+    original_idx = window.content_sizing_mode_combo.findData("original_size")
+    assert original_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(original_idx)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() > 1, timeout=2000)
+    original_count = window.page_preview_list.count()
+
+    stretch_idx = window.content_sizing_mode_combo.findData("stretch_if_smaller")
+    assert stretch_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(stretch_idx)
+    qtbot.waitUntil(lambda: window.page_preview_list.count() == original_count, timeout=2000)
+
+
+def test_stretch_if_smaller_upscales_small_image_preview_scale(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (180, 120), "white"),
+        title="stretch-small",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+
+    original_idx = window.content_sizing_mode_combo.findData("original_size")
+    assert original_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(original_idx)
+    qtbot.waitUntil(
+        lambda: (
+            edits.get_operation("content_sizing_mode") is not None
+            and str(edits.get_operation("content_sizing_mode").params.get("mode")) == "original_size"  # type: ignore[union-attr]
+        ),
+        timeout=1500,
+    )
+    original_points_per_px = float(window._current_content_points_per_pixel)
+
+    stretch_idx = window.content_sizing_mode_combo.findData("stretch_if_smaller")
+    assert stretch_idx >= 0
+    window.content_sizing_mode_combo.setCurrentIndex(stretch_idx)
+    qtbot.waitUntil(
+        lambda: float(window._current_content_points_per_pixel) > original_points_per_px,
+        timeout=1500,
+    )
+
+
 def test_effective_auto_split_markers_are_visible_in_split_list_and_canvas(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
@@ -2183,6 +2309,7 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.editor_view_zoom_spin,
         window.pan_tool_button,
         window.rect_crop_tool_button,
+        window.content_sizing_mode_combo,
         window.zoom_spin,
         window.paper_combo,
         window.margin_top_spin,

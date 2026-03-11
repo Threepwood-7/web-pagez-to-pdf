@@ -73,9 +73,12 @@ from .editor_canvas import EditorCanvas
 from .exporters import run_export, sanitize_basename
 from .hotkeys import GlobalHotkeyPoller
 from .image_processing import (
+    DEFAULT_CONTENT_SIZING_MODE,
     PAPER_SIZES,
     apply_edit_transform,
+    content_points_per_pixel,
     compute_page_slices,
+    normalize_content_sizing_mode,
     pil_to_qpixmap,
     suggest_auto_vertical_border_crop_with_confidence,
 )
@@ -229,7 +232,7 @@ class MainWindow(QMainWindow):
         self._preview_update_pending_transform = False
         self._preview_update_pending_layout = False
         self._pending_transform_item_id: str | None = None
-        self._pending_transform_values: tuple[int, int, int] | None = None
+        self._pending_transform_values: tuple[int, int, int, str] | None = None
         self._window_state_restore_in_progress = False
         self._window_state_timer = QTimer(self)
         self._window_state_timer.setSingleShot(True)
@@ -243,6 +246,7 @@ class MainWindow(QMainWindow):
         self._preview_update_timer.setSingleShot(True)
         self._preview_update_timer.timeout.connect(self._flush_debounced_preview_update)
         self._preview_page_hover_overlays: dict[int, QPixmap] = {}
+        self._current_content_points_per_pixel = 1.0
         self._build_ui()
         self._bind_events()
         self._apply_start_geometry()
@@ -635,6 +639,11 @@ class MainWindow(QMainWindow):
 
         transform_group = QGroupBox("Transform", editor_right)
         transform_layout = QFormLayout(transform_group)
+        self.content_sizing_mode_combo = QComboBox(transform_group)
+        self.content_sizing_mode_combo.addItem("Legacy Fit Width", "legacy_fit_width")
+        self.content_sizing_mode_combo.addItem("Fit to Page", "fit_to_page")
+        self.content_sizing_mode_combo.addItem("Stretch if Smaller", "stretch_if_smaller")
+        self.content_sizing_mode_combo.addItem("Original Size", "original_size")
         self.zoom_spin = QDoubleSpinBox(transform_group)
         self.zoom_spin.setRange(10.0, 400.0)
         self.zoom_spin.setValue(100.0)
@@ -643,6 +652,12 @@ class MainWindow(QMainWindow):
         self.rotate_spin.setRange(-180, 180)
         self.straighten_spin = QSpinBox(transform_group)
         self.straighten_spin.setRange(-15, 15)
+        self._assign_control_identity(
+            self.content_sizing_mode_combo,
+            "content_sizing_mode_combo",
+            "content_sizing_mode_combo",
+        )
+        transform_layout.addRow("Sizing", self.content_sizing_mode_combo)
         transform_layout.addRow("Scale", self.zoom_spin)
         transform_layout.addRow("Rotate", self.rotate_spin)
         transform_layout.addRow("Straighten", self.straighten_spin)
@@ -955,6 +970,7 @@ class MainWindow(QMainWindow):
         self.editor_canvas.split_marker_moved.connect(self._on_canvas_split_marker_moved)
         self.editor_canvas.split_marker_removed.connect(self._on_canvas_split_marker_removed)
         self.editor_canvas.zoom_changed.connect(self._on_editor_canvas_zoom_changed)
+        self.content_sizing_mode_combo.currentIndexChanged.connect(self._editor_controls_changed)
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
@@ -1084,6 +1100,12 @@ class MainWindow(QMainWindow):
                 "Persistent tool mode: draw free-form crop points, then double-click to apply.",
             ),
             (self.redact_tool_button, "Persistent tool mode: draw redaction rectangles."),
+            (
+                self.content_sizing_mode_combo,
+                "Persistent transform mode for print sizing: Legacy Fit Width keeps old behavior; "
+                "Fit to Page scales proportionally inside printable area; Stretch if Smaller upscales only when both "
+                "dimensions are smaller; Original Size uses 96-DPI native size without auto scaling.",
+            ),
             (self.zoom_spin, "Scale transform applied before page slicing/export."),
             (self.rotate_spin, "Rotate image in whole degrees."),
             (self.straighten_spin, "Fine rotation used for straightening."),
@@ -2338,11 +2360,13 @@ class MainWindow(QMainWindow):
         current_item = self._current_item()
         if current_item is None:
             return
+        selected_mode = normalize_content_sizing_mode(self.content_sizing_mode_combo.currentData())
         self._pending_transform_item_id = current_item.item_id
         self._pending_transform_values = (
             int(self.zoom_spin.value()),
             int(self.rotate_spin.value()),
             int(self.straighten_spin.value()),
+            selected_mode,
         )
         self._schedule_debounced_preview_update(transform_changed=True)
 
@@ -2384,7 +2408,7 @@ class MainWindow(QMainWindow):
             else:
                 edits = None
             if edits is not None and transform_values is not None:
-                zoom_percent, rotate_degrees, straighten_degrees = transform_values
+                zoom_percent, rotate_degrees, straighten_degrees, content_sizing_mode = transform_values
                 before = self._snapshot_history_entry()
                 self._set_scalar_operation(
                     edits,
@@ -2407,6 +2431,7 @@ class MainWindow(QMainWindow):
                     int(straighten_degrees),
                     0,
                 )
+                self._set_content_sizing_mode_operation(edits, content_sizing_mode)
                 self._push_history_if_changed(before)
 
         self._refresh_preview()
@@ -2424,11 +2449,26 @@ class MainWindow(QMainWindow):
             return
         edits.set_operation(op_type, {key: value})
 
+    def _content_sizing_mode_for_edits(self, edits: EditAdjustments | None) -> str:
+        if edits is None:
+            return DEFAULT_CONTENT_SIZING_MODE
+        mode_op = edits.get_operation("content_sizing_mode")
+        mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
+        return normalize_content_sizing_mode(mode_value)
+
+    def _set_content_sizing_mode_operation(self, edits: EditAdjustments, mode: str) -> None:
+        normalized = normalize_content_sizing_mode(mode)
+        if normalized == DEFAULT_CONTENT_SIZING_MODE:
+            edits.remove_operation("content_sizing_mode")
+            return
+        edits.set_operation("content_sizing_mode", {"mode": normalized})
+
     def _sync_editor_controls(self) -> None:
         edits = self._current_session()
         self._editor_loading = True
         try:
             if edits is None:
+                self.content_sizing_mode_combo.setCurrentIndex(0)
                 self.zoom_spin.setValue(100.0)
                 self.rotate_spin.setValue(0)
                 self.straighten_spin.setValue(0)
@@ -2436,6 +2476,9 @@ class MainWindow(QMainWindow):
             scale_op = edits.get_operation("scale")
             rotate_op = edits.get_operation("rotate")
             straighten_op = edits.get_operation("straighten")
+            sizing_mode = self._content_sizing_mode_for_edits(edits)
+            mode_index = self.content_sizing_mode_combo.findData(sizing_mode)
+            self.content_sizing_mode_combo.setCurrentIndex(max(0, mode_index))
             self.zoom_spin.setValue(float(scale_op.params.get("percent", 100)) if scale_op else 100.0)
             self.rotate_spin.setValue(int(rotate_op.params.get("degrees", 0)) if rotate_op else 0)
             self.straighten_spin.setValue(
@@ -2736,6 +2779,7 @@ class MainWindow(QMainWindow):
         page_title: str = "",
         page_index: int = 1,
         page_count: int = 1,
+        content_points_per_pixel: float | None = None,
     ) -> Image.Image:
         active_layout = layout if layout is not None else self._collect_layout()
         page_name = str(active_layout.paper_name or "A4").strip().upper()
@@ -2750,10 +2794,14 @@ class MainWindow(QMainWindow):
         margin_top_pt = max(0.0, float(active_layout.margin_top_mm) * mm)
         margin_bottom_pt = max(0.0, float(active_layout.margin_bottom_mm) * mm)
         gutter_pt = max(0.0, float(active_layout.gutter_mm) * mm)
-        avail_w_pt = float(page_w_pt) - (margin_left_pt + margin_right_pt + gutter_pt)
-        if avail_w_pt <= 1.0:
-            avail_w_pt = 1.0
-        px_per_pt = float(slice_w) / float(avail_w_pt)
+        if content_points_per_pixel is None:
+            avail_w_pt = float(page_w_pt) - (margin_left_pt + margin_right_pt + gutter_pt)
+            if avail_w_pt <= 1.0:
+                avail_w_pt = 1.0
+            points_per_px = max(0.0001, float(avail_w_pt) / float(slice_w))
+        else:
+            points_per_px = max(0.0001, float(content_points_per_pixel))
+        px_per_pt = 1.0 / points_per_px
 
         page_w_px = max(slice_w + 2, int(round(float(page_w_pt) * px_per_pt)))
         page_h_px = max(slice_h + 2, int(round(float(page_h_pt) * px_per_pt)))
@@ -2762,28 +2810,32 @@ class MainWindow(QMainWindow):
         legend_h = 22
 
         left_margin_boundary = max(0, min(page_w_px - 2, int(round(margin_left_pt * px_per_pt))))
-        image_left = max(
+        printable_left = max(
             0,
             min(page_w_px - 2, int(round((margin_left_pt + gutter_pt) * px_per_pt))),
         )
-        image_top = max(0, min(page_h_px - 2, int(round(margin_top_pt * px_per_pt))))
-        image_right = max(
-            image_left + 1,
+        printable_top = max(0, min(page_h_px - 2, int(round(margin_top_pt * px_per_pt))))
+        printable_right = max(
+            printable_left + 1,
             min(
                 page_w_px - 1,
                 int(round((float(page_w_pt) - margin_right_pt) * px_per_pt)),
             ),
         )
         printable_bottom = max(
-            image_top + 1,
+            printable_top + 1,
             min(
                 page_h_px - 1,
                 int(round((float(page_h_pt) - margin_bottom_pt) * px_per_pt)),
             ),
         )
 
-        image_width = max(1, min(int(slice_w), image_right - image_left))
-        visible_height = max(1, min(int(slice_h), printable_bottom - image_top))
+        image_left = int(printable_left)
+        image_top = int(printable_top)
+        max_render_w = max(1, page_w_px - image_left - 1)
+        image_width = max(1, min(int(slice_w), int(max_render_w)))
+        visible_height = max(1, min(int(slice_h), int(printable_bottom - image_top)))
+        image_right = max(image_left + 1, min(page_w_px - 1, image_left + image_width))
         image_crop = page_image.crop((0, 0, image_width, visible_height)).convert("RGB")
         decorated.paste(image_crop, (image_left, image_top))
 
@@ -2791,20 +2843,20 @@ class MainWindow(QMainWindow):
         draw.rectangle(outer, outline=THUMBNAIL_BORDER_CUE_COLOR, width=2)
         draw.rectangle(
             (
-                image_left,
-                image_top,
-                max(image_left + 1, image_right),
-                max(image_top + 1, printable_bottom),
+                printable_left,
+                printable_top,
+                max(printable_left + 1, printable_right),
+                max(printable_top + 1, printable_bottom),
             ),
             outline=THUMBNAIL_MARGIN_CUE_COLOR,
             width=3,
         )
-        if image_left > left_margin_boundary:
+        if printable_left > left_margin_boundary:
             draw.rectangle(
                 (
                     left_margin_boundary,
-                    image_top,
-                    image_left,
+                    printable_top,
+                    printable_left,
                     printable_bottom,
                 ),
                 fill=(
@@ -2825,16 +2877,16 @@ class MainWindow(QMainWindow):
         }
         qimage = ImageQt.ImageQt(decorated)
         header_top = max(0, legend_h + 4)
-        header_height = max(0, image_top - header_top)
+        header_height = max(0, printable_top - header_top)
         footer_top = max(0, printable_bottom + 1)
         footer_height = max(0, page_h_px - footer_top - 1)
         self._render_preview_rich_text(
             qimage,
             rich_html=active_layout.header_rich_text,
             context=preview_context,
-            left=image_left,
+            left=printable_left,
             top=header_top,
-            width=max(1, image_right - image_left),
+            width=max(1, printable_right - printable_left),
             height=header_height,
             align_bottom=False,
         )
@@ -2842,9 +2894,9 @@ class MainWindow(QMainWindow):
             qimage,
             rich_html=active_layout.footer_rich_text,
             context=preview_context,
-            left=image_left,
+            left=printable_left,
             top=footer_top,
-            width=max(1, image_right - image_left),
+            width=max(1, printable_right - printable_left),
             height=footer_height,
             align_bottom=True,
         )
@@ -2873,6 +2925,7 @@ class MainWindow(QMainWindow):
         layout: PrintLayout,
         *,
         item_title: str,
+        content_points_per_pixel: float,
     ) -> None:
         self._clear_page_preview_hover_overlay()
         pixmap_role = int(Qt.ItemDataRole.UserRole) + 1
@@ -2889,6 +2942,7 @@ class MainWindow(QMainWindow):
                     page_title=item_title,
                     page_index=index,
                     page_count=page_count,
+                    content_points_per_pixel=content_points_per_pixel,
                 )
                 base_pixmap = pil_to_qpixmap(decorated)
                 thumbnail = base_pixmap.scaled(
@@ -3093,6 +3147,7 @@ class MainWindow(QMainWindow):
             self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
             self._effective_auto_split_markers = []
+            self._current_content_points_per_pixel = 1.0
             self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
@@ -3108,6 +3163,7 @@ class MainWindow(QMainWindow):
             self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
             self._effective_auto_split_markers = []
+            self._current_content_points_per_pixel = 1.0
             self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
@@ -3123,7 +3179,19 @@ class MainWindow(QMainWindow):
             layout,
             edits,
         )
-        slices = compute_page_slices(preview, layout, self._split_markers())
+        content_sizing_mode = self._content_sizing_mode_for_edits(edits)
+        self._current_content_points_per_pixel = content_points_per_pixel(
+            preview.width,
+            preview.height,
+            layout,
+            content_sizing_mode,
+        )
+        slices = compute_page_slices(
+            preview,
+            layout,
+            self._split_markers(),
+            content_sizing_mode=content_sizing_mode,
+        )
         self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
         self._effective_auto_split_markers = self._auto_split_markers_from_slices(
             self._current_preview_slices,
@@ -3146,6 +3214,7 @@ class MainWindow(QMainWindow):
             self._current_preview_slices,
             layout,
             item_title=item.title,
+            content_points_per_pixel=self._current_content_points_per_pixel,
         )
         self._sync_editor_view_zoom_controls()
         thumb = full_pixmap.scaled(
