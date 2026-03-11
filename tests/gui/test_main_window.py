@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image, ImageChops, ImageDraw
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtGui import QAction, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFormLayout
 from reportlab.lib.units import mm
 
@@ -63,6 +63,26 @@ def _sample_viewport_pixel(widget, point: QPoint):
     x_pos = max(0, min(image.width() - 1, x_pos))
     y_pos = max(0, min(image.height() - 1, y_pos))
     return image.pixelColor(x_pos, y_pos)
+
+
+def _click_y_ruler_at_image_y(qtbot: QtBot, window: MainWindow, y_pos: float) -> None:
+    canvas = window.editor_canvas
+    point = canvas.mapFromScene(QPointF(0.0, float(y_pos)))
+    click_pos = QPoint(canvas.viewport().width() - 8, int(point.y()))
+    qtbot.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=click_pos)
+
+
+def _split_list_values(window: MainWindow) -> list[int]:
+    values: list[int] = []
+    for row in range(window.split_list.count()):
+        item = window.split_list.item(row)
+        if item is None:
+            continue
+        try:
+            values.append(int(item.text().strip()))
+        except (TypeError, ValueError):
+            continue
+    return values
 
 
 def _find_color_bbox(
@@ -233,9 +253,15 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
     assert not hasattr(window, "wizard_remove_border_button")
     assert not hasattr(window, "wizard_undo_button")
     assert not hasattr(window, "wizard_redo_button")
+    assert not hasattr(window, "split_spin")
+    assert not hasattr(window, "preview_breaks_button")
     assert (
         window.vertical_border_crop_button.property("widget_id")
         == "window:main:control:vertical_border_crop_button"
+    )
+    assert (
+        window.reset_split_markers_button.property("widget_id")
+        == "window:main:control:reset_split_markers_button"
     )
 
 
@@ -249,6 +275,18 @@ def test_capture_advanced_group_is_visible_and_not_checkable(qtbot: QtBot) -> No
     assert window.capture_viewport_options_group.isVisible()
     assert window.capture_full_scroll_options_group.isVisible()
     assert window.capture_shared_diagnostics_group.isVisible()
+
+
+def test_split_markers_group_is_visible_and_not_checkable(qtbot: QtBot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.tabs.setCurrentIndex(1)
+    qtbot.wait(50)
+
+    assert window.editor_advanced_group.isVisible()
+    assert not window.editor_advanced_group.isCheckable()
+    assert window.editor_advanced_group.title() == "Split Markers"
 
 
 def test_capture_advanced_controls_grouped_by_capture_type(qtbot: QtBot) -> None:
@@ -886,6 +924,7 @@ def test_vertical_border_crop_is_additive_with_existing_crop(
         "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
         lambda _image: (14, 12, True, True),
     )
+    window.rect_crop_tool_button.click()
 
     window._run_vertical_border_crop()
 
@@ -894,6 +933,7 @@ def test_vertical_border_crop_is_additive_with_existing_crop(
     assert nav_crop is not None
     assert int(nav_crop.params.get("left", 0)) == 14
     assert int(nav_crop.params.get("right", 0)) == 12
+    assert window.pan_tool_button.isChecked()
 
 
 def test_vertical_border_crop_noop_on_insufficient_confidence(
@@ -913,6 +953,7 @@ def test_vertical_border_crop_noop_on_insufficient_confidence(
         "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
         lambda _image: (0, 0, False, False),
     )
+    window.redact_tool_button.click()
 
     window._run_vertical_border_crop()
 
@@ -921,6 +962,7 @@ def test_vertical_border_crop_noop_on_insufficient_confidence(
     assert item is not None
     edits = window._session_for_item(item.item_id)
     assert edits.get_operation("auto_vertical_border_crop") is None
+    assert window.pan_tool_button.isChecked()
 
 
 def test_global_undo_redo_applies_to_manual_crop(qtbot: QtBot, tmp_path: Path) -> None:
@@ -1214,10 +1256,10 @@ def test_split_marker_and_layout_changes_refresh_page_preview_sidebar(
     initial_count = window.page_preview_list.count()
     initial_slices = list(window._current_preview_slices)
 
-    window.split_spin.setValue(120)
-    window._add_split_marker()
+    window.add_split_button.click()
+    _click_y_ruler_at_image_y(qtbot, window, 120.0)
     qtbot.waitUntil(
-        lambda: any(bottom == 120 for _top, bottom in window._current_preview_slices)
+        lambda: any(abs(int(bottom) - 120) <= 4 for _top, bottom in window._current_preview_slices)
     )
     with_marker_count = window.page_preview_list.count()
     assert window._current_preview_slices != initial_slices
@@ -1259,7 +1301,7 @@ def test_thumbnail_hover_overlay_appears_and_clears_on_leave(
     window.show()
     window.output_input.setText(str(tmp_path))
     window._add_capture(
-        image=Image.new("RGB", (420, 1200), (220, 10, 10)),
+        image=Image.new("RGB", (420, 500), (220, 10, 10)),
         title="thumbnail-hover",
         source_hwnd=None,
         frame_count=1,
@@ -1671,41 +1713,171 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     window._settings.sync()
 
 
-def test_pan_tool_drag_moves_manual_split_markers(qtbot: QtBot, tmp_path: Path) -> None:
+def test_effective_auto_split_markers_are_visible_in_split_list_and_canvas(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
     window._add_capture(
-        image=Image.new("RGB", (420, 1200), "white"),
-        title="split-pan-drag",
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="split-auto-visible",
         source_hwnd=None,
         frame_count=1,
     )
     window.queue_list.setCurrentRow(0)
     window._refresh_preview()
-    window.split_spin.setValue(210)
-    window._add_split_marker()
-    assert 210 in window._split_markers()
+    assert window._split_markers() == []
+    list_markers = _split_list_values(window)
+    assert list_markers
+    assert list_markers == window.editor_canvas._manual_markers_px
+
+
+def test_split_marker_drag_moves_visible_marker_by_ruler_triangle(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2000), "white"),
+        title="split-drag-ruler",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    original_markers = _split_list_values(window)
+    assert original_markers
+    original_count = len(original_markers)
+    target = int(original_markers[0])
+    start = window.editor_canvas.mapFromScene(QPointF(0.0, float(target)))
+    end = window.editor_canvas.mapFromScene(QPointF(0.0, float(target + 70)))
+    start_pos = QPoint(window.editor_canvas.viewport().width() - 8, int(start.y()))
+    end_pos = QPoint(window.editor_canvas.viewport().width() - 8, int(end.y()))
+    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_pos)
+    qtbot.mouseMove(window.editor_canvas.viewport(), pos=end_pos)
+    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end_pos)
+    qtbot.waitUntil(lambda: any(value != target for value in _split_list_values(window)), timeout=1000)
+    moved_markers = _split_list_values(window)
+    assert len(moved_markers) in {original_count, original_count - 1}
+    assert window._split_markers()
+
+
+def test_pan_does_not_continue_after_mouse_release(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (900, 4600), "white"),
+        title="pan-release-stop",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
     window.pan_tool_button.click()
-    window.editor_canvas.focus_on_y(235.0)
-    qtbot.wait(50)
+    canvas = window.editor_canvas
+    vbar = canvas.verticalScrollBar()
+    assert vbar.maximum() > 0
+    vbar.setValue(vbar.maximum() // 2)
+    qtbot.wait(20)
+    before_drag = vbar.value()
+    center = canvas.viewport().rect().center()
+    start = QPoint(int(center.x()), int(center.y()))
+    end = QPoint(int(center.x()), max(4, int(center.y()) - 140))
+    qtbot.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(canvas.viewport(), pos=end)
+    qtbot.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    qtbot.waitUntil(lambda: vbar.value() != before_drag, timeout=1000)
+    after_release = vbar.value()
+    post_release_pos = QPoint(int(center.x()), min(canvas.viewport().height() - 4, int(center.y()) + 100))
+    qtbot.mouseMove(canvas.viewport(), pos=post_release_pos)
+    qtbot.wait(30)
+    assert vbar.value() == after_release
 
-    start_y = window.editor_canvas.mapFromScene(QPointF(0.0, 210.0)).y()
-    end_y = window.editor_canvas.mapFromScene(QPointF(0.0, 260.0)).y()
-    start = QPoint(window.editor_canvas.viewport().width() - 8, int(start_y))
-    end = QPoint(window.editor_canvas.viewport().width() - 8, int(end_y))
-    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
-    qtbot.mouseMove(window.editor_canvas.viewport(), pos=end)
-    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
-    qtbot.waitUntil(lambda: any(marker != 210 for marker in window._split_markers()), timeout=1000)
 
-    assert 210 not in window._split_markers()
-    assert len(window._split_markers()) == 1
-    assert window._split_markers()[0] > 210
+def test_pan_does_not_latch_after_leave_event(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (900, 4600), "white"),
+        title="pan-leave-stop",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    window.pan_tool_button.click()
+    canvas = window.editor_canvas
+    vbar = canvas.verticalScrollBar()
+    assert vbar.maximum() > 0
+    vbar.setValue(vbar.maximum() // 2)
+    qtbot.wait(20)
+    before_drag = vbar.value()
+    center = canvas.viewport().rect().center()
+    start = QPoint(int(center.x()), int(center.y()))
+    end = QPoint(int(center.x()), max(4, int(center.y()) - 140))
+    qtbot.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(canvas.viewport(), pos=end)
+    qtbot.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    qtbot.waitUntil(lambda: vbar.value() != before_drag, timeout=1000)
+    after_release = vbar.value()
+    QApplication.sendEvent(canvas.viewport(), QEvent(QEvent.Type.Leave))
+    qtbot.wait(20)
+    qtbot.mouseMove(canvas.viewport(), pos=QPoint(8, 8))
+    qtbot.wait(30)
+    assert vbar.value() == after_release
 
 
-def test_split_marker_drag_is_disabled_for_non_pan_tools(qtbot: QtBot, tmp_path: Path) -> None:
+def test_split_marker_drag_state_clears_on_move_without_left_button(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2200), "white"),
+        title="split-move-no-button",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    markers = _split_list_values(window)
+    assert markers
+    target = int(markers[0])
+    canvas = window.editor_canvas
+    canvas._split_drag_original = int(target)
+    canvas._split_drag_current = int(target)
+    before_markers = list(canvas._manual_markers_px)
+    move_point = canvas.mapFromScene(QPointF(0.0, float(target + 120)))
+    view_pos = QPoint(canvas.viewport().width() - 8, int(move_point.y()))
+    global_pos = canvas.viewport().mapToGlobal(view_pos)
+    synthetic_move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(float(view_pos.x()), float(view_pos.y())),
+        QPointF(float(view_pos.x()), float(view_pos.y())),
+        QPointF(float(global_pos.x()), float(global_pos.y())),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseMoveEvent(synthetic_move)
+    assert canvas._split_drag_original is None
+    assert canvas._split_drag_current is None
+    assert canvas._manual_markers_px == before_markers
+
+
+def test_split_marker_actions_are_one_shot_and_tool_switch_remains_unlocked(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1718,19 +1890,128 @@ def test_split_marker_drag_is_disabled_for_non_pan_tools(qtbot: QtBot, tmp_path:
     )
     window.queue_list.setCurrentRow(0)
     window._refresh_preview()
-    window.split_spin.setValue(220)
-    window._add_split_marker()
-    assert 220 in window._split_markers()
+    window.rect_crop_tool_button.click()
+    window.add_split_button.click()
+    _click_y_ruler_at_image_y(qtbot, window, 220.0)
+    assert any(abs(int(value) - 220) <= 4 for value in window._split_markers())
+    assert window.pan_tool_button.isChecked()
+    assert window._split_action_mode == "none"
 
     window.rect_crop_tool_button.click()
-    start = window.editor_canvas.mapFromScene(QPointF(20.0, 220.0))
-    end = window.editor_canvas.mapFromScene(QPointF(20.0, 280.0))
-    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
-    qtbot.mouseMove(window.editor_canvas.viewport(), pos=end)
-    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    assert window.rect_crop_tool_button.isChecked()
+    window.remove_split_button.click()
+    _click_y_ruler_at_image_y(qtbot, window, 220.0)
+    assert 220 not in window._split_markers()
+    assert window.pan_tool_button.isChecked()
+    assert window._split_action_mode == "none"
 
-    assert 220 in window._split_markers()
-    assert 280 not in window._split_markers()
+    window.free_crop_tool_button.click()
+    assert window.free_crop_tool_button.isChecked()
+
+
+def test_reset_split_markers_restores_auto_calculated_set(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2400), "white"),
+        title="split-reset",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    original_auto = _split_list_values(window)
+    assert original_auto
+    assert window._split_markers() == []
+
+    window.add_split_button.click()
+    _click_y_ruler_at_image_y(qtbot, window, 333.0)
+    assert window._split_markers()
+    assert any(abs(int(value) - 333) <= 4 for value in window._split_markers())
+
+    window.reset_split_markers_button.click()
+    qtbot.waitUntil(lambda: window._split_markers() == [], timeout=1000)
+    assert _split_list_values(window) == original_auto
+
+
+def test_remove_split_marker_stays_armed_when_click_misses_marker(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 2200), "white"),
+        title="split-remove-miss",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+    window._refresh_preview()
+    before = _split_list_values(window)
+    assert before
+
+    window.remove_split_button.click()
+    _click_y_ruler_at_image_y(qtbot, window, 4.0)
+
+    assert _split_list_values(window) == before
+    assert window._split_action_mode == "remove"
+    assert "no split marker near click" in window.status_label.text().lower()
+
+
+def test_draw_actions_return_to_pan_after_successful_operation(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="draw-one-shot",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+
+    window.rect_crop_tool_button.click()
+    window._on_editor_rect_drawn("crop_rect", QRectF(10.0, 12.0, 120.0, 180.0))
+    assert window.pan_tool_button.isChecked()
+
+    window.vertical_crop_tool_button.click()
+    window._on_editor_rect_drawn("crop_vertical_band", QRectF(24.0, 8.0, 180.0, 240.0))
+    assert window.pan_tool_button.isChecked()
+
+    window.redact_tool_button.click()
+    window._on_editor_rect_drawn("redact", QRectF(40.0, 55.0, 90.0, 70.0))
+    assert window.pan_tool_button.isChecked()
+
+
+def test_free_crop_finalize_returns_to_pan(qtbot: QtBot, tmp_path: Path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.output_input.setText(str(tmp_path))
+    window._add_capture(
+        image=Image.new("RGB", (420, 1200), "white"),
+        title="free-crop-one-shot",
+        source_hwnd=None,
+        frame_count=1,
+    )
+    window.queue_list.setCurrentRow(0)
+
+    window.free_crop_tool_button.click()
+    window._on_editor_free_crop([[10, 10], [200, 20], [180, 220]])
+    assert window.pan_tool_button.isChecked()
+    item = window._current_item()
+    assert item is not None
+    edits = window._session_for_item(item.item_id)
+    assert edits.get_operation("crop_free") is not None
 
 
 def test_crop_snap_rect_vertical_and_free_with_shift_override(
@@ -1884,10 +2165,10 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.editor_overlay_toggle,
         window.thumbnail_zoom_slider,
         window.page_preview_list,
-        window.split_spin,
         window.add_split_button,
         window.split_list,
         window.remove_split_button,
+        window.reset_split_markers_button,
         window.combine_checkbox,
         window.pdf_checkbox,
         window.tiff_checkbox,

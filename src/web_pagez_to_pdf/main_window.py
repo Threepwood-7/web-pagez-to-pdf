@@ -215,6 +215,8 @@ class MainWindow(QMainWindow):
         self._settings_window: SettingsWindow | None = None
         self._editor_loading = False
         self._current_preview_slices: list[tuple[int, int]] = []
+        self._effective_auto_split_markers: list[int] = []
+        self._split_action_mode = "none"
         self._undo_history: list[_EditorHistoryEntry] = []
         self._redo_history: list[_EditorHistoryEntry] = []
         self._history_restoring = False
@@ -763,31 +765,29 @@ class MainWindow(QMainWindow):
         layout_preview_layout.addWidget(self.page_preview_list, 1)
         editor_right_layout.addWidget(self.layout_preview_group)
 
-        self.editor_advanced_group, edit_adv_layout = self._new_collapsible_group(
-            "Split Markers",
-            expanded=not self._bool_setting("ui.editor_adv_collapsed", True),
-            parent=editor_right,
+        self.editor_advanced_group = QGroupBox("Split Markers", editor_right)
+        self._assign_control_identity(
+            self.editor_advanced_group,
+            "editor_advanced_group",
+            "editor_advanced_group",
         )
+        edit_adv_layout = QVBoxLayout(self.editor_advanced_group)
         split_form = QFormLayout()
-        self.split_spin = QSpinBox()
-        self.split_spin.setRange(0, 1000000)
         self.add_split_button = QPushButton("Add Split Marker")
         self.split_list = QListWidget()
         self.remove_split_button = QPushButton("Remove Split Marker")
-        self.preview_breaks_button = QPushButton("Preview Breaks")
+        self.reset_split_markers_button = QPushButton("Reset Split Markers")
         for widget, control in (
-            (self.split_spin, "split_spin"),
             (self.add_split_button, "add_split_button"),
             (self.split_list, "split_list"),
             (self.remove_split_button, "remove_split_button"),
-            (self.preview_breaks_button, "preview_breaks_button"),
+            (self.reset_split_markers_button, "reset_split_markers_button"),
         ):
             self._assign_control_identity(widget, control, control)
-        split_form.addRow("Split Y", self.split_spin)
         split_form.addRow(self.add_split_button)
         split_form.addRow(self.split_list)
         split_form.addRow(self.remove_split_button)
-        split_form.addRow(self.preview_breaks_button)
+        split_form.addRow(self.reset_split_markers_button)
         edit_adv_layout.addLayout(split_form)
         editor_right_layout.addWidget(self.editor_advanced_group)
 
@@ -917,10 +917,9 @@ class MainWindow(QMainWindow):
         self.vertical_border_crop_button.clicked.connect(self._run_vertical_border_crop)
         self.clear_redactions_button.clicked.connect(self._clear_redactions)
         self.reset_item_edits_button.clicked.connect(self._reset_item_edits)
-        self.add_split_button.clicked.connect(self._add_split_marker)
-        self.remove_split_button.clicked.connect(self._remove_split_marker)
-        self.preview_breaks_button.clicked.connect(self._preview_breaks)
-        self.split_list.currentRowChanged.connect(self._on_split_list_row_changed)
+        self.add_split_button.clicked.connect(self._arm_add_split_marker)
+        self.remove_split_button.clicked.connect(self._arm_remove_split_marker)
+        self.reset_split_markers_button.clicked.connect(self._reset_split_markers)
         self.output_browse_button.clicked.connect(self._browse_output)
         self.export_button.clicked.connect(self._run_export)
         self.editor_tool_buttons.buttonClicked.connect(self._on_editor_tool_changed)
@@ -1048,7 +1047,7 @@ class MainWindow(QMainWindow):
             (self.zoom_out_button, "Zoom out by 10%."),
             (self.zoom_in_button, "Zoom in by 10%."),
             (self.editor_view_zoom_spin, "Manual editor view zoom percent."),
-            (self.pan_tool_button, "Pan/scroll the preview and drag split markers."),
+            (self.pan_tool_button, "Pan/scroll the preview image."),
             (self.vertical_crop_tool_button, "Draw a vertical crop band."),
             (self.rect_crop_tool_button, "Draw a rectangular crop area."),
             (self.free_crop_tool_button, "Draw free-form crop points, then double-click to apply."),
@@ -1078,11 +1077,19 @@ class MainWindow(QMainWindow):
             (self.editor_overlay_toggle, "Toggle page-break guides, split markers, labels, and printable area guides."),
             (self.thumbnail_zoom_slider, "Scale the bottom thumbnail preview row."),
             (self.page_preview_list, "Live page thumbnails generated from current edit and layout settings."),
-            (self.split_spin, "Pixel Y position for adding a manual split marker."),
-            (self.add_split_button, "Add a manual split marker at the selected Y position."),
-            (self.split_list, "Manual split markers for this queue item."),
-            (self.remove_split_button, "Remove the selected manual split marker."),
-            (self.preview_breaks_button, "Recompute predicted page breaks with current settings."),
+            (
+                self.add_split_button,
+                "Arm one-shot split add mode. Then click the image area or Y ruler to place a split marker.",
+            ),
+            (self.split_list, "Current split markers for this queue item (auto-calculated when no edits are persisted)."),
+            (
+                self.remove_split_button,
+                "Arm one-shot split remove mode. Then click a split marker on the image or Y ruler to remove it.",
+            ),
+            (
+                self.reset_split_markers_button,
+                "Clear persisted split marker edits and restore auto-calculated split markers.",
+            ),
             (
                 self.vertical_border_crop_button,
                 "Auto Vertical Border Crop: detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
@@ -1214,7 +1221,6 @@ class MainWindow(QMainWindow):
             "layout.search_window_px": int(self.search_spin.value()),
             "layout.header_html": self.header_input.toHtml(),
             "layout.footer_html": self.footer_input.toHtml(),
-            "ui.editor_adv_collapsed": not self.editor_advanced_group.isChecked(),
             "ui.export_adv_collapsed": not self.export_advanced_group.isChecked(),
             "ui.editor_overlay_visible": self.editor_overlay_toggle.isChecked(),
             "editor.preview_debounce_ms": int(self._editor_preview_debounce_ms),
@@ -1328,9 +1334,6 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._enforce_default_splitter_sizes_if_unsaved)
 
             self.tabs.setCurrentIndex(0)
-            self.editor_advanced_group.setChecked(
-                not self._bool_setting("ui.editor_adv_collapsed", True)
-            )
             self.export_advanced_group.setChecked(
                 not self._bool_setting("ui.export_adv_collapsed", True)
             )
@@ -2170,6 +2173,12 @@ class MainWindow(QMainWindow):
         return self._queue[row]
 
     def _on_queue_selection_changed(self, *_args: object) -> None:
+        self._effective_auto_split_markers = []
+        if self._split_action_mode != "none":
+            self._set_split_action_mode(
+                "none",
+                reason="Split marker action canceled because queue selection changed.",
+            )
         self._set_editor_zoom_mode("fit_width")
         self._sync_editor_controls()
         self._sync_split_marker_list()
@@ -2177,6 +2186,8 @@ class MainWindow(QMainWindow):
         self._refresh_queue_summary()
 
     def _on_tab_changed(self, index: int) -> None:
+        if index != 1 and self._split_action_mode != "none":
+            self._set_split_action_mode("none")
         if index == 0 and len(self._int_list_setting("ui.capture_splitter_sizes")) < 2:
             QTimer.singleShot(0, self._apply_capture_splitter_default)
         if index == 1 and len(self._int_list_setting("ui.editor_splitter_sizes")) < 2:
@@ -2193,10 +2204,10 @@ class MainWindow(QMainWindow):
         return existing
 
     def _current_session(self) -> EditAdjustments | None:
-        item = self._current_item()
-        if item is None:
+        current_item = self._current_item()
+        if current_item is None:
             return None
-        return self._session_for_item(item.item_id)
+        return self._session_for_item(current_item.item_id)
 
     def _history_item_row(self, item_id: str | None) -> int:
         if not item_id:
@@ -2279,10 +2290,10 @@ class MainWindow(QMainWindow):
     def _editor_controls_changed(self, *_args: object) -> None:
         if self._editor_loading:
             return
-        item = self._current_item()
-        if item is None:
+        current_item = self._current_item()
+        if current_item is None:
             return
-        self._pending_transform_item_id = item.item_id
+        self._pending_transform_item_id = current_item.item_id
         self._pending_transform_values = (
             int(self.zoom_spin.value()),
             int(self.rotate_spin.value()),
@@ -2392,18 +2403,57 @@ class MainWindow(QMainWindow):
     def _normalized_markers(values: list[int]) -> list[int]:
         return sorted({int(value) for value in values if int(value) > 0})
 
+    @staticmethod
+    def _auto_split_markers_from_slices(
+        slices: list[tuple[int, int]],
+        *,
+        image_height: int,
+    ) -> list[int]:
+        return sorted(
+            {
+                int(bottom)
+                for _top, bottom in slices
+                if 0 < int(bottom) < int(image_height)
+            }
+        )
+
+    def _effective_split_markers(self) -> list[int]:
+        persisted = self._split_markers()
+        if persisted:
+            return persisted
+        return self._normalized_markers(list(self._effective_auto_split_markers))
+
+    def _editable_split_markers_base(self) -> list[int]:
+        persisted = self._split_markers()
+        if persisted:
+            return list(persisted)
+        return self._effective_split_markers()
+
+    def _nearest_effective_split_marker(
+        self, marker_y: int, *, tolerance_px: int
+    ) -> int | None:
+        markers = self._effective_split_markers()
+        if not markers:
+            return None
+        requested = int(marker_y)
+        nearest = min(markers, key=lambda marker: abs(int(marker) - requested))
+        if abs(int(nearest) - requested) > int(max(1, tolerance_px)):
+            return None
+        return int(nearest)
+
     def _sync_split_marker_list(self, *, selected_marker: int | None = None) -> None:
-        edits = self._current_session()
+        current_item = self._current_item()
         selected_value = selected_marker
         if selected_value is None and self.split_list.currentRow() >= 0:
             selected_value = self._split_marker_at_row(self.split_list.currentRow())
+        markers = self._effective_split_markers()
         with QSignalBlocker(self.split_list):
             self.split_list.clear()
-            if edits is None:
+            if current_item is None:
                 return
-            for marker in self._normalized_markers(edits.split_markers_px):
-                item = QListWidgetItem(str(marker))
-                self.split_list.addItem(item)
+            for marker in markers:
+                marker_item = QListWidgetItem(str(marker))
+                self.split_list.addItem(marker_item)
             if selected_value is not None:
                 for row in range(self.split_list.count()):
                     marker = self._split_marker_at_row(row)
@@ -2872,12 +2922,42 @@ class MainWindow(QMainWindow):
 
     def _on_editor_tool_changed(self, button: QToolButton) -> None:
         tool = str(button.property("tool") or "pan")
+        if tool != "pan" and self._split_action_mode != "none":
+            self._set_split_action_mode(
+                "none",
+                reason="Split marker action canceled because another tool was selected.",
+            )
         self.editor_canvas.set_tool(tool)
         self._apply_magnifier_visibility_for_tool(tool)
         if tool == "pan":
+            self.status_label.setText("Pan active: drag to scroll the preview image.")
+
+    def _activate_pan_mode(self, *, preserve_status: bool = False) -> None:
+        if not self.pan_tool_button.isChecked():
+            self.pan_tool_button.setChecked(True)
+        self.editor_canvas.set_tool("pan")
+        self._apply_magnifier_visibility_for_tool("pan")
+        if not preserve_status:
+            self.status_label.setText("Pan active: drag to scroll the preview image.")
+
+    def _set_split_action_mode(self, mode: str, *, reason: str | None = None) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"none", "add", "remove"}:
+            normalized = "none"
+        self._split_action_mode = normalized
+        self.editor_canvas.set_split_action_mode(normalized)
+        if normalized == "add":
             self.status_label.setText(
-                "Pan active: drag split markers directly on the image or ruler triangles."
+                "Add Split Marker armed. Click the image area or Y ruler to place a split marker."
             )
+            return
+        if normalized == "remove":
+            self.status_label.setText(
+                "Remove Split Marker armed. Click a split marker on the image or Y ruler to remove it."
+            )
+            return
+        if reason:
+            self.status_label.setText(reason)
 
     def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
         keep_normalized = str(keep or "").strip().lower()
@@ -2935,6 +3015,7 @@ class MainWindow(QMainWindow):
             return
         self._push_history_if_changed(before)
         self._refresh_preview()
+        self._activate_pan_mode()
 
     def _on_editor_free_crop(self, points_obj: object) -> None:
         self._flush_debounced_preview_update()
@@ -2956,6 +3037,7 @@ class MainWindow(QMainWindow):
         edits.set_operation("crop_free", {"points": normalized})
         self._push_history_if_changed(before)
         self._refresh_preview()
+        self._activate_pan_mode()
 
     def _refresh_preview(self, *_args: object) -> None:
         item = self._current_item()
@@ -2965,11 +3047,13 @@ class MainWindow(QMainWindow):
             self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
             self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
+            self._effective_auto_split_markers = []
             self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("No capture selected")
+            self._sync_split_marker_list()
             return
         self.editor_item_label.setText(f"Editing: {item.title} [{item.image_path.name}]")
         if not item.image_path.exists():
@@ -2978,11 +3062,13 @@ class MainWindow(QMainWindow):
             self.editor_canvas.set_page_overlays([], [], printable_width_px=0)
             self.editor_canvas.set_hover_overlay_pixmap(None)
             self._current_preview_slices = []
+            self._effective_auto_split_markers = []
             self._preview_page_hover_overlays = {}
             with QSignalBlocker(self.page_preview_list):
                 self.page_preview_list.clear()
             self.capture_tab_preview_label.setPixmap(QPixmap())
             self.capture_tab_preview_label.setText("Capture file missing")
+            self._sync_split_marker_list()
             return
         image = Image.open(item.image_path).convert("RGB")
         edits = self._session_for_item(item.item_id)
@@ -2994,16 +3080,22 @@ class MainWindow(QMainWindow):
         )
         slices = compute_page_slices(preview, layout, self._split_markers())
         self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
+        self._effective_auto_split_markers = self._auto_split_markers_from_slices(
+            self._current_preview_slices,
+            image_height=preview.height,
+        )
+        effective_markers = self._effective_split_markers()
         full_pixmap = pil_to_qpixmap(preview)
         self.editor_canvas.set_image(full_pixmap)
         self.editor_canvas.set_hover_overlay_pixmap(None)
         self.editor_canvas.set_overlay_visibility(self.editor_overlay_toggle.isChecked())
         self._apply_magnifier_visibility_for_tool()
         self.editor_canvas.set_page_overlays(
-            self._split_markers(),
+            effective_markers,
             self._current_preview_slices,
             printable_width_px=preview.width,
         )
+        self._sync_split_marker_list()
         self._sync_page_preview_list(
             preview,
             self._current_preview_slices,
@@ -3023,6 +3115,7 @@ class MainWindow(QMainWindow):
     def _run_vertical_border_crop(self, *_args: object) -> None:
         self._flush_debounced_preview_update()
         self._apply_auto_vertical_border_crop_item()
+        self._activate_pan_mode(preserve_status=True)
 
     def _apply_auto_vertical_border_crop_item(self) -> None:
         item = self._current_item()
@@ -3066,70 +3159,95 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
         self.status_label.setText("Redactions cleared.")
 
-    def _on_split_list_row_changed(self, row: int) -> None:
-        marker = self._split_marker_at_row(row)
-        if marker is None:
-            return
-        with QSignalBlocker(self.split_spin):
-            self.split_spin.setValue(marker)
-
-    def _add_split_marker(self) -> None:
+    def _arm_add_split_marker(self) -> None:
         if self._current_session() is None:
             self.status_label.setText("Select queue item first.")
             return
-        value = int(self.split_spin.value())
-        if value <= 0:
+        self._activate_pan_mode(preserve_status=True)
+        if self._split_action_mode == "add":
+            self._set_split_action_mode("none", reason="Add Split Marker canceled.")
             return
-        markers = self._split_markers()
-        markers.append(value)
-        self._set_manual_split_markers(markers, selected_marker=value)
+        self._set_split_action_mode("add")
+
+    def _arm_remove_split_marker(self) -> None:
+        if self._current_session() is None:
+            self.status_label.setText("Select queue item first.")
+            return
+        if not self._effective_split_markers():
+            self.status_label.setText("No split markers are available to remove.")
+            return
+        self._activate_pan_mode(preserve_status=True)
+        if self._split_action_mode == "remove":
+            self._set_split_action_mode("none", reason="Remove Split Marker canceled.")
+            return
+        self._set_split_action_mode("remove")
+
+    def _add_split_marker(self) -> None:
+        self._arm_add_split_marker()
 
     def _remove_split_marker(self) -> None:
-        if self._current_session() is None:
+        self._arm_remove_split_marker()
+
+    def _reset_split_markers(self) -> None:
+        self._flush_debounced_preview_update()
+        edits = self._current_session()
+        if edits is None:
+            self.status_label.setText("Select queue item first.")
             return
-        marker = self._split_marker_at_row(self.split_list.currentRow())
-        if marker is None:
-            return
-        markers = [value for value in self._split_markers() if value != marker]
-        self._set_manual_split_markers(markers)
+        before = self._snapshot_history_entry()
+        edits.split_markers_px = []
+        self._push_history_if_changed(before)
+        self._set_split_action_mode("none")
+        self._refresh_preview()
+        self._activate_pan_mode(preserve_status=True)
+        self.status_label.setText("Split markers reset to auto-calculated page breaks.")
 
     def _on_canvas_split_marker_added(self, marker_y: int) -> None:
         if self._current_session() is None:
             return
-        markers = self._split_markers()
+        markers = self._editable_split_markers_base()
         markers.append(int(marker_y))
+        normalized = self._normalized_markers(markers)
         self._set_manual_split_markers(markers, selected_marker=int(marker_y))
-        with QSignalBlocker(self.split_spin):
-            self.split_spin.setValue(int(marker_y))
+        if int(marker_y) in normalized:
+            self._set_split_action_mode("none")
+            self._activate_pan_mode(preserve_status=True)
+            self.status_label.setText(f"Split marker added at Y={int(marker_y)} px.")
 
     def _on_canvas_split_marker_moved(self, from_y: int, to_y: int) -> None:
         if self._current_session() is None:
             return
-        markers = [value for value in self._split_markers() if value != int(from_y)]
+        markers = self._editable_split_markers_base()
+        try:
+            markers.remove(int(from_y))
+        except ValueError:
+            nearest = self._nearest_effective_split_marker(int(from_y), tolerance_px=18)
+            if nearest is None:
+                return
+            markers = [value for value in markers if int(value) != int(nearest)]
         markers.append(int(to_y))
         self._set_manual_split_markers(markers, selected_marker=int(to_y))
-        with QSignalBlocker(self.split_spin):
-            self.split_spin.setValue(int(to_y))
 
     def _on_canvas_split_marker_removed(self, marker_y: int) -> None:
         if self._current_session() is None:
             return
-        markers = [value for value in self._split_markers() if value != int(marker_y)]
+        nearest = self._nearest_effective_split_marker(int(marker_y), tolerance_px=18)
+        if nearest is None:
+            self.status_label.setText(
+                "No split marker near click. Click a marker line or ruler triangle to remove."
+            )
+            return
+        markers = [value for value in self._editable_split_markers_base() if int(value) != int(nearest)]
         self._set_manual_split_markers(markers)
+        self._set_split_action_mode("none")
+        self._activate_pan_mode(preserve_status=True)
+        self.status_label.setText(f"Split marker removed at Y={int(nearest)} px.")
 
     def _split_markers(self) -> list[int]:
         edits = self._current_session()
         if edits is None:
             return []
         return self._normalized_markers(edits.split_markers_px)
-
-    def _preview_breaks(self) -> None:
-        item = self._current_item()
-        if item is None:
-            self.status_label.setText("Select queue item first.")
-            return
-        self._refresh_preview()
-        self.status_label.setText(f"Predicted page slices: {len(self._current_preview_slices)}")
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(

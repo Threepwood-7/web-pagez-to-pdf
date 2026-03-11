@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -59,6 +60,7 @@ class EditorCanvas(QGraphicsView):
         self._scene_padding_px = 120
         self._ruler_size_px = 26
         self._checker_step_px = 24
+        self._split_action_mode = "none"
         self._split_drag_original: int | None = None
         self._split_drag_current: int | None = None
         self._hover_scene_point: QPointF | None = None
@@ -204,6 +206,14 @@ class EditorCanvas(QGraphicsView):
         self._split_drag_current = None
         self._clear_overlay()
 
+    def set_split_action_mode(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"none", "add", "remove"}:
+            normalized = "none"
+        self._split_action_mode = normalized
+        self._split_drag_original = None
+        self._split_drag_current = None
+
     def set_magnifier_state(self, *, enabled: bool, zoom_factor: int) -> None:
         """Configure floating magnifier visibility and scale."""
 
@@ -240,12 +250,25 @@ class EditorCanvas(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self._update_hover_state(event.position().toPoint())
 
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._split_action_mode in {"add", "remove"}
+        ):
+            marker_y = self._split_action_target_y(event.position().toPoint())
+            if marker_y is not None:
+                if self._split_action_mode == "add":
+                    self.split_marker_added.emit(int(marker_y))
+                else:
+                    self.split_marker_removed.emit(int(marker_y))
+                event.accept()
+                return
+
         if event.button() == Qt.MouseButton.LeftButton and self._tool == "pan":
             scene_point = self.mapToScene(event.position().toPoint())
             marker = self._nearest_marker(scene_point.y())
-            if marker is not None and self._split_drag_hit(event.position().toPoint(), marker):
-                self._split_drag_original = marker
-                self._split_drag_current = marker
+            if marker is not None and self._split_knob_hit(event.position().toPoint(), marker):
+                self._split_drag_original = int(marker)
+                self._split_drag_current = int(marker)
                 event.accept()
                 return
 
@@ -282,11 +305,19 @@ class EditorCanvas(QGraphicsView):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self._update_hover_state(event.position().toPoint())
         if self._tool == "pan" and self._split_drag_original is not None:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                self._split_drag_original = None
+                self._split_drag_current = None
+                super().mouseMoveEvent(event)
+                return
             scene_point = self.mapToScene(event.position().toPoint())
             clamped = self._clamp_marker(scene_point.y())
             if clamped is None or clamped == self._split_drag_current:
                 return
-            self._replace_marker(self._split_drag_original, clamped)
+            current_marker = self._split_drag_current
+            if current_marker is None:
+                return
+            self._replace_marker(current_marker, clamped)
             self._split_drag_current = clamped
             self.viewport().update()
             event.accept()
@@ -304,13 +335,17 @@ class EditorCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._tool == "pan" and event.button() == Qt.MouseButton.LeftButton:
+        if (
+            self._tool == "pan"
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._split_drag_original is not None
+        ):
             original = self._split_drag_original
             current = self._split_drag_current
             self._split_drag_original = None
             self._split_drag_current = None
             if original is not None and current is not None and original != current:
-                self.split_marker_moved.emit(original, current)
+                self.split_marker_moved.emit(int(original), int(current))
                 self.viewport().update()
             event.accept()
             return
@@ -329,6 +364,13 @@ class EditorCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._tool == "pan"
+            and self._split_drag_original is not None
+            and not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        ):
+            self._split_drag_original = None
+            self._split_drag_current = None
         self._hover_inside_image = False
         self.hover_scene_position_changed.emit(
             {
@@ -405,19 +447,6 @@ class EditorCanvas(QGraphicsView):
             painter.setPen(guide_pen)
             painter.drawLine(QPointF(left_x, 0.0), QPointF(left_x, height))
             painter.drawLine(QPointF(right_x, 0.0), QPointF(right_x, height))
-            painter.restore()
-
-        if self._page_slices_px:
-            painter.save()
-            page_pen = QPen(QColor(38, 132, 255, 220), 1, Qt.PenStyle.DashLine)
-            painter.setPen(page_pen)
-            for page_number, (top, bottom) in enumerate(self._page_slices_px, start=1):
-                label_y = max(14.0, float(top) + 16.0)
-                painter.drawText(QPointF(8.0, label_y), f"Page {page_number}")
-                y_line = float(bottom)
-                if y_line < 1.0 or y_line >= height:
-                    continue
-                painter.drawLine(QPointF(0.0, y_line), QPointF(width, y_line))
             painter.restore()
 
         if self._manual_markers_px:
@@ -556,6 +585,18 @@ class EditorCanvas(QGraphicsView):
             painter.drawPolygon(triangle)
         painter.restore()
 
+    def _split_action_target_y(self, view_pos: QPoint) -> int | None:
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull() or pixmap.height() <= 1:
+            return None
+        scene_point = self.mapToScene(view_pos)
+        image_rect = QRectF(0.0, 0.0, float(pixmap.width()), float(pixmap.height()))
+        ruler_left = max(0, self.viewport().width() - int(self._ruler_size_px))
+        in_ruler = int(view_pos.x()) >= int(ruler_left)
+        if not in_ruler and not image_rect.contains(scene_point):
+            return None
+        return self._clamp_marker(scene_point.y())
+
     def _nearest_marker(self, y_pos: float) -> int | None:
         if not self._manual_markers_px:
             return None
@@ -565,25 +606,35 @@ class EditorCanvas(QGraphicsView):
         for marker in self._manual_markers_px:
             delta = abs(float(marker) - float(y_pos))
             if nearest_delta is None or delta < nearest_delta:
-                nearest = marker
+                nearest = int(marker)
                 nearest_delta = delta
         if nearest is None or nearest_delta is None or nearest_delta > tolerance:
             return None
-        return nearest
+        return int(nearest)
 
-    def _split_drag_hit(self, view_pos: QPoint, marker: int) -> bool:
-        scene_point = self.mapToScene(view_pos)
-        if abs(scene_point.y() - float(marker)) <= self._split_hit_tolerance():
-            return True
+    def _split_knob_hit(self, view_pos: QPoint, marker: int) -> bool:
         ruler_left = max(0, self.viewport().width() - int(self._ruler_size_px) - 16)
+        if int(view_pos.x()) < int(ruler_left):
+            return False
         marker_view_y = self.mapFromScene(QPointF(0.0, float(marker))).y()
-        return view_pos.x() >= ruler_left and abs(view_pos.y() - marker_view_y) <= 10
+        return abs(int(view_pos.y()) - int(marker_view_y)) <= 10
 
     def _split_hit_tolerance(self) -> float:
         scale = abs(float(self.transform().m22()))
         if scale <= 0.0001:
             scale = 1.0
         return max(4.0, 8.0 / scale)
+
+    def _clamp_marker(self, y_pos: float) -> int | None:
+        pixmap = self._pixmap_item.pixmap()
+        if pixmap.isNull() or pixmap.height() <= 1:
+            return None
+        return int(max(1, min(pixmap.height() - 1, round(float(y_pos)))))
+
+    def _replace_marker(self, old_value: int, new_value: int) -> None:
+        markers = [value for value in self._manual_markers_px if int(value) != int(old_value)]
+        markers.append(int(new_value))
+        self._manual_markers_px = sorted({int(value) for value in markers if int(value) > 0})
 
     def _update_hover_state(self, view_pos: QPoint) -> None:
         self._hover_view_point = QPoint(int(view_pos.x()), int(view_pos.y()))
@@ -715,19 +766,6 @@ class EditorCanvas(QGraphicsView):
         if abs(int(candidate) - int(center_axis)) > radius:
             return None
         return int(candidate)
-
-    def _clamp_marker(self, y_pos: float) -> int | None:
-        pixmap = self._pixmap_item.pixmap()
-        if pixmap.isNull():
-            return None
-        if pixmap.height() <= 1:
-            return None
-        return int(max(1, min(pixmap.height() - 1, round(float(y_pos)))))
-
-    def _replace_marker(self, old_value: int, new_value: int) -> None:
-        markers = [value for value in self._manual_markers_px if int(value) != int(old_value)]
-        markers.append(int(new_value))
-        self._manual_markers_px = sorted({int(value) for value in markers if int(value) > 0})
 
     def _paint_main_hover_overlay(self, painter: QPainter) -> None:
         pixmap = self._hover_overlay_pixmap

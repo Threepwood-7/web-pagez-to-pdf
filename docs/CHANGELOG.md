@@ -9,6 +9,14 @@
 - Expanded `Blank` and `Search` tooltips with explicit threshold/window behavior and tradeoff details.
 - Removed the `Wizardry` UI group and deleted Wizardry-specific scrollbar/border trim implementations.
 - Kept `Vertical Border Crop` as a selected-item editor action outside Wizardry.
+- Reworked Editor tool flow so `Pan` is persistent while split marker add/remove and draw/finalize actions are one-shot and return to `Pan`.
+- Made `Split Markers` a non-checkable section and moved split add/remove into one-shot armed actions.
+- Unified auto-calculated and edited split markers in Editor: auto markers are now shown in the split list/canvas using the same marker style, and become persisted edits on first add/remove/move.
+- Replaced `Split Y` numeric input with one-shot `Add Split Marker` / `Remove Split Marker` click-on-canvas or click-on-Y-ruler flow, and added `Reset Split Markers`.
+- Restored split-marker drag/move via ruler triangle indicators for all visible split markers.
+- Fixed split-marker drag rendering so moving a marker no longer leaves duplicate trailing split lines in preview.
+- Removed `Preview Breaks`; `Reset Split Markers` is now the single explicit split reset/recompute action.
+- Fixed Pan-mode event handling so panning stops immediately on mouse release/leave and cannot latch on unpressed mouse moves.
 - Added `docs/REMOVEDFEATURES.md` to document removed Wizardry behavior and remaining alternatives.
 - Updated GUI/unit coverage for the new control contract, left-gutter geometry, header/footer thumbnail rendering, and legacy Wizard operation no-op handling.
 
