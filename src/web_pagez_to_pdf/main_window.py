@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import os
 import re
 import threading
@@ -14,7 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageQt
 from PySide6.QtCore import (
     QByteArray,
@@ -28,7 +26,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap, QTextDocument
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -80,8 +78,6 @@ from .image_processing import (
     compute_page_slices,
     pil_to_qpixmap,
     suggest_auto_vertical_border_crop_with_confidence,
-    suggest_scrollbar_trim_with_confidence,
-    suggest_window_border_trim_with_confidence,
 )
 from .models import (
     CaptureItem,
@@ -586,12 +582,14 @@ class MainWindow(QMainWindow):
             "Vertical Border Crop",
             "crop_vertical_band",
         )
+        self.vertical_border_crop_button = QPushButton("Auto Vertical Border Crop", tools_group)
         self.rect_crop_tool_button = self._new_editor_tool_button("Rect Crop", "crop_rect")
         self.free_crop_tool_button = self._new_editor_tool_button("Free Crop", "crop_free")
         self.redact_tool_button = self._new_editor_tool_button("Redact", "redact")
         for widget, control in (
             (self.pan_tool_button, "pan_tool_button"),
             (self.vertical_crop_tool_button, "vertical_crop_tool_button"),
+            (self.vertical_border_crop_button, "vertical_border_crop_button"),
             (self.rect_crop_tool_button, "rect_crop_tool_button"),
             (self.free_crop_tool_button, "free_crop_tool_button"),
             (self.redact_tool_button, "redact_tool_button"),
@@ -600,6 +598,7 @@ class MainWindow(QMainWindow):
         for button in (
             self.pan_tool_button,
             self.vertical_crop_tool_button,
+            self.vertical_border_crop_button,
             self.rect_crop_tool_button,
             self.free_crop_tool_button,
             self.redact_tool_button,
@@ -792,38 +791,6 @@ class MainWindow(QMainWindow):
         edit_adv_layout.addLayout(split_form)
         editor_right_layout.addWidget(self.editor_advanced_group)
 
-        self.wizardry_group = QGroupBox("Wizardry", editor_right)
-        wizardry_layout = QVBoxLayout(self.wizardry_group)
-        self.wizard_apply_queue_checkbox = QCheckBox("Apply to whole queue")
-        self.wizard_apply_queue_checkbox.setChecked(False)
-        self.wizard_auto_vertical_border_crop_button = QPushButton("Auto Vertical Border Crop")
-        self.wizard_remove_scrollbar_button = QPushButton("Remove Vertical Scrollbar")
-        self.wizard_remove_border_button = QPushButton("Remove Window Border")
-        self.wizard_undo_button = QPushButton("Undo")
-        self.wizard_redo_button = QPushButton("Redo")
-        for widget, control in (
-            (self.wizardry_group, "wizardry_group"),
-            (self.wizard_apply_queue_checkbox, "wizard_apply_queue_checkbox"),
-            (
-                self.wizard_auto_vertical_border_crop_button,
-                "wizard_auto_vertical_border_crop_button",
-            ),
-            (self.wizard_remove_scrollbar_button, "wizard_remove_scrollbar_button"),
-            (self.wizard_remove_border_button, "wizard_remove_border_button"),
-            (self.wizard_undo_button, "wizard_undo_button"),
-            (self.wizard_redo_button, "wizard_redo_button"),
-        ):
-            self._assign_control_identity(widget, control, control)
-        wizardry_layout.addWidget(self.wizard_apply_queue_checkbox)
-        wizardry_layout.addWidget(self.wizard_auto_vertical_border_crop_button)
-        wizardry_layout.addWidget(self.wizard_remove_scrollbar_button)
-        wizardry_layout.addWidget(self.wizard_remove_border_button)
-        wizardry_actions_row = QHBoxLayout()
-        wizardry_actions_row.addWidget(self.wizard_undo_button)
-        wizardry_actions_row.addWidget(self.wizard_redo_button)
-        wizardry_layout.addLayout(wizardry_actions_row)
-        editor_right_layout.addWidget(self.wizardry_group)
-
         ops_group = QGroupBox("Operations", editor_right)
         ops_layout = QVBoxLayout(ops_group)
         self.clear_redactions_button = QPushButton("Clear Redactions")
@@ -947,13 +914,7 @@ class MainWindow(QMainWindow):
         self.up_button.clicked.connect(self._queue_move_up)
         self.down_button.clicked.connect(self._queue_move_down)
         self.remove_button.clicked.connect(self._queue_remove)
-        self.wizard_auto_vertical_border_crop_button.clicked.connect(
-            self._run_wizard_auto_vertical_border_crop
-        )
-        self.wizard_remove_scrollbar_button.clicked.connect(self._run_wizard_remove_scrollbar)
-        self.wizard_remove_border_button.clicked.connect(self._run_wizard_remove_window_border)
-        self.wizard_undo_button.clicked.connect(self._undo_editor_change)
-        self.wizard_redo_button.clicked.connect(self._redo_editor_change)
+        self.vertical_border_crop_button.clicked.connect(self._run_vertical_border_crop)
         self.clear_redactions_button.clicked.connect(self._clear_redactions)
         self.reset_item_edits_button.clicked.connect(self._reset_item_edits)
         self.add_split_button.clicked.connect(self._add_split_marker)
@@ -1102,8 +1063,16 @@ class MainWindow(QMainWindow):
             (self.margin_left_spin, "Left page margin in millimeters."),
             (self.margin_right_spin, "Right page margin in millimeters."),
             (self.gutter_spin, "Extra inner gutter margin in millimeters."),
-            (self.blank_spin, "Blank-row threshold used to find clean split cuts."),
-            (self.search_spin, "Search window around ideal split for blank-row cuts."),
+            (
+                self.blank_spin,
+                "Blank-row threshold (0..255). Higher values treat near-white rows as blank more aggressively; "
+                "lower values require cleaner white rows before accepting a split cut.",
+            ),
+            (
+                self.search_spin,
+                "Search window in pixels around each ideal page break. Larger windows can find cleaner blank-row "
+                "cuts farther from the ideal split; smaller windows keep cuts closer to the target position.",
+            ),
             (self.header_input, "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
             (self.footer_input, "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
             (self.editor_overlay_toggle, "Toggle page-break guides, split markers, labels, and printable area guides."),
@@ -1115,23 +1084,9 @@ class MainWindow(QMainWindow):
             (self.remove_split_button, "Remove the selected manual split marker."),
             (self.preview_breaks_button, "Recompute predicted page breaks with current settings."),
             (
-                self.wizard_apply_queue_checkbox,
-                "Apply Wizardry actions to all queue items instead of only the selected item.",
+                self.vertical_border_crop_button,
+                "Auto Vertical Border Crop: detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
             ),
-            (
-                self.wizard_auto_vertical_border_crop_button,
-                "Auto Vertical Border Crop: detect left/right content bounds from center to border.",
-            ),
-            (
-                self.wizard_remove_scrollbar_button,
-                "Detect and trim right-side vertical scrollbar area.",
-            ),
-            (
-                self.wizard_remove_border_button,
-                "Peel probable window border from outer edges toward the center.",
-            ),
-            (self.wizard_undo_button, "Undo the most recent editor change (Ctrl+Z)."),
-            (self.wizard_redo_button, "Redo the last undone editor change (Ctrl+Y)."),
             (self.clear_redactions_button, "Remove all redactions for the selected item."),
             (self.reset_item_edits_button, "Reset all editor operations for the selected item."),
             (self.combine_checkbox, "Export all queue items as one combined job."),
@@ -2298,8 +2253,6 @@ class MainWindow(QMainWindow):
             self._undo_action.setEnabled(can_undo)
         if self._redo_action is not None:
             self._redo_action.setEnabled(can_redo)
-        self.wizard_undo_button.setEnabled(can_undo)
-        self.wizard_redo_button.setEnabled(can_redo)
 
     def _undo_editor_change(self) -> None:
         if not self._undo_history:
@@ -2322,9 +2275,6 @@ class MainWindow(QMainWindow):
         self._undo_history.append(current)
         self._restore_history_entry(entry)
         self.status_label.setText("Redo applied.")
-
-    def _wizard_apply_to_queue(self) -> bool:
-        return bool(self.wizard_apply_queue_checkbox.isChecked())
 
     def _editor_controls_changed(self, *_args: object) -> None:
         if self._editor_loading:
@@ -2552,6 +2502,56 @@ class MainWindow(QMainWindow):
     def _effective_rich_html(self, rich_html: str) -> str:
         return rich_html if self._rich_text_has_meaningful_content(rich_html) else ""
 
+    @staticmethod
+    def _apply_layout_tokens(text: str, context: dict[str, str]) -> str:
+        result = str(text or "")
+        for key, value in context.items():
+            result = result.replace(f"{{{key}}}", value)
+        return result
+
+    def _render_preview_rich_text(
+        self,
+        qimage,
+        *,
+        rich_html: str,
+        context: dict[str, str],
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        align_bottom: bool = False,
+    ) -> None:
+        if width <= 4 or height <= 4:
+            return
+        effective_html = self._effective_rich_html(rich_html)
+        rendered_html = self._apply_layout_tokens(effective_html, context).strip()
+        if not rendered_html:
+            return
+
+        doc = QTextDocument()
+        doc.setDocumentMargin(0.0)
+        doc.setHtml(rendered_html)
+        doc.setTextWidth(float(max(1, width - 6)))
+        doc_height = float(doc.size().height())
+        if doc_height <= 0.0:
+            return
+
+        text_top = float(top + 3)
+        if align_bottom:
+            text_top = float(top + max(1, height - int(round(doc_height)) - 3))
+
+        painter = QPainter(qimage)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setPen(QColor(24, 24, 24))
+            painter.save()
+            painter.setClipRect(int(left), int(top), int(width), int(height))
+            painter.translate(float(left + 3), text_top)
+            doc.drawContents(painter)
+            painter.restore()
+        finally:
+            painter.end()
+
     def _collect_layout(self) -> PrintLayout:
         header_html = self._effective_rich_html(self.header_input.toHtml())
         footer_html = self._effective_rich_html(self.footer_input.toHtml())
@@ -2638,6 +2638,9 @@ class MainWindow(QMainWindow):
         page_image: Image.Image,
         *,
         layout: PrintLayout | None = None,
+        page_title: str = "",
+        page_index: int = 1,
+        page_count: int = 1,
     ) -> Image.Image:
         active_layout = layout if layout is not None else self._collect_layout()
         page_name = str(active_layout.paper_name or "A4").strip().upper()
@@ -2661,14 +2664,19 @@ class MainWindow(QMainWindow):
         page_h_px = max(slice_h + 2, int(round(float(page_h_pt) * px_per_pt)))
         decorated = Image.new("RGB", (page_w_px, page_h_px), (244, 244, 244))
         draw = ImageDraw.Draw(decorated, "RGBA")
+        legend_h = 22
 
-        image_left = max(0, min(page_w_px - 2, int(round(margin_left_pt * px_per_pt))))
+        left_margin_boundary = max(0, min(page_w_px - 2, int(round(margin_left_pt * px_per_pt))))
+        image_left = max(
+            0,
+            min(page_w_px - 2, int(round((margin_left_pt + gutter_pt) * px_per_pt))),
+        )
         image_top = max(0, min(page_h_px - 2, int(round(margin_top_pt * px_per_pt))))
         image_right = max(
             image_left + 1,
             min(
                 page_w_px - 1,
-                int(round((float(page_w_pt) - margin_right_pt - gutter_pt) * px_per_pt)),
+                int(round((float(page_w_pt) - margin_right_pt) * px_per_pt)),
             ),
         )
         printable_bottom = max(
@@ -2677,10 +2685,6 @@ class MainWindow(QMainWindow):
                 page_h_px - 1,
                 int(round((float(page_h_pt) - margin_bottom_pt) * px_per_pt)),
             ),
-        )
-        right_margin_boundary = max(
-            image_right,
-            min(page_w_px - 1, int(round((float(page_w_pt) - margin_right_pt) * px_per_pt))),
         )
 
         image_width = max(1, min(int(slice_w), image_right - image_left))
@@ -2700,12 +2704,12 @@ class MainWindow(QMainWindow):
             outline=THUMBNAIL_MARGIN_CUE_COLOR,
             width=3,
         )
-        if right_margin_boundary > image_right:
+        if image_left > left_margin_boundary:
             draw.rectangle(
                 (
-                    image_right,
+                    left_margin_boundary,
                     image_top,
-                    right_margin_boundary,
+                    image_left,
                     printable_bottom,
                 ),
                 fill=(
@@ -2717,8 +2721,42 @@ class MainWindow(QMainWindow):
                 outline=THUMBNAIL_GUTTER_CUE_COLOR,
                 width=2,
             )
+
+        preview_context = {
+            "title": str(page_title or "preview"),
+            "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "page": str(max(1, int(page_index))),
+            "pages": str(max(1, int(page_count))),
+        }
+        qimage = ImageQt.ImageQt(decorated)
+        header_top = max(0, legend_h + 4)
+        header_height = max(0, image_top - header_top)
+        footer_top = max(0, printable_bottom + 1)
+        footer_height = max(0, page_h_px - footer_top - 1)
+        self._render_preview_rich_text(
+            qimage,
+            rich_html=active_layout.header_rich_text,
+            context=preview_context,
+            left=image_left,
+            top=header_top,
+            width=max(1, image_right - image_left),
+            height=header_height,
+            align_bottom=False,
+        )
+        self._render_preview_rich_text(
+            qimage,
+            rich_html=active_layout.footer_rich_text,
+            context=preview_context,
+            left=image_left,
+            top=footer_top,
+            width=max(1, image_right - image_left),
+            height=footer_height,
+            align_bottom=True,
+        )
+        decorated = ImageQt.fromqimage(qimage).convert("RGB")
+        draw = ImageDraw.Draw(decorated, "RGBA")
+
         legend_w = min(page_w_px - 4, max(96, round(page_w_px * 0.86)))
-        legend_h = 22
         draw.rectangle((2, 2, legend_w, legend_h), fill=(0, 0, 0, 180))
         legend_segments = (
             ("Margins", THUMBNAIL_MARGIN_CUE_COLOR),
@@ -2738,6 +2776,8 @@ class MainWindow(QMainWindow):
         preview: Image.Image,
         slices: list[tuple[int, int]],
         layout: PrintLayout,
+        *,
+        item_title: str,
     ) -> None:
         self._clear_page_preview_hover_overlay()
         pixmap_role = int(Qt.ItemDataRole.UserRole) + 1
@@ -2745,9 +2785,16 @@ class MainWindow(QMainWindow):
         self._preview_page_hover_overlays = {}
         with QSignalBlocker(self.page_preview_list):
             self.page_preview_list.clear()
+            page_count = max(1, len(slices))
             for index, (top, bottom) in enumerate(slices, start=1):
                 cropped = preview.crop((0, top, preview.width, bottom))
-                decorated = self._decorate_page_thumbnail(cropped, layout=layout)
+                decorated = self._decorate_page_thumbnail(
+                    cropped,
+                    layout=layout,
+                    page_title=item_title,
+                    page_index=index,
+                    page_count=page_count,
+                )
                 base_pixmap = pil_to_qpixmap(decorated)
                 thumbnail = base_pixmap.scaled(
                     self.page_preview_list.iconSize(),
@@ -2957,7 +3004,12 @@ class MainWindow(QMainWindow):
             self._current_preview_slices,
             printable_width_px=preview.width,
         )
-        self._sync_page_preview_list(preview, self._current_preview_slices, layout)
+        self._sync_page_preview_list(
+            preview,
+            self._current_preview_slices,
+            layout,
+            item_title=item.title,
+        )
         self._sync_editor_view_zoom_controls()
         thumb = full_pixmap.scaled(
             max(1, self.capture_tab_preview_label.width() - 8),
@@ -2968,248 +3020,9 @@ class MainWindow(QMainWindow):
         self.capture_tab_preview_label.setPixmap(thumb)
         self.capture_tab_preview_label.setText("")
 
-    @staticmethod
-    def _queue_confidence_minimum(total_items: int) -> int:
-        return max(2, math.ceil(0.6 * total_items))
-
-    def _run_wizard_auto_vertical_border_crop(self, *_args: object) -> None:
+    def _run_vertical_border_crop(self, *_args: object) -> None:
         self._flush_debounced_preview_update()
-        if self._wizard_apply_to_queue():
-            self._apply_auto_vertical_border_crop_queue()
-            return
         self._apply_auto_vertical_border_crop_item()
-
-    def _run_wizard_remove_scrollbar(self, *_args: object) -> None:
-        self._flush_debounced_preview_update()
-        if self._wizard_apply_to_queue():
-            if not self._queue:
-                self.status_label.setText("Queue is empty.")
-                return
-            right_ratios: list[float] = []
-            for item in self._queue:
-                if not item.image_path.exists():
-                    continue
-                image = Image.open(item.image_path).convert("RGB")
-                right_px, confident = suggest_scrollbar_trim_with_confidence(image)
-                if confident and right_px > 0:
-                    right_ratios.append(float(right_px) / float(max(1, image.width)))
-            minimum_count = self._queue_confidence_minimum(len(self._queue))
-            if len(right_ratios) < minimum_count:
-                self.status_label.setText("Queue scrollbar trim has insufficient confidence.")
-                return
-            right_ratio = float(np.median(np.asarray(right_ratios, dtype=np.float32)))
-            before = self._snapshot_history_entry()
-            for item in self._queue:
-                if not item.image_path.exists():
-                    continue
-                image = Image.open(item.image_path).convert("RGB")
-                right_px = round(right_ratio * image.width)
-                edits = self._session_for_item(item.item_id)
-                if right_px <= 0:
-                    edits.remove_operation("wizard_scrollbar_trim")
-                else:
-                    edits.set_operation("wizard_scrollbar_trim", {"right": int(right_px)})
-            self._push_history_if_changed(before)
-            self._sync_editor_controls()
-            self._sync_split_marker_list()
-            self._refresh_preview()
-            self.status_label.setText("Queue vertical scrollbar trim applied.")
-            return
-
-        item = self._current_item()
-        if item is None:
-            self.status_label.setText("Select queue item first.")
-            return
-        image = Image.open(item.image_path).convert("RGB")
-        right_px, confident = suggest_scrollbar_trim_with_confidence(image)
-        before = self._snapshot_history_entry()
-        edits = self._session_for_item(item.item_id)
-        if confident and right_px > 0:
-            edits.set_operation("wizard_scrollbar_trim", {"right": int(right_px)})
-            self.status_label.setText(f"Scrollbar trim right={int(right_px)}px applied.")
-        else:
-            edits.remove_operation("wizard_scrollbar_trim")
-            self.status_label.setText("Could not confidently detect a vertical scrollbar.")
-        self._push_history_if_changed(before)
-        self._refresh_preview()
-
-    @staticmethod
-    def _wizard_border_trim_from_edits(edits: EditAdjustments) -> tuple[int, int, int, int]:
-        op = edits.get_operation("wizard_border_trim")
-        if op is None:
-            return (0, 0, 0, 0)
-        return (
-            max(0, int(op.params.get("left", 0))),
-            max(0, int(op.params.get("right", 0))),
-            max(0, int(op.params.get("top", 0))),
-            max(0, int(op.params.get("bottom", 0))),
-        )
-
-    @staticmethod
-    def _clamp_trim_margins_to_safe_bounds(
-        width: int,
-        height: int,
-        left: int,
-        right: int,
-        top: int,
-        bottom: int,
-    ) -> tuple[int, int, int, int]:
-        left = max(0, int(left))
-        right = max(0, int(right))
-        top = max(0, int(top))
-        bottom = max(0, int(bottom))
-        max_trim_width = max(0, int(width) - 20)
-        max_trim_height = max(0, int(height) - 20)
-        if left + right > max_trim_width:
-            overflow = (left + right) - max_trim_width
-            if right >= left:
-                reduced = min(overflow, right)
-                right -= reduced
-                overflow -= reduced
-                if overflow > 0:
-                    left = max(0, left - overflow)
-            else:
-                reduced = min(overflow, left)
-                left -= reduced
-                overflow -= reduced
-                if overflow > 0:
-                    right = max(0, right - overflow)
-        if top + bottom > max_trim_height:
-            overflow = (top + bottom) - max_trim_height
-            if bottom >= top:
-                reduced = min(overflow, bottom)
-                bottom -= reduced
-                overflow -= reduced
-                if overflow > 0:
-                    top = max(0, top - overflow)
-            else:
-                reduced = min(overflow, top)
-                top -= reduced
-                overflow -= reduced
-                if overflow > 0:
-                    bottom = max(0, bottom - overflow)
-        return (left, right, top, bottom)
-
-    def _crop_with_trim_margins(
-        self,
-        image: Image.Image,
-        left: int,
-        right: int,
-        top: int,
-        bottom: int,
-    ) -> tuple[Image.Image, tuple[int, int, int, int]]:
-        left, right, top, bottom = self._clamp_trim_margins_to_safe_bounds(
-            image.width,
-            image.height,
-            left,
-            right,
-            top,
-            bottom,
-        )
-        x1 = left
-        y1 = top
-        x2 = max(x1 + 1, image.width - right)
-        y2 = max(y1 + 1, image.height - bottom)
-        return (image.crop((x1, y1, x2, y2)), (left, right, top, bottom))
-
-    def _apply_iterative_border_trim_for_item(self, item: CaptureItem) -> tuple[bool, bool]:
-        if not item.image_path.exists():
-            return (False, False)
-        image = Image.open(item.image_path).convert("RGB")
-        edits = self._session_for_item(item.item_id)
-        current_left, current_right, current_top, current_bottom = self._wizard_border_trim_from_edits(
-            edits
-        )
-        working, (current_left, current_right, current_top, current_bottom) = self._crop_with_trim_margins(
-            image,
-            current_left,
-            current_right,
-            current_top,
-            current_bottom,
-        )
-        left_delta, right_delta, top_delta, bottom_delta, left_ok, right_ok, top_ok, bottom_ok = (
-            suggest_window_border_trim_with_confidence(working)
-        )
-        if not (left_ok or right_ok or top_ok or bottom_ok):
-            return (False, False)
-        next_left = current_left + (int(left_delta) if left_ok else 0)
-        next_right = current_right + (int(right_delta) if right_ok else 0)
-        next_top = current_top + (int(top_delta) if top_ok else 0)
-        next_bottom = current_bottom + (int(bottom_delta) if bottom_ok else 0)
-        next_left, next_right, next_top, next_bottom = self._clamp_trim_margins_to_safe_bounds(
-            image.width,
-            image.height,
-            next_left,
-            next_right,
-            next_top,
-            next_bottom,
-        )
-        if (
-            next_left == current_left
-            and next_right == current_right
-            and next_top == current_top
-            and next_bottom == current_bottom
-        ):
-            return (False, True)
-        edits.set_operation(
-            "wizard_border_trim",
-            {
-                "left": int(next_left),
-                "right": int(next_right),
-                "top": int(next_top),
-                "bottom": int(next_bottom),
-            },
-        )
-        return (True, True)
-
-    def _run_wizard_remove_window_border(self, *_args: object) -> None:
-        self._flush_debounced_preview_update()
-        if self._wizard_apply_to_queue():
-            if not self._queue:
-                self.status_label.setText("Queue is empty.")
-                return
-            before = self._snapshot_history_entry()
-            applied_items = 0
-            detected_items = 0
-            for item in self._queue:
-                applied, detected = self._apply_iterative_border_trim_for_item(item)
-                if detected:
-                    detected_items += 1
-                if applied:
-                    applied_items += 1
-            changed = self._push_history_if_changed(before)
-            self._sync_editor_controls()
-            self._sync_split_marker_list()
-            self._refresh_preview()
-            if changed and applied_items > 0:
-                self.status_label.setText(
-                    f"Queue next inner border level applied to {applied_items} item(s)."
-                )
-            elif detected_items > 0:
-                self.status_label.setText("Queue border trim is already at safe bounds.")
-            else:
-                self.status_label.setText("No deeper border confidently detected for queue.")
-            return
-
-        item = self._current_item()
-        if item is None:
-            self.status_label.setText("Select queue item first.")
-            return
-        before = self._snapshot_history_entry()
-        applied, detected = self._apply_iterative_border_trim_for_item(item)
-        changed = self._push_history_if_changed(before)
-        self._refresh_preview()
-        if changed and applied:
-            edits = self._session_for_item(item.item_id)
-            left_px, right_px, top_px, bottom_px = self._wizard_border_trim_from_edits(edits)
-            self.status_label.setText(
-                "Next inner border level applied "
-                f"(l={left_px}px r={right_px}px t={top_px}px b={bottom_px}px)."
-            )
-        elif detected:
-            self.status_label.setText("Border trim is already at safe bounds.")
-        else:
-            self.status_label.setText("No deeper border confidently detected.")
 
     def _apply_auto_vertical_border_crop_item(self) -> None:
         item = self._current_item()
@@ -3240,43 +3053,6 @@ class MainWindow(QMainWindow):
             )
         self._push_history_if_changed(before)
         self._refresh_preview()
-
-    def _apply_auto_vertical_border_crop_queue(self) -> None:
-        if not self._queue:
-            self.status_label.setText("Queue is empty.")
-            return
-        before = self._snapshot_history_entry()
-        applied_items = 0
-        for item in self._queue:
-            if not item.image_path.exists():
-                continue
-            image = Image.open(item.image_path).convert("RGB")
-            left_px, right_px, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
-                image
-            )
-            edits = self._session_for_item(item.item_id)
-            if (left_ok and left_px > 0) or (right_ok and right_px > 0):
-                edits.remove_operation("nav_auto_crop")
-                edits.set_operation(
-                    "auto_vertical_border_crop",
-                    {"left": int(left_px), "right": int(right_px)},
-                )
-                applied_items += 1
-                continue
-            edits.remove_operation("auto_vertical_border_crop")
-            edits.remove_operation("nav_auto_crop")
-        changed = self._push_history_if_changed(before)
-        self._sync_editor_controls()
-        self._sync_split_marker_list()
-        self._refresh_preview()
-        if changed and applied_items > 0:
-            self.status_label.setText(
-                f"Queue auto vertical border crop applied to {applied_items} item(s)."
-            )
-        else:
-            self.status_label.setText(
-                "Queue auto vertical border crop has insufficient confidence."
-            )
 
     def _clear_redactions(self) -> None:
         self._flush_debounced_preview_update()

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-03-11
+
+### Editor Preview + Wizardry Removal
+
+- Moved gutter placement to the left side in both editor print-preview thumbnails and PDF export placement math.
+- Updated print preview thumbnails so header/footer rich text is rendered into page-margin regions with token resolution (`{title}`, `{page}`, `{pages}`, `{datetime}`).
+- Expanded `Blank` and `Search` tooltips with explicit threshold/window behavior and tradeoff details.
+- Removed the `Wizardry` UI group and deleted Wizardry-specific scrollbar/border trim implementations.
+- Kept `Vertical Border Crop` as a selected-item editor action outside Wizardry.
+- Added `docs/REMOVEDFEATURES.md` to document removed Wizardry behavior and remaining alternatives.
+- Updated GUI/unit coverage for the new control contract, left-gutter geometry, header/footer thumbnail rendering, and legacy Wizard operation no-op handling.
+
 ## 2026-03-09
 
 ### Archived: ROADMAPZ.md

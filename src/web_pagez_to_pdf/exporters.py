@@ -238,11 +238,12 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
     pdf = canvas.Canvas(str(output_path), pagesize=(page_w, page_h))
     total_pages = len(frames)
     avail_w = page_w - (request.layout.margin_left_mm + request.layout.margin_right_mm + request.layout.gutter_mm) * mm
+    content_x = (request.layout.margin_left_mm + request.layout.gutter_mm) * mm
     for page_index, frame in enumerate(frames, start=1):
         scale = avail_w / float(frame.image.width)
         rendered_h = frame.image.height * scale
         y = page_h - request.layout.margin_top_mm * mm - rendered_h
-        pdf.drawInlineImage(frame.image, request.layout.margin_left_mm * mm, y, width=avail_w, height=rendered_h)
+        pdf.drawInlineImage(frame.image, content_x, y, width=avail_w, height=rendered_h)
 
         context = {
             "title": frame.title,
@@ -250,8 +251,8 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
             "page": str(page_index),
             "pages": str(total_pages),
         }
-        _draw_rich_text(pdf, request.layout.header_rich_text, context, request.layout.margin_left_mm * mm, page_h - 16, avail_w)
-        _draw_rich_text(pdf, request.layout.footer_rich_text, context, request.layout.margin_left_mm * mm, 12, avail_w)
+        _draw_rich_text(pdf, request.layout.header_rich_text, context, content_x, page_h - 16, avail_w)
+        _draw_rich_text(pdf, request.layout.footer_rich_text, context, content_x, 12, avail_w)
         if page_index < total_pages:
             pdf.showPage()
             pdf.setPageSize((page_w, page_h))

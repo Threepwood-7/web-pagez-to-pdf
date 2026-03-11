@@ -4,7 +4,9 @@ import zipfile
 from typing import TYPE_CHECKING
 
 from PIL import Image
+from reportlab.lib.units import mm
 
+from web_pagez_to_pdf import exporters
 from web_pagez_to_pdf.exporters import _meaningful_rich_text_or_empty, run_export
 from web_pagez_to_pdf.models import (
     CaptureItem,
@@ -145,3 +147,78 @@ def test_meaningful_rich_text_filter_treats_css_only_html_as_blank() -> None:
     """
     assert _meaningful_rich_text_or_empty(css_only_html) == ""
     assert _meaningful_rich_text_or_empty("<p>Header</p>").strip() != ""
+
+
+def test_export_pdf_uses_left_margin_plus_gutter_for_content_origin(tmp_path: Path, monkeypatch) -> None:
+    request = _request_for_image(
+        image_path=tmp_path / "input.png",
+        output_dir=tmp_path,
+        basename="pdf-gutter-left",
+        formats=ExportFormats(pdf=True),
+    )
+    Image.new("RGB", (320, 240), "white").save(request.captures[0].image_path, format="PNG")
+    request.layout = PrintLayout(
+        paper_name="A4",
+        orientation="portrait",
+        margin_left_mm=15.0,
+        margin_right_mm=12.0,
+        margin_top_mm=20.0,
+        margin_bottom_mm=20.0,
+        gutter_mm=8.0,
+        header_rich_text="<p>{title}</p>",
+        footer_rich_text="<p>{page}/{pages}</p>",
+    )
+
+    class _FakeCanvas:
+        def __init__(self, _path: str, *, pagesize: tuple[float, float]) -> None:
+            self.page_w = float(pagesize[0])
+            self.draw_calls: list[tuple[float, float, float, float]] = []
+
+        def drawInlineImage(self, _image, x_pos: float, y_pos: float, *, width: float, height: float) -> None:
+            self.draw_calls.append((float(x_pos), float(y_pos), float(width), float(height)))
+
+        def showPage(self) -> None:
+            return
+
+        def setPageSize(self, _size: tuple[float, float]) -> None:
+            return
+
+        def save(self) -> None:
+            return
+
+    fake_canvas: _FakeCanvas | None = None
+    rich_text_x_positions: list[float] = []
+
+    def _canvas_factory(path: str, pagesize: tuple[float, float]):
+        del path
+        nonlocal fake_canvas
+        fake_canvas = _FakeCanvas("", pagesize=pagesize)
+        return fake_canvas
+
+    def _fake_draw_rich_text(pdf_obj, rich_text: str, context: dict[str, str], x_pos: float, y_pos: float, width: float) -> None:
+        del pdf_obj, rich_text, context, y_pos, width
+        rich_text_x_positions.append(float(x_pos))
+
+    monkeypatch.setattr(exporters.canvas, "Canvas", _canvas_factory)
+    monkeypatch.setattr(exporters, "_draw_rich_text", _fake_draw_rich_text)
+
+    frame = exporters.PageFrame(
+        image=Image.new("RGB", (200, 120), "white"),
+        title="sample",
+        source_item=request.captures[0],
+        page_index_in_item=1,
+        page_count_in_item=1,
+    )
+    exporters.export_pdf(request, [frame])
+
+    assert fake_canvas is not None
+    assert len(fake_canvas.draw_calls) == 1
+    x_pos, _y_pos, width, _height = fake_canvas.draw_calls[0]
+    expected_x = (request.layout.margin_left_mm + request.layout.gutter_mm) * mm
+    expected_width = fake_canvas.page_w - (
+        request.layout.margin_left_mm + request.layout.margin_right_mm + request.layout.gutter_mm
+    ) * mm
+    assert abs(x_pos - expected_x) <= 0.001
+    assert abs(width - expected_width) <= 0.001
+    assert rich_text_x_positions
+    assert all(abs(pos - expected_x) <= 0.001 for pos in rich_text_x_positions)
