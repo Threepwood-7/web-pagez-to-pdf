@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -103,14 +104,14 @@ class SettingsWindow(QDialog):
         )
         content_layout.addWidget(self.section_tree, 0)
 
-        self.scroll = QScrollArea(content_host)
-        self.scroll.setWidgetResizable(True)
-        self.scroll_host = QWidget(self.scroll)
+        self.scroll_area = QScrollArea(content_host)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_host = QWidget(self.scroll_area)
         self.scroll_layout = QVBoxLayout(self.scroll_host)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(8)
-        self.scroll.setWidget(self.scroll_host)
-        content_layout.addWidget(self.scroll, 1)
+        self.scroll_area.setWidget(self.scroll_host)
+        content_layout.addWidget(self.scroll_area, 1)
 
         self.no_matches_label = QLabel("No settings match your search.", self)
         self.no_matches_label.setVisible(False)
@@ -125,16 +126,16 @@ class SettingsWindow(QDialog):
             | QDialogButtonBox.StandardButton.Close,
             parent=self,
         )
-        apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
-        if apply_button is not None:
-            apply_button.clicked.connect(self._emit_apply)
-        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
-        if close_button is not None:
-            close_button.clicked.connect(self.hide)
+        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
+            self._emit_apply
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.hide)
         root.addWidget(buttons)
 
         if self.section_tree.topLevelItemCount() > 0:
-            self.section_tree.setCurrentItem(self.section_tree.topLevelItem(0))
+            first_item: QTreeWidgetItem | None = self.section_tree.topLevelItem(0)
+            if first_item is not None:
+                self.section_tree.setCurrentItem(first_item)
 
     def _build_sections(self) -> None:
         capture_group = self._add_section(
@@ -512,8 +513,12 @@ class SettingsWindow(QDialog):
     def set_values(self, values: dict[str, object]) -> None:
         """Load settings payload into controls."""
 
-        self.capture_max_pages_spin.setValue(int(values.get("capture.max_pages", 50)))
-        self.capture_delay_spin.setValue(int(values.get("capture.delay_ms", 333)))
+        self.capture_max_pages_spin.setValue(
+            self._int_setting(values, "capture.max_pages", 50)
+        )
+        self.capture_delay_spin.setValue(
+            self._int_setting(values, "capture.delay_ms", 333)
+        )
         self._set_combo_value(
             self.capture_backend_combo,
             str(values.get("capture.backend_primary", "screen_region_gdi")),
@@ -590,30 +595,32 @@ class SettingsWindow(QDialog):
             str(values.get("layout.orientation", "portrait")),
         )
         self.layout_margin_top_spin.setValue(
-            float(values.get("layout.margin_top_mm", 20.0))
+            self._float_setting(values, "layout.margin_top_mm", 20.0)
         )
         self.layout_margin_bottom_spin.setValue(
-            float(values.get("layout.margin_bottom_mm", 20.0))
+            self._float_setting(values, "layout.margin_bottom_mm", 20.0)
         )
         self.layout_margin_left_spin.setValue(
-            float(values.get("layout.margin_left_mm", 15.0))
+            self._float_setting(values, "layout.margin_left_mm", 15.0)
         )
         self.layout_margin_right_spin.setValue(
-            float(values.get("layout.margin_right_mm", 15.0))
+            self._float_setting(values, "layout.margin_right_mm", 15.0)
         )
-        self.layout_gutter_spin.setValue(float(values.get("layout.gutter_mm", 0.0)))
+        self.layout_gutter_spin.setValue(
+            self._float_setting(values, "layout.gutter_mm", 0.0)
+        )
         self.layout_blank_threshold_spin.setValue(
-            int(values.get("layout.blank_row_threshold", 245))
+            self._int_setting(values, "layout.blank_row_threshold", 245)
         )
         self.layout_search_window_spin.setValue(
-            int(values.get("layout.search_window_px", 300))
+            self._int_setting(values, "layout.search_window_px", 300)
         )
         self.layout_header_edit.setHtml(str(values.get("layout.header_html", "")))
         self.layout_footer_edit.setHtml(str(values.get("layout.footer_html", "")))
         self.editor_overlay_visible_checkbox.setChecked(
             bool(values.get("ui.editor_overlay_visible", True))
         )
-        debounce_value = int(values.get("editor.preview_debounce_ms", 333))
+        debounce_value = self._int_setting(values, "editor.preview_debounce_ms", 333)
         self.editor_preview_debounce_spin.setValue(max(0, min(2000, debounce_value)))
         self.editor_adv_collapsed.setChecked(
             bool(values.get("ui.editor_adv_collapsed", True))
@@ -752,8 +759,8 @@ class SettingsWindow(QDialog):
         self._ensure_visible_section_selection()
 
     def _ensure_visible_section_selection(self) -> None:
-        current = self.section_tree.currentItem()
-        if current is not None and not current.isHidden():
+        selected_items = self.section_tree.selectedItems()
+        if selected_items and not selected_items[0].isHidden():
             return
         for index in range(self.section_tree.topLevelItemCount()):
             item = self.section_tree.topLevelItem(index)
@@ -776,7 +783,47 @@ class SettingsWindow(QDialog):
         section = self._sections.get(key)
         if section is None or not section.group.isVisible():
             return
-        self.scroll.ensureWidgetVisible(section.group, 0, 18)
+        self.scroll_area.ensureWidgetVisible(section.group, 0, 18)
+
+    @staticmethod
+    def _int_setting(values: Mapping[str, object], key: str, default: int) -> int:
+        """Coerce integer settings loaded from loosely typed JSON-like payloads."""
+
+        value = values.get(key, default)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return default
+            try:
+                return int(float(stripped))
+            except ValueError:
+                return default
+        return default
+
+    @staticmethod
+    def _float_setting(values: Mapping[str, object], key: str, default: float) -> float:
+        """Coerce float settings loaded from loosely typed JSON-like payloads."""
+
+        value = values.get(key, default)
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return default
+            try:
+                return float(stripped)
+            except ValueError:
+                return default
+        return default
 
     @staticmethod
     def _set_combo_value(combo: QComboBox, value: str) -> None:

@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QGuiApplication,
+    QKeyEvent,
+    QMouseEvent,
+    QPaintEvent,
+    QPainter,
+    QPen,
+    QScreen,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -64,9 +74,10 @@ class WindowPickerDialog(QDialog):
     def selected_window(self) -> PickedWindow | None:
         """Return selected item window metadata."""
 
-        current = self._list.currentItem()
-        if current is None:
+        selected_items = self._list.selectedItems()
+        if not selected_items:
             return None
+        current = selected_items[0]
         hwnd_data = current.data(Qt.ItemDataRole.UserRole)
         if hwnd_data is None:
             return None
@@ -93,34 +104,24 @@ class CrosshairPickerOverlay(QWidget):
     def show_fullscreen_on_cursor_screen(self) -> None:
         """Show overlay on current cursor screen to capture point selection."""
 
-        screen = self.screen()
-        if screen is None and self.windowHandle() is not None:
-            screen = self.windowHandle().screen()
-        if screen is None:
-            from PySide6.QtGui import QGuiApplication
-
-            screen = QGuiApplication.screenAt(QCursor.pos())
-        if screen is None:
-            from PySide6.QtGui import QGuiApplication
-
-            screen = QGuiApplication.primaryScreen()
+        screen = self._overlay_screen()
         if screen is not None:
             self.setGeometry(screen.geometry())
         self.show()
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         point = event.globalPosition().toPoint()
         self.pick_requested.emit(point.x(), point.y())
         self.close()
         super().mousePressEvent(event)
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
             self.close()
         super().keyPressEvent(event)
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 60))
@@ -131,3 +132,14 @@ class CrosshairPickerOverlay(QWidget):
         painter.drawLine(center.x() - 20, center.y(), center.x() + 20, center.y())
         painter.drawLine(center.x(), center.y() - 20, center.x(), center.y() + 20)
         super().paintEvent(event)
+
+    def _overlay_screen(self) -> QScreen | None:
+        """Resolve a usable screen without trusting optimistic nullability stubs."""
+
+        screens = QGuiApplication.screens()
+        if not screens:
+            return None
+        cursor_screen = QGuiApplication.screenAt(QCursor.pos())
+        if isinstance(cursor_screen, QScreen):
+            return cursor_screen
+        return screens[0]

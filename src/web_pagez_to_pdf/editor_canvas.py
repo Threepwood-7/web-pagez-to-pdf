@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QMouseEvent,
@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygon,
+    QResizeEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -352,7 +353,7 @@ class EditorCanvas(QGraphicsView):
             current = self._split_drag_current
             self._split_drag_original = None
             self._split_drag_current = None
-            if original is not None and current is not None and original != current:
+            if current is not None and original != current:
                 self.split_marker_moved.emit(int(original), int(current))
                 self.viewport().update()
             event.accept()
@@ -371,7 +372,7 @@ class EditorCanvas(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def leaveEvent(self, event) -> None:
+    def leaveEvent(self, event: QEvent) -> None:
         if (
             self._tool == "pan"
             and self._split_drag_original is not None
@@ -403,23 +404,24 @@ class EditorCanvas(QGraphicsView):
             return
         super().mouseDoubleClickEvent(event)
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         if self._zoom_mode in {"fit_height", "fit_width"}:
             self._apply_zoom()
             self.zoom_changed.emit(self._zoom_mode, int(self._manual_zoom_percent))
         super().resizeEvent(event)
 
-    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+    def drawBackground(self, painter: QPainter, rect: QRectF | QRect) -> None:
         super().drawBackground(painter, rect)
-        if rect.isEmpty():
+        draw_rect = rect if isinstance(rect, QRectF) else QRectF(rect)
+        if draw_rect.isEmpty():
             return
         step = max(6, int(self._checker_step_px))
         light = QColor(245, 245, 245)
         dark = QColor(232, 232, 232)
-        start_x = int(math.floor(rect.left() / step) * step)
-        start_y = int(math.floor(rect.top() / step) * step)
-        end_x = math.ceil(rect.right())
-        end_y = math.ceil(rect.bottom())
+        start_x = int(math.floor(draw_rect.left() / step) * step)
+        start_y = int(math.floor(draw_rect.top() / step) * step)
+        end_x = math.ceil(draw_rect.right())
+        end_y = math.ceil(draw_rect.bottom())
         painter.save()
         painter.setPen(Qt.PenStyle.NoPen)
         for x_pos in range(start_x, end_x + step, step):
@@ -431,7 +433,7 @@ class EditorCanvas(QGraphicsView):
                 )
         painter.restore()
 
-    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+    def drawForeground(self, painter: QPainter, rect: QRectF | QRect) -> None:
         super().drawForeground(painter, rect)
         _unused = rect
         pixmap = self._pixmap_item.pixmap()
@@ -718,7 +720,7 @@ class EditorCanvas(QGraphicsView):
         scene_point: QPointF,
         *,
         tool: str,
-        modifiers: Qt.KeyboardModifier | Qt.KeyboardModifiers,
+        modifiers: Qt.KeyboardModifier,
     ) -> QPointF:
         pixmap = self._pixmap_item.pixmap()
         if pixmap.isNull():

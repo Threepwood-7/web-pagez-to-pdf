@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCursor, QGuiApplication
+from PySide6.QtGui import QCursor, QEnterEvent, QGuiApplication, QScreen
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
@@ -56,9 +56,7 @@ class HoverStopOverlay(QWidget):
     def show_top_right(self) -> None:
         """Show overlay pinned to top-right corner of the active screen."""
 
-        screen = QGuiApplication.screenAt(QCursor.pos())
-        if screen is None:
-            screen = QGuiApplication.primaryScreen()
+        screen = self._overlay_screen()
         if screen is not None:
             area = screen.availableGeometry()
             margin = 12
@@ -67,6 +65,17 @@ class HoverStopOverlay(QWidget):
             self.move(x_pos, y_pos)
         self.show()
 
-    def enterEvent(self, event) -> None:
+    def enterEvent(self, event: QEnterEvent) -> None:
         self.stop_requested.emit()
         super().enterEvent(event)
+
+    def _overlay_screen(self) -> QScreen | None:
+        """Pick the active or primary screen using the screens list as ground truth."""
+
+        screens = QGuiApplication.screens()
+        if not screens:
+            return None
+        cursor_screen = QGuiApplication.screenAt(QCursor.pos())
+        if isinstance(cursor_screen, QScreen):
+            return cursor_screen
+        return screens[0]
