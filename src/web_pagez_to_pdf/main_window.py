@@ -7,15 +7,16 @@ import re
 import threading
 import uuid
 from contextlib import suppress
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 from PIL import Image, ImageDraw, ImageQt
 from PySide6.QtCore import (
     QByteArray,
     QEvent,
+    QObject,
     QRectF,
     QSignalBlocker,
     QSize,
@@ -26,12 +27,17 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
     QIcon,
+    QImage,
     QKeySequence,
+    QMoveEvent,
     QPainter,
     QPixmap,
+    QResizeEvent,
     QTextDocument,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -138,6 +144,84 @@ THUMBNAIL_BORDER_CUE_COLOR = (255, 255, 255, 240)
 CAPTURE_UI_LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
+def _coerce_int_value(value: object, *, default: int = 0) -> int:
+    """Coerce loose Qt/settings payload values into an integer."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return default
+    return default
+
+
+def _object_sequence(value: object) -> list[object] | None:
+    """Normalize tuple/list payloads into a concrete object list."""
+
+    if not isinstance(value, (list, tuple)):
+        return None
+    return list(cast(list[object] | tuple[object, ...], value))
+
+
+def _string_object_mapping(value: object) -> dict[str, object] | None:
+    """Normalize ad-hoc dict payloads to string-key object mappings."""
+
+    if not isinstance(value, dict):
+        return None
+    return {str(key): item for key, item in cast(dict[object, object], value).items()}
+
+
+def _point_pair(value: object) -> tuple[int, int] | None:
+    """Normalize free-crop point payloads into integer X/Y coordinates."""
+
+    point_values = _object_sequence(value)
+    if point_values is None or len(point_values) < 2:
+        return None
+    return (
+        _coerce_int_value(point_values[0]),
+        _coerce_int_value(point_values[1]),
+    )
+
+
+def _pil_image_from_qpixmap(pixmap: QPixmap) -> Image.Image:
+    """Convert a QPixmap into a Pillow image with a verified runtime type."""
+
+    image_qt: Any = ImageQt
+    image = image_qt.fromqpixmap(pixmap)
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+    raise TypeError("ImageQt.fromqpixmap did not return a Pillow image")
+
+
+def _pil_image_from_qimage(image: QImage) -> Image.Image:
+    """Convert a QImage into a Pillow image with a verified runtime type."""
+
+    image_qt: Any = ImageQt
+    pil_image = image_qt.fromqimage(image)
+    if isinstance(pil_image, Image.Image):
+        return pil_image.convert("RGB")
+    raise TypeError("ImageQt.fromqimage did not return a Pillow image")
+
+
+def _qimage_from_pil_image(image: Image.Image) -> QImage:
+    """Convert a Pillow image into a QImage with a verified runtime type."""
+
+    image_qt: Any = ImageQt
+    qimage = image_qt.ImageQt(image)
+    if isinstance(qimage, QImage):
+        return qimage
+    raise TypeError("ImageQt.ImageQt did not return a QImage")
+
+
 class FullCaptureWorker(QThread):
     """Worker thread wrapper for full-scroll capture flow."""
 
@@ -196,7 +280,7 @@ class ThumbnailPreviewList(QListWidget):
 
     zoom_delta_requested = Signal(int)
 
-    def wheelEvent(self, event) -> None:
+    def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = int(event.angleDelta().y())
             if delta != 0:
@@ -1407,7 +1491,7 @@ class MainWindow(QMainWindow):
 
     def _apply_settings_payload(self, payload_obj: object) -> None:
         self._flush_debounced_preview_update()
-        payload = payload_obj if isinstance(payload_obj, dict) else {}
+        payload = _string_object_mapping(payload_obj) or {}
         for key, value in payload.items():
             self._settings.set_value(key, value)
         self._settings.sync()
@@ -1653,28 +1737,23 @@ class MainWindow(QMainWindow):
         value = self._settings.value(key)
         if value is None:
             return []
-        if isinstance(value, (list, tuple)):
-            raw_values = list(value)
+        raw_values = _object_sequence(value)
+        if raw_values is not None:
+            raw_values = list(raw_values)
         elif isinstance(value, str):
             raw_values = [part for part in re.split(r"[,\s]+", value.strip()) if part]
         else:
             raw_values = [value]
         parsed: list[int] = []
         for raw in raw_values:
-            try:
-                number = int(float(raw))
-            except (TypeError, ValueError):
-                continue
+            number = _coerce_int_value(raw, default=0)
             if number > 0:
                 parsed.append(number)
         return parsed
 
     @staticmethod
     def _clamp_preview_debounce_ms(value: object) -> int:
-        try:
-            parsed = int(float(value))
-        except (TypeError, ValueError):
-            parsed = 333
+        parsed = _coerce_int_value(value, default=333)
         return max(0, min(2000, parsed))
 
     def _persist_splitter_sizes(self, *_args: object) -> None:
@@ -1968,23 +2047,22 @@ class MainWindow(QMainWindow):
         self._settings.set_value("ui.window_is_maximized", self.isMaximized())
         self._persist_splitter_sizes()
 
-    def moveEvent(self, event) -> None:
+    def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
         self._schedule_window_state_snapshot()
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._schedule_window_state_snapshot()
 
-    def changeEvent(self, event) -> None:
+    def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             self._schedule_window_state_snapshot()
 
-    def eventFilter(self, watched: object, event: object) -> bool:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (
             watched is self.page_preview_list.viewport()
-            and isinstance(event, QEvent)
             and event.type() == QEvent.Type.Leave
         ):
             self._clear_page_preview_hover_overlay()
@@ -2127,9 +2205,10 @@ class MainWindow(QMainWindow):
                 "Alt+Tab quick capture failed: no valid foreground target."
             )
             return
-        self._set_target(self._picked_window_from_hwnd(hwnd))
+        target = self._picked_window_from_hwnd(hwnd)
+        self._set_target(target)
         self._append_capture_log(
-            f"Alt+Tab selected target: {self._selected_target.label}."
+            f"Alt+Tab selected target: {target.label}."
         )
         self._capture_selected_viewport()
 
@@ -2148,28 +2227,29 @@ class MainWindow(QMainWindow):
         CAPTURE_UI_LOGGER.info("viewport capture requested")
         if not self._ensure_capture_target_selected("viewport capture"):
             return
+        target = self._selected_target
+        if target is None:
+            return
         CAPTURE_UI_LOGGER.info(
             "viewport capture target hwnd=%s label=%r backend=%s frame_region=%s include_cursor=%s",
-            self._selected_target.hwnd,
-            self._selected_target.label,
+            target.hwnd,
+            target.label,
             self._capture_backend_primary(),
             self._capture_frame_region(),
             self._capture_include_mouse_cursor(),
         )
-        focused, message = self._capture_service.activate_window(
-            self._selected_target.hwnd
-        )
+        focused, message = self._capture_service.activate_window(target.hwnd)
         if not focused:
             CAPTURE_UI_LOGGER.error(
                 "viewport capture focus failed hwnd=%s reason=%s",
-                self._selected_target.hwnd,
+                target.hwnd,
                 message or "unknown",
             )
             self.status_label.setText(message)
             return
         try:
             pixmap, backend_used = self._capture_service.capture_window(
-                self._selected_target.hwnd,
+                target.hwnd,
                 primary_backend=self._capture_backend_primary(),
                 frame_region=self._capture_frame_region(),
                 include_mouse_cursor=self._capture_include_mouse_cursor(),
@@ -2177,22 +2257,22 @@ class MainWindow(QMainWindow):
             if pixmap is None:
                 CAPTURE_UI_LOGGER.error(
                     "viewport capture failed hwnd=%s backend=%s",
-                    self._selected_target.hwnd,
+                    target.hwnd,
                     backend_used or self._capture_backend_primary(),
                 )
                 self.status_label.setText("Capture failed.")
                 return
-            image = ImageQt.fromqpixmap(pixmap).convert("RGB")
-            capture_title = self._selected_target.title or self._selected_target.label
+            image = _pil_image_from_qpixmap(pixmap)
+            capture_title = target.title or target.label
             self._add_capture(
                 image=image,
                 title=capture_title,
-                source_hwnd=self._selected_target.hwnd,
+                source_hwnd=target.hwnd,
                 frame_count=1,
             )
             CAPTURE_UI_LOGGER.info(
                 "viewport capture complete hwnd=%s backend=%s",
-                self._selected_target.hwnd,
+                target.hwnd,
                 backend_used or "unknown",
             )
             self.status_label.setText(
@@ -2205,14 +2285,17 @@ class MainWindow(QMainWindow):
         CAPTURE_UI_LOGGER.info("full capture requested")
         if not self._ensure_capture_target_selected("full capture"):
             return
+        target = self._selected_target
+        if target is None:
+            return
         if self._capture_worker is not None and self._capture_worker.isRunning():
             CAPTURE_UI_LOGGER.warning("full capture ignored: worker already running")
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
             "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s auto_trim=%s auto_trim_scrollbar=%s",
-            self._selected_target.hwnd,
-            self._selected_target.label,
+            target.hwnd,
+            target.label,
             self._capture_backend_primary(),
             self._capture_scroll_mode(),
             self._capture_wheel_injection_mode(),
@@ -2233,13 +2316,11 @@ class MainWindow(QMainWindow):
             self._append_capture_log(
                 "Legacy wheel mode overridden to Physical Center (SendInput) for full capture."
             )
-        focused, message = self._capture_service.ensure_window_foreground(
-            self._selected_target.hwnd
-        )
+        focused, message = self._capture_service.ensure_window_foreground(target.hwnd)
         if not focused:
             CAPTURE_UI_LOGGER.error(
                 "full capture preflight focus failed hwnd=%s reason=%s",
-                self._selected_target.hwnd,
+                target.hwnd,
                 message or "unknown",
             )
             self.status_label.setText(
@@ -2252,7 +2333,7 @@ class MainWindow(QMainWindow):
         self._stop_event.clear()
         self._capture_worker = FullCaptureWorker(
             capture_service=self._capture_service,
-            target_hwnd=self._selected_target.hwnd,
+            target_hwnd=target.hwnd,
             options=ScrollCaptureOptions(
                 max_capture_pages=int(self.max_pages_spin.value()),
                 delay_ms=int(self.capture_delay_spin.value()),
@@ -2274,7 +2355,7 @@ class MainWindow(QMainWindow):
         self._capture_worker.capture_progress.connect(self._on_full_capture_progress)
         self._capture_worker.finished.connect(self._full_capture_finished)
         self.capture_log_list.clear()
-        self._append_capture_log(f"Target focused: {self._selected_target.label}.")
+        self._append_capture_log(f"Target focused: {target.label}.")
         self._append_capture_log(
             "Full capture started "
             f"(backend={self._capture_backend_primary()}, scroll_mode={self._capture_scroll_mode()}, "
@@ -2291,7 +2372,7 @@ class MainWindow(QMainWindow):
             self._stop_overlay.show_top_right()
             CAPTURE_UI_LOGGER.info(
                 "full capture worker start() call hwnd=%s",
-                self._selected_target.hwnd,
+                target.hwnd,
             )
             self._capture_worker.start()
             running_now = self._capture_worker.isRunning()
@@ -2852,8 +2933,6 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= self.split_list.count():
             return None
         item = self.split_list.item(row)
-        if item is None:
-            return None
         try:
             marker = int(item.text().strip())
         except (TypeError, ValueError):
@@ -2950,7 +3029,7 @@ class MainWindow(QMainWindow):
 
     def _render_preview_rich_text(
         self,
-        qimage,
+        qimage: QImage,
         *,
         rich_html: str,
         context: dict[str, str],
@@ -3040,8 +3119,6 @@ class MainWindow(QMainWindow):
         pixmap_role = int(Qt.ItemDataRole.UserRole) + 1
         for row in range(self.page_preview_list.count()):
             item = self.page_preview_list.item(row)
-            if item is None:
-                continue
             source_obj = item.data(pixmap_role)
             if not isinstance(source_obj, QPixmap) or source_obj.isNull():
                 continue
@@ -3059,9 +3136,6 @@ class MainWindow(QMainWindow):
         self.editor_canvas.set_hover_overlay_pixmap(None)
 
     def _on_page_preview_item_hovered(self, item: QListWidgetItem) -> None:
-        if item is None:
-            self._clear_page_preview_hover_overlay()
-            return
         row = self.page_preview_list.row(item)
         overlay = self._preview_page_hover_overlays.get(row)
         if overlay is None or overlay.isNull():
@@ -3182,7 +3256,7 @@ class MainWindow(QMainWindow):
             "page": str(max(1, int(page_index))),
             "pages": str(max(1, int(page_count))),
         }
-        qimage = ImageQt.ImageQt(decorated)
+        qimage = _qimage_from_pil_image(decorated)
         header_top = max(0, legend_h + 4)
         header_height = max(0, printable_top - header_top)
         footer_top = max(0, printable_bottom + 1)
@@ -3207,7 +3281,7 @@ class MainWindow(QMainWindow):
             height=footer_height,
             align_bottom=True,
         )
-        decorated = ImageQt.fromqimage(qimage).convert("RGB")
+        decorated = _pil_image_from_qimage(qimage)
         draw = ImageDraw.Draw(decorated, "RGBA")
 
         legend_w = min(page_w_px - 4, max(96, round(page_w_px * 0.86)))
@@ -3417,11 +3491,24 @@ class MainWindow(QMainWindow):
             op = edits.get_operation("redact_rects")
             rectangles: list[dict[str, int]] = []
             if op is not None:
-                raw = op.params.get("rectangles")
-                if isinstance(raw, list):
-                    for row in raw:
-                        if isinstance(row, dict):
-                            rectangles.append(deepcopy(row))
+                raw_rows = _object_sequence(op.params.get("rectangles"))
+                if raw_rows is not None:
+                    for row in raw_rows:
+                        row_values = _string_object_mapping(row)
+                        if row_values is None:
+                            continue
+                        rectangles.append(
+                            {
+                                "x": _coerce_int_value(row_values.get("x")),
+                                "y": _coerce_int_value(row_values.get("y")),
+                                "width": _coerce_int_value(
+                                    row_values.get("width"), default=1
+                                ),
+                                "height": _coerce_int_value(
+                                    row_values.get("height"), default=1
+                                ),
+                            }
+                        )
             rectangles.append(redaction)
             edits.set_operation("redact_rects", {"rectangles": rectangles})
         else:
@@ -3436,12 +3523,13 @@ class MainWindow(QMainWindow):
         if item is None:
             self.status_label.setText("Select queue item first.")
             return
-        points = points_obj if isinstance(points_obj, list) else []
+        points = _object_sequence(points_obj) or []
         normalized: list[list[int]] = []
         for point in points:
-            if not isinstance(point, (list, tuple)) or len(point) < 2:
+            point_pair = _point_pair(point)
+            if point_pair is None:
                 continue
-            normalized.append([int(point[0]), int(point[1])])
+            normalized.append([point_pair[0], point_pair[1]])
         if len(normalized) < 3:
             return
         edits = self._session_for_item(item.item_id)
@@ -3809,7 +3897,7 @@ class MainWindow(QMainWindow):
         widget_id = widget_naming.control_widget_id(self.window_id, control)
         assign_widget_identity(widget, widget_id=widget_id, widget_alias=alias)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         self._flush_debounced_preview_update()
         self._request_stop()
         self._window_state_timer.stop()
