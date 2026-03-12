@@ -1002,7 +1002,7 @@ def test_editor_zoom_defaults_fit_width_and_manual_controls(
             self._delta = int(delta_y)
             self.accepted = False
 
-        def angleDelta(self) -> QPoint:  # noqa: N802
+        def angleDelta(self) -> QPoint:
             return QPoint(0, self._delta)
 
         def accept(self) -> None:

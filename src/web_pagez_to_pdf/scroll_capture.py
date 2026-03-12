@@ -108,7 +108,7 @@ class _ScrollStepOutcome:
     estimated_trim_bottom_px: int = 0
 
 
-def run_full_page_capture(  # noqa: C901 - capture flow coordinates scrolling and stitching
+def run_full_page_capture(
     service: WindowCaptureService,
     target_hwnd: int,
     options: ScrollCaptureOptions,
@@ -1165,7 +1165,7 @@ def _horizontal_band_activity(
     return _average(samples)
 
 
-def detect_right_scrollbar_trim_single_frame(  # noqa: C901 - heuristic frame analysis
+def detect_right_scrollbar_trim_single_frame(
     frame: Image.Image,
 ) -> int:
     """Estimate right-edge scrollbar width from one frame with conservative confidence checks."""

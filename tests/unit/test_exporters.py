@@ -180,17 +180,17 @@ def test_export_pdf_uses_left_margin_plus_gutter_for_content_origin(
             self.page_w = float(pagesize[0])
             self.draw_calls: list[tuple[float, float, float, float]] = []
 
-        def drawInlineImage(  # noqa: N802
+        def drawInlineImage(
             self, _image, x_pos: float, y_pos: float, *, width: float, height: float
         ) -> None:
             self.draw_calls.append(
                 (float(x_pos), float(y_pos), float(width), float(height))
             )
 
-        def showPage(self) -> None:  # noqa: N802
+        def showPage(self) -> None:
             return
 
-        def setPageSize(self, _size: tuple[float, float]) -> None:  # noqa: N802
+        def setPageSize(self, _size: tuple[float, float]) -> None:
             return
 
         def save(self) -> None:

@@ -196,7 +196,7 @@ class ThumbnailPreviewList(QListWidget):
 
     zoom_delta_requested = Signal(int)
 
-    def wheelEvent(self, event) -> None:  # noqa: N802
+    def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = int(event.angleDelta().y())
             if delta != 0:
@@ -1968,15 +1968,15 @@ class MainWindow(QMainWindow):
         self._settings.set_value("ui.window_is_maximized", self.isMaximized())
         self._persist_splitter_sizes()
 
-    def moveEvent(self, event) -> None:  # noqa: N802
+    def moveEvent(self, event) -> None:
         super().moveEvent(event)
         self._schedule_window_state_snapshot()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._schedule_window_state_snapshot()
 
-    def changeEvent(self, event) -> None:  # noqa: N802
+    def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             self._schedule_window_state_snapshot()

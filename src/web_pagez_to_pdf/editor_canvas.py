@@ -244,7 +244,7 @@ class EditorCanvas(QGraphicsView):
         self._hover_overlay_pixmap = pixmap
         self.viewport().update()
 
-    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+    def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         if delta == 0:
             return
@@ -310,7 +310,7 @@ class EditorCanvas(QGraphicsView):
             return
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         self._update_hover_state(event.position().toPoint())
         if self._tool == "pan" and self._split_drag_original is not None:
             if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -371,7 +371,7 @@ class EditorCanvas(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802
+    def leaveEvent(self, event) -> None:
         if (
             self._tool == "pan"
             and self._split_drag_original is not None
@@ -394,7 +394,7 @@ class EditorCanvas(QGraphicsView):
         self.viewport().update()
         super().leaveEvent(event)
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if self._tool == "crop_free" and len(self._free_points) >= 3:
             points = [(point.x(), point.y()) for point in self._free_points]
             self._free_points = []
@@ -403,13 +403,13 @@ class EditorCanvas(QGraphicsView):
             return
         super().mouseDoubleClickEvent(event)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
+    def resizeEvent(self, event) -> None:
         if self._zoom_mode in {"fit_height", "fit_width"}:
             self._apply_zoom()
             self.zoom_changed.emit(self._zoom_mode, int(self._manual_zoom_percent))
         super().resizeEvent(event)
 
-    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
+    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         super().drawBackground(painter, rect)
         if rect.isEmpty():
             return
@@ -431,7 +431,7 @@ class EditorCanvas(QGraphicsView):
                 )
         painter.restore()
 
-    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         super().drawForeground(painter, rect)
         _unused = rect
         pixmap = self._pixmap_item.pixmap()
