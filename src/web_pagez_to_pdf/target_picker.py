@@ -12,8 +12,8 @@ from PySide6.QtGui import (
     QGuiApplication,
     QKeyEvent,
     QMouseEvent,
-    QPaintEvent,
     QPainter,
+    QPaintEvent,
     QPen,
     QScreen,
 )

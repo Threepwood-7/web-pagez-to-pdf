@@ -169,7 +169,7 @@ def _object_sequence(value: object) -> list[object] | None:
 
     if not isinstance(value, (list, tuple)):
         return None
-    return list(cast(list[object] | tuple[object, ...], value))
+    return list(cast("list[object] | tuple[object, ...]", value))
 
 
 def _string_object_mapping(value: object) -> dict[str, object] | None:
@@ -177,7 +177,7 @@ def _string_object_mapping(value: object) -> dict[str, object] | None:
 
     if not isinstance(value, dict):
         return None
-    return {str(key): item for key, item in cast(dict[object, object], value).items()}
+    return {str(key): item for key, item in cast("dict[object, object]", value).items()}
 
 
 def _point_pair(value: object) -> tuple[int, int] | None:
@@ -2207,9 +2207,7 @@ class MainWindow(QMainWindow):
             return
         target = self._picked_window_from_hwnd(hwnd)
         self._set_target(target)
-        self._append_capture_log(
-            f"Alt+Tab selected target: {target.label}."
-        )
+        self._append_capture_log(f"Alt+Tab selected target: {target.label}.")
         self._capture_selected_viewport()
 
     def _set_target(self, target: PickedWindow) -> None:

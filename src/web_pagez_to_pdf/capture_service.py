@@ -7,7 +7,7 @@ import logging
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any
 
 import win32con
 import win32gui
@@ -155,36 +155,81 @@ LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
 
 
 def _hwnd_to_int(value: object) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 0
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _image_to_qpixmap(image: Image.Image) -> QPixmap | None:
+    """Convert a Pillow image into a QPixmap with runtime type validation."""
+
+    image_qt: Any = ImageQt
+    pixmap = image_qt.toqpixmap(image)
+    if isinstance(pixmap, QPixmap) and not pixmap.isNull():
+        return pixmap
+    return None
+
+
+def _cursor_hotspot(icon_info: object) -> tuple[int, int] | None:
+    """Extract hotspot coordinates from pywin32 cursor metadata."""
+
+    info_any: Any = icon_info
+    info_object: Any = icon_info
+    if hasattr(info_any, "xHotspot") and hasattr(info_any, "yHotspot"):
+        return (int(info_any.xHotspot), int(info_any.yHotspot))
+    if isinstance(info_any, tuple) and len(info_object) >= 3:
+        return (int(info_object[1]), int(info_object[2]))
+    return None
+
+
+def _cursor_bitmap_handles(icon_info: object) -> tuple[int, int]:
+    """Extract mask/color bitmap handles from pywin32 cursor metadata."""
+
+    info_any: Any = icon_info
+    info_object: Any = icon_info
+    if hasattr(info_any, "hbmMask") and hasattr(info_any, "hbmColor"):
+        return (_hwnd_to_int(info_any.hbmMask), _hwnd_to_int(info_any.hbmColor))
+    if isinstance(info_any, tuple) and len(info_object) >= 5:
+        return (_hwnd_to_int(info_object[3]), _hwnd_to_int(info_object[4]))
+    return (0, 0)
 
 
 class MOUSEINPUT(ctypes.Structure):
     """ctypes mapping for Win32 MOUSEINPUT."""
 
-    _fields_: ClassVar[list[tuple[str, object]]] = [
+    _fields_ = (
         ("dx", wintypes.LONG),
         ("dy", wintypes.LONG),
         ("mouseData", wintypes.DWORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
         ("dwExtraInfo", ULONG_PTR),
-    ]
+    )
 
 
 class _INPUTUNION(ctypes.Union):
-    _fields_: ClassVar[list[tuple[str, object]]] = [("mi", MOUSEINPUT)]
+    _fields_ = (("mi", MOUSEINPUT),)
 
 
 class INPUT(ctypes.Structure):
     """ctypes mapping for Win32 INPUT."""
 
-    _fields_: ClassVar[list[tuple[str, object]]] = [
+    _fields_ = (
         ("type", wintypes.DWORD),
         ("union", _INPUTUNION),
-    ]
+    )
 
 
 USER32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
@@ -1030,21 +1075,23 @@ class WindowCaptureService:
         frame_region: str,
         include_mouse_cursor: bool,
     ) -> QPixmap | None:
+        win32gui_any: Any = win32gui
+        win32ui_any: Any = win32ui
         rect = self._capture_rect(hwnd, frame_region)
         if rect is None:
             LOGGER.debug("%s gdi capture no rect hwnd=%s", self._session_prefix(), hwnd)
             return None
         left, top, width, height = rect
-        desktop_hwnd = win32gui.GetDesktopWindow()
-        desktop_dc = win32gui.GetWindowDC(desktop_hwnd)
+        desktop_hwnd = _hwnd_to_int(win32gui_any.GetDesktopWindow())
+        desktop_dc = _hwnd_to_int(win32gui_any.GetWindowDC(desktop_hwnd))
         if desktop_dc == 0:
             LOGGER.debug(
                 "%s gdi capture no desktop dc hwnd=%s", self._session_prefix(), hwnd
             )
             return None
-        src_dc = win32ui.CreateDCFromHandle(desktop_dc)
+        src_dc = win32ui_any.CreateDCFromHandle(desktop_dc)
         mem_dc = src_dc.CreateCompatibleDC()
-        bitmap = win32ui.CreateBitmap()
+        bitmap = win32ui_any.CreateBitmap()
         bitmap.CreateCompatibleBitmap(src_dc, width, height)
         old_obj = mem_dc.SelectObject(bitmap)
         try:
@@ -1067,10 +1114,10 @@ class WindowCaptureService:
             return None
         finally:
             mem_dc.SelectObject(old_obj)
-            win32gui.DeleteObject(bitmap.GetHandle())
+            win32gui_any.DeleteObject(bitmap.GetHandle())
             mem_dc.DeleteDC()
             src_dc.DeleteDC()
-            win32gui.ReleaseDC(desktop_hwnd, desktop_dc)
+            win32gui_any.ReleaseDC(desktop_hwnd, desktop_dc)
 
     def _capture_print_window(
         self,
@@ -1079,6 +1126,8 @@ class WindowCaptureService:
         frame_region: str,
         include_mouse_cursor: bool,
     ) -> QPixmap | None:
+        win32gui_any: Any = win32gui
+        win32ui_any: Any = win32ui
         window_rect = self._window_rect(hwnd)
         if window_rect is None:
             LOGGER.debug(
@@ -1087,7 +1136,7 @@ class WindowCaptureService:
             return None
         window_left, window_top, width, height = window_rect
         normalized_region = self._normalize_frame_region(frame_region)
-        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        hwnd_dc = _hwnd_to_int(win32gui_any.GetWindowDC(hwnd))
         if hwnd_dc == 0:
             LOGGER.debug(
                 "%s print_window capture no window dc hwnd=%s",
@@ -1095,9 +1144,9 @@ class WindowCaptureService:
                 hwnd,
             )
             return None
-        src_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        src_dc = win32ui_any.CreateDCFromHandle(hwnd_dc)
         mem_dc = src_dc.CreateCompatibleDC()
-        bitmap = win32ui.CreateBitmap()
+        bitmap = win32ui_any.CreateBitmap()
         bitmap.CreateCompatibleBitmap(src_dc, width, height)
         old_obj = mem_dc.SelectObject(bitmap)
         try:
@@ -1148,32 +1197,29 @@ class WindowCaptureService:
             return None
         finally:
             mem_dc.SelectObject(old_obj)
-            win32gui.DeleteObject(bitmap.GetHandle())
+            win32gui_any.DeleteObject(bitmap.GetHandle())
             mem_dc.DeleteDC()
             src_dc.DeleteDC()
-            win32gui.ReleaseDC(hwnd, hwnd_dc)
+            win32gui_any.ReleaseDC(hwnd, hwnd_dc)
 
     @staticmethod
-    def _bitmap_to_image(bitmap) -> Image.Image | None:
-        info = bitmap.GetInfo()
-        width = int(info.get("bmWidth", 0))
-        height = int(info.get("bmHeight", 0))
+    def _bitmap_to_image(bitmap: Any) -> Image.Image | None:
+        info: Any = bitmap.GetInfo()
+        width = _hwnd_to_int(info.get("bmWidth", 0))
+        height = _hwnd_to_int(info.get("bmHeight", 0))
         if width <= 0 or height <= 0:
             return None
-        bits = bitmap.GetBitmapBits(True)
+        bits: Any = bitmap.GetBitmapBits(True)
         if not bits:
             return None
         return Image.frombuffer("RGB", (width, height), bits, "raw", "BGRX", 0, 1)
 
     @staticmethod
     def _image_to_pixmap(image: Image.Image) -> QPixmap | None:
-        pixmap = ImageQt.toqpixmap(image)
-        if pixmap.isNull():
-            return None
-        return pixmap
+        return _image_to_qpixmap(image)
 
     @classmethod
-    def _bitmap_to_pixmap(cls, bitmap) -> QPixmap | None:
+    def _bitmap_to_pixmap(cls, bitmap: Any) -> QPixmap | None:
         image = cls._bitmap_to_image(bitmap)
         if image is None:
             return None
@@ -1181,15 +1227,16 @@ class WindowCaptureService:
 
     def _draw_cursor_on_dc(
         self,
-        mem_dc,
+        mem_dc: Any,
         *,
         capture_left: int,
         capture_top: int,
         capture_width: int,
         capture_height: int,
     ) -> bool:
+        win32gui_any: Any = win32gui
         try:
-            flags, cursor_handle, cursor_pos = win32gui.GetCursorInfo()
+            flags, cursor_handle, cursor_pos = win32gui_any.GetCursorInfo()
         except Exception:
             LOGGER.exception("%s cursor info query failed", self._session_prefix())
             return False
@@ -1203,14 +1250,16 @@ class WindowCaptureService:
             and capture_top <= cursor_y < capture_top + capture_height
         ):
             return False
-        icon_info: tuple[int, int, int, int, int] | None = None
+        icon_info: object | None = None
         try:
-            icon_info = win32gui.GetIconInfo(cursor_handle)
-            hotspot_x = int(icon_info[1])
-            hotspot_y = int(icon_info[2])
+            icon_info = win32gui_any.GetIconInfo(cursor_handle)
+            hotspot = _cursor_hotspot(icon_info)
+            if hotspot is None:
+                return False
+            hotspot_x, hotspot_y = hotspot
             draw_x = cursor_x - capture_left - hotspot_x
             draw_y = cursor_y - capture_top - hotspot_y
-            win32gui.DrawIconEx(
+            win32gui_any.DrawIconEx(
                 mem_dc.GetSafeHdc(),
                 draw_x,
                 draw_y,
@@ -1218,7 +1267,7 @@ class WindowCaptureService:
                 0,
                 0,
                 0,
-                0,
+                None,
                 win32con.DI_NORMAL,
             )
             LOGGER.debug(
@@ -1233,8 +1282,7 @@ class WindowCaptureService:
             return False
         finally:
             if icon_info is not None:
-                mask_bmp = int(icon_info[3] or 0)
-                color_bmp = int(icon_info[4] or 0)
+                mask_bmp, color_bmp = _cursor_bitmap_handles(icon_info)
                 if mask_bmp:
                     win32gui.DeleteObject(mask_bmp)
                 if color_bmp:

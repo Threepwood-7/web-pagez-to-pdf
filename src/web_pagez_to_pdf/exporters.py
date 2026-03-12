@@ -74,9 +74,7 @@ class _RichTextProbe(HTMLParser):
         self.has_visible_text = False
         self.has_media_content = False
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         name = str(tag or "").strip().lower()
         if name in {"style", "script", "head"}:
@@ -341,7 +339,7 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
 
     output_path = request.output_dir / f"{request.basename}.pdf"
     pdf = canvas.Canvas(str(output_path), pagesize=(page_w, page_h))
-    pdf_writer = cast(_PdfCanvas, pdf)
+    pdf_writer = cast("_PdfCanvas", pdf)
     total_pages = len(frames)
     avail_w = (
         page_w

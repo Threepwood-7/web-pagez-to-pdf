@@ -3,9 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import TypedDict
 
-
 class Format: ...
-
 
 class InsertImageOptions(TypedDict, total=False):
     image_data: BytesIO
@@ -14,15 +12,23 @@ class InsertImageOptions(TypedDict, total=False):
     x_offset: int
     y_offset: int
 
-
 class Worksheet:
-    def write(self, row: int, col: int, value: object, cell_format: Format | None = None) -> int: ...
-    def write_number(self, row: int, col: int, number: float, cell_format: Format | None = None) -> int: ...
+    def write(
+        self, row: int, col: int, value: object, cell_format: Format | None = None
+    ) -> int: ...
+    def write_number(
+        self, row: int, col: int, number: float, cell_format: Format | None = None
+    ) -> int: ...
     def freeze_panes(self, row: int, col: int) -> None: ...
     def set_column(self, first_col: int, last_col: int, width: float) -> None: ...
     def set_row(self, row: int, height: float) -> None: ...
-    def insert_image(self, row: int, col: int, filename: str, options: InsertImageOptions | None = None) -> int: ...
-
+    def insert_image(
+        self,
+        row: int,
+        col: int,
+        filename: str,
+        options: InsertImageOptions | None = None,
+    ) -> int: ...
 
 class Workbook:
     def __init__(self, filename: str) -> None: ...

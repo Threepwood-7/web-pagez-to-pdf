@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -41,6 +41,9 @@ from .scroll_capture import (
     SCROLL_MODES,
     normalize_capture_log_level,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @dataclass

@@ -6,7 +6,7 @@ import logging
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from PIL import Image, ImageQt
 
@@ -50,6 +50,43 @@ STOP_REASON_MAX_PAGES = "max_pages"
 STOP_REASON_CAPTURE_FAILED = "capture_failed"
 CAPTURE_LOGGER_NAME = "web_pagez_to_pdf.capture"
 LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
+
+
+def _pil_image_from_qpixmap(pixmap: object) -> Image.Image:
+    """Convert a captured QPixmap into a Pillow image with runtime type checks."""
+
+    image_qt: Any = ImageQt
+    image = image_qt.fromqpixmap(pixmap)
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+    raise TypeError("ImageQt.fromqpixmap did not return a Pillow image")
+
+
+def _rgb_triplet(pixel: object) -> tuple[int, int, int]:
+    """Normalize Pillow pixel payloads to three integer channels."""
+
+    if isinstance(pixel, int):
+        channel = int(pixel)
+        return (channel, channel, channel)
+    if isinstance(pixel, tuple):
+        pixel_any = cast("Any", pixel)
+        if len(pixel_any) < 3:
+            return (0, 0, 0)
+        first = pixel_any[0]
+        second = pixel_any[1]
+        third = pixel_any[2]
+        if not all(
+            isinstance(channel, (int, float)) for channel in (first, second, third)
+        ):
+            return (0, 0, 0)
+        return (int(first), int(second), int(third))
+    return (0, 0, 0)
+
+
+def _gray_pixel_value(pixels: Any, x_pos: int, y_pos: int) -> int:
+    """Read one grayscale pixel from Pillow's typed-opaque pixel access object."""
+
+    return int(pixels[x_pos, y_pos])
 
 
 @dataclass(slots=True)
@@ -964,7 +1001,7 @@ def _capture_frame(
     )
     if pixmap is None:
         return (None, backend_used)
-    return (ImageQt.fromqpixmap(pixmap).convert("RGB"), backend_used)
+    return (_pil_image_from_qpixmap(pixmap), backend_used)
 
 
 def _capture_frame_with_diff(
@@ -1072,8 +1109,8 @@ def _diff_text(value: float | None) -> str:
 
 
 def _row_delta(
-    prev_pixels,
-    curr_pixels,
+    prev_pixels: Any,
+    curr_pixels: Any,
     row: int,
     width: int,
     x_step: int,
@@ -1081,8 +1118,8 @@ def _row_delta(
     delta_sum = 0
     sample_count = 0
     for col in range(0, width, x_step):
-        prev_rgb = prev_pixels[col, row]
-        curr_rgb = curr_pixels[col, row]
+        prev_rgb = _rgb_triplet(prev_pixels[col, row])
+        curr_rgb = _rgb_triplet(curr_pixels[col, row])
         delta_sum += (
             abs(int(prev_rgb[0]) - int(curr_rgb[0]))
             + abs(int(prev_rgb[1]) - int(curr_rgb[1]))
@@ -1130,7 +1167,7 @@ def _average(values: list[float]) -> float:
 
 
 def _boundary_contrast(
-    pixels,
+    pixels: Any,
     *,
     boundary_x: int,
     height: int,
@@ -1140,14 +1177,14 @@ def _boundary_contrast(
         return 0.0
     samples: list[float] = []
     for y_pos in range(0, height, y_step):
-        left_value = int(pixels[boundary_x - 1, y_pos])
-        right_value = int(pixels[boundary_x, y_pos])
+        left_value = _gray_pixel_value(pixels, boundary_x - 1, y_pos)
+        right_value = _gray_pixel_value(pixels, boundary_x, y_pos)
         samples.append(abs(left_value - right_value))
     return _average(samples)
 
 
 def _horizontal_band_activity(
-    pixels,
+    pixels: Any,
     *,
     start_x: int,
     end_x: int,
@@ -1159,8 +1196,8 @@ def _horizontal_band_activity(
     samples: list[float] = []
     for x_pos in range(start_x, end_x - 1):
         for y_pos in range(0, height, y_step):
-            left_value = int(pixels[x_pos, y_pos])
-            right_value = int(pixels[x_pos + 1, y_pos])
+            left_value = _gray_pixel_value(pixels, x_pos, y_pos)
+            right_value = _gray_pixel_value(pixels, x_pos + 1, y_pos)
             samples.append(abs(left_value - right_value))
     return _average(samples)
 
@@ -1188,7 +1225,7 @@ def detect_right_scrollbar_trim_single_frame(
         luminance_samples: list[float] = []
         previous_value: int | None = None
         for y_pos in range(0, height, y_step):
-            value = int(pixels[x_pos, y_pos])
+            value = _gray_pixel_value(pixels, x_pos, y_pos)
             luminance_samples.append(float(value))
             if previous_value is not None:
                 vertical_deltas.append(abs(value - previous_value))
@@ -1299,7 +1336,8 @@ def _estimate_right_scrollbar_trim_from_pair(
         samples = 0
         for y_pos in range(0, height, y_step):
             delta_sum += abs(
-                int(prev_pixels[x_pos, y_pos]) - int(curr_pixels[x_pos, y_pos])
+                _gray_pixel_value(prev_pixels, x_pos, y_pos)
+                - _gray_pixel_value(curr_pixels, x_pos, y_pos)
             )
             samples += 1
         col_delta[x_pos] = delta_sum / float(max(1, samples))
@@ -1333,8 +1371,8 @@ def _estimate_right_scrollbar_trim_from_pair(
     contrast_count = 0
     for y_pos in range(0, height, y_step):
         contrast_sum += abs(
-            int(prev_pixels[boundary_x - 1, y_pos])
-            - int(prev_pixels[boundary_x, y_pos])
+            _gray_pixel_value(prev_pixels, boundary_x - 1, y_pos)
+            - _gray_pixel_value(prev_pixels, boundary_x, y_pos)
         )
         contrast_count += 1
     boundary_contrast = contrast_sum / float(max(1, contrast_count))

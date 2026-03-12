@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -13,7 +12,7 @@ from reportlab.lib.pagesizes import A0, A1, A2, A3, A4, A5, A6, LEGAL, LETTER, T
 from reportlab.lib.units import mm
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
 
     from .models import EditAdjustments, PrintLayout
 
@@ -589,7 +588,7 @@ def _object_sequence(value: object) -> Sequence[object] | None:
     """Return list/tuple payloads as a typed object sequence."""
 
     if isinstance(value, (list, tuple)):
-        return list(cast(Sequence[object], value))
+        return list(cast("Sequence[object]", value))
     return None
 
 
@@ -599,6 +598,6 @@ def _string_object_mapping(value: object) -> Mapping[str, object] | None:
     if not isinstance(value, dict):
         return None
     normalized: dict[str, object] = {}
-    for key, item in cast(Mapping[object, object], value).items():
+    for key, item in cast("Mapping[object, object]", value).items():
         normalized[str(key)] = item
     return normalized
