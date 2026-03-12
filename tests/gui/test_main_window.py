@@ -1443,7 +1443,10 @@ def test_run_export_single_format_updates_status_without_crash(
         return ExportResult(generated_paths=[out])
 
     monkeypatch.setattr("web_pagez_to_pdf.main_window.run_export", _fake_run_export)
-    monkeypatch.setattr("web_pagez_to_pdf.main_window.os.startfile", lambda _path: None)
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.open_path_in_default_app",
+        lambda _path: True,
+    )
 
     window._run_export()
 
@@ -1471,7 +1474,10 @@ def test_open_after_export_launches_file_or_folder_by_output_count(
     window.xlsx_checkbox.setChecked(True)
     launched: list[str] = []
 
-    monkeypatch.setattr("web_pagez_to_pdf.main_window.os.startfile", launched.append)
+    monkeypatch.setattr(
+        "web_pagez_to_pdf.main_window.open_path_in_default_app",
+        lambda path: launched.append(str(path)) or True,
+    )
 
     single = tmp_path / "single.xlsx"
     monkeypatch.setattr(

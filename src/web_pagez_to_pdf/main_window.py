@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import uuid
@@ -56,7 +55,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from reportlab.lib.units import mm
+from threep_commons.desktop import open_path_in_default_app
 from threep_commons.paths import resolve_app_data_dir
+from threep_commons.qt.widget_identity import assign_widget_identity
 
 from . import widget_naming
 from .capture_service import (
@@ -3486,7 +3487,7 @@ class MainWindow(QMainWindow):
                 else Path(self.output_input.text().strip())
             )
             with suppress(OSError):
-                os.startfile(str(launch_path))
+                open_path_in_default_app(launch_path)
 
     def _assign_control_identity(self, widget: QWidget, control: str, alias: str) -> None:
         widget_id = widget_naming.control_widget_id(self.window_id, control)
@@ -3494,9 +3495,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _assign_widget_identity(widget: QWidget, widget_id: str, alias: str) -> None:
-        widget.setObjectName(widget_naming.object_name_for_id(widget_id))
-        widget.setProperty("widget_id", widget_id)
-        widget.setProperty("widget_alias", alias)
+        assign_widget_identity(widget, widget_id=widget_id, widget_alias=alias)
 
     def closeEvent(self, event) -> None:
         self._flush_debounced_preview_update()

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from threep_commons.qt.widget_identity import assign_widget_identity
 
 from . import widget_naming
 from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
@@ -731,6 +732,4 @@ class SettingsWindow(QDialog):
 
     @staticmethod
     def _assign_identity(widget: QWidget, widget_id: str, alias: str) -> None:
-        widget.setObjectName(widget_naming.object_name_for_id(widget_id))
-        widget.setProperty("widget_id", widget_id)
-        widget.setProperty("widget_alias", alias)
+        assign_widget_identity(widget, widget_id=widget_id, widget_alias=alias)
