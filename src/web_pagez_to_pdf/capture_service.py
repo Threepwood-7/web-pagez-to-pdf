@@ -643,56 +643,6 @@ class WindowCaptureService:
             )
         return clicked
 
-    def scroll_target_window(
-        self,
-        hwnd: int,
-        strategy: str = "hybrid_wheel_pagedown",
-        *,
-        wheel_injection_mode: str = "physical_center_sendinput",
-        center_click_assist: str = "on_no_movement",
-        cursor_hold_mode: str = "keep_at_center",
-    ) -> str:
-        """Compatibility wrapper for legacy callers."""
-
-        normalized = str(strategy or "").strip().lower()
-        if normalized in {"pagedown_only", "pagedown", "page_down"}:
-            self.send_page_down()
-            LOGGER.debug("%s scroll_target strategy=%s method=pagedown", self._session_prefix(), normalized)
-            return "pagedown"
-        if self.wheel_down_at_window_center(
-            hwnd,
-            wheel_injection_mode=wheel_injection_mode,
-            cursor_hold_mode=cursor_hold_mode,
-        ):
-            LOGGER.debug(
-                "%s scroll_target strategy=%s method=wheel_center",
-                self._session_prefix(),
-                normalized or "hybrid",
-            )
-            return "wheel_center"
-        if (
-            str(center_click_assist or "").strip().lower() == "on_no_movement"
-            and self.click_window_center(hwnd, cursor_hold_mode=cursor_hold_mode)
-            and self.wheel_down_at_window_center(
-                hwnd,
-                wheel_injection_mode=wheel_injection_mode,
-                cursor_hold_mode=cursor_hold_mode,
-            )
-        ):
-            LOGGER.debug(
-                "%s scroll_target strategy=%s method=click_center_then_wheel",
-                self._session_prefix(),
-                normalized or "hybrid",
-            )
-            return "click_center_then_wheel"
-        self.send_page_down()
-        LOGGER.debug(
-            "%s scroll_target strategy=%s method=pagedown_fallback",
-            self._session_prefix(),
-            normalized or "hybrid",
-        )
-        return "pagedown"
-
     def capture_window(
         self,
         hwnd: int,

@@ -260,7 +260,11 @@ class MainWindow(QMainWindow):
         CAPTURE_UI_LOGGER.info("main window initialized hwnd=%s", int(self.winId()))
 
     def _build_ui(self) -> None:
-        self._assign_widget_identity(self, widget_naming.window_widget_id(self.window_id), "window")
+        assign_widget_identity(
+            self,
+            widget_id=widget_naming.window_widget_id(self.window_id),
+            widget_alias="window",
+        )
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setMinimumSize(1120, 680)
         self._build_menu()
@@ -3491,10 +3495,6 @@ class MainWindow(QMainWindow):
 
     def _assign_control_identity(self, widget: QWidget, control: str, alias: str) -> None:
         widget_id = widget_naming.control_widget_id(self.window_id, control)
-        self._assign_widget_identity(widget, widget_id, alias)
-
-    @staticmethod
-    def _assign_widget_identity(widget: QWidget, widget_id: str, alias: str) -> None:
         assign_widget_identity(widget, widget_id=widget_id, widget_alias=alias)
 
     def closeEvent(self, event) -> None:
