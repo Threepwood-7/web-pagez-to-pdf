@@ -35,7 +35,9 @@ SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
 HWND_TOP = 0
 SW_RESTORE = 9
-ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+ULONG_PTR = (
+    ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+)
 LRESULT = ctypes.c_ssize_t
 PW_RENDERFULLCONTENT = 0x00000002
 CAPTURE_BACKENDS = ("screen_region_gdi", "qt_grab_window", "print_window")
@@ -69,7 +71,10 @@ USER32.EnumWindows.argtypes = [
     wintypes.LPARAM,
 ]
 USER32.EnumWindows.restype = wintypes.BOOL
-USER32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+USER32.GetWindowThreadProcessId.argtypes = [
+    wintypes.HWND,
+    ctypes.POINTER(wintypes.DWORD),
+]
 USER32.GetWindowThreadProcessId.restype = wintypes.DWORD
 USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 USER32.GetClassNameW.restype = ctypes.c_int
@@ -105,7 +110,12 @@ USER32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 USER32.PrintWindow.restype = wintypes.BOOL
 USER32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
 USER32.SendInput.restype = wintypes.UINT
-USER32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+USER32.SendMessageW.argtypes = [
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+]
 USER32.SendMessageW.restype = LRESULT
 USER32.keybd_event.argtypes = [
     wintypes.BYTE,
@@ -206,7 +216,9 @@ class WindowInfo:
     @property
     def label(self) -> str:
         title_text = str(self.title or "").strip() or f"hwnd:{self.hwnd}"
-        return f"{self.process_short_name} - {title_text} [{self.process_id}, {self.hwnd}]"
+        return (
+            f"{self.process_short_name} - {title_text} [{self.process_id}, {self.hwnd}]"
+        )
 
 
 class WindowCaptureService:
@@ -229,7 +241,9 @@ class WindowCaptureService:
         """Append current foreground window handle into history."""
 
         hwnd = _hwnd_to_int(USER32.GetForegroundWindow())
-        if hwnd and (not self._foreground_history or self._foreground_history[-1] != hwnd):
+        if hwnd and (
+            not self._foreground_history or self._foreground_history[-1] != hwnd
+        ):
             self._foreground_history.append(hwnd)
             if len(self._foreground_history) > HISTORY_LIMIT:
                 self._foreground_history = self._foreground_history[-HISTORY_LIMIT:]
@@ -239,7 +253,9 @@ class WindowCaptureService:
         """Return the most recent valid handle that is not this app."""
 
         current_hwnd = self.record_foreground_window()
-        candidate = self._history_candidate(current_hwnd=current_hwnd, own_hwnd=own_hwnd)
+        candidate = self._history_candidate(
+            current_hwnd=current_hwnd, own_hwnd=own_hwnd
+        )
         if candidate is not None:
             return candidate
 
@@ -279,7 +295,9 @@ class WindowCaptureService:
             )
         return None
 
-    def list_top_windows(self, own_hwnd: int, *, include_minimized: bool = False) -> list[WindowInfo]:
+    def list_top_windows(
+        self, own_hwnd: int, *, include_minimized: bool = False
+    ) -> list[WindowInfo]:
         """Enumerate currently visible top-level windows."""
 
         windows: list[WindowInfo] = []
@@ -288,7 +306,9 @@ class WindowCaptureService:
         def _enum_proc(hwnd: int, _lparam: int) -> bool:
             if hwnd == own_hwnd:
                 return True
-            if not self._is_capture_candidate(hwnd, include_minimized=include_minimized):
+            if not self._is_capture_candidate(
+                hwnd, include_minimized=include_minimized
+            ):
                 return True
             info = self.window_info(int(hwnd))
             if info is None:
@@ -339,9 +359,14 @@ class WindowCaptureService:
             return (False, "Target window handle is invalid.")
         if not bool(USER32.IsWindowVisible(hwnd)):
             LOGGER.error("activate_window target not visible hwnd=%s", hwnd)
-            return (False, "Target window is not visible. Bring it on-screen and retry.")
+            return (
+                False,
+                "Target window is not visible. Bring it on-screen and retry.",
+            )
         if bool(USER32.IsIconic(hwnd)):
-            LOGGER.info("activate_window target minimized, attempting restore hwnd=%s", hwnd)
+            LOGGER.info(
+                "activate_window target minimized, attempting restore hwnd=%s", hwnd
+            )
             USER32.ShowWindow(hwnd, SW_RESTORE)
             time.sleep(0.08)
             if bool(USER32.IsIconic(hwnd)):
@@ -383,7 +408,9 @@ class WindowCaptureService:
                 USER32.AttachThreadInput(current_thread, foreground_thread, False)
 
         if not WindowCaptureService.is_foreground_window(hwnd):
-            LOGGER.error("activate_window failed hwnd=%s after thread attach focus path", hwnd)
+            LOGGER.error(
+                "activate_window failed hwnd=%s after thread attach focus path", hwnd
+            )
             return (
                 False,
                 "Could not focus target window. Click it once, keep it visible, then retry.",
@@ -401,7 +428,11 @@ class WindowCaptureService:
         """Ensure target is in foreground without changing window state."""
 
         if self.is_foreground_window(hwnd):
-            LOGGER.debug("%s ensure_foreground already active hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.debug(
+                "%s ensure_foreground already active hwnd=%s",
+                self._session_prefix(),
+                hwnd,
+            )
             return (True, "")
         focused, reason = self.activate_window(hwnd)
         LOGGER.debug(
@@ -463,7 +494,9 @@ class WindowCaptureService:
             f"hwnd={target_hwnd} label={target_label!r} process={target_process!r}"
         )
         self._scroll_session_active = True
-        self._scroll_cursor_hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
+        self._scroll_cursor_hold_mode = self._normalize_cursor_hold_mode(
+            cursor_hold_mode
+        )
         self._scroll_cursor_origin = self._current_cursor_pos()
         LOGGER.info(
             "%s input-session start %s strategy=%s backend=%s wheel=%s click_assist=%s cursor_hold=%s",
@@ -492,7 +525,9 @@ class WindowCaptureService:
                 and self._scroll_cursor_hold_mode == "keep_at_center"
                 and self._scroll_cursor_origin is not None
             ):
-                USER32.SetCursorPos(self._scroll_cursor_origin[0], self._scroll_cursor_origin[1])
+                USER32.SetCursorPos(
+                    self._scroll_cursor_origin[0], self._scroll_cursor_origin[1]
+                )
                 LOGGER.debug(
                     "%s cursor-restored to %s",
                     self._session_prefix(),
@@ -554,8 +589,12 @@ class WindowCaptureService:
 
         normalized_mode = self._normalize_wheel_injection_mode(wheel_injection_mode)
         hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
-        original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
-        normalized_direction = "up" if str(direction).strip().lower() == "up" else "down"
+        original_pos = (
+            self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+        )
+        normalized_direction = (
+            "up" if str(direction).strip().lower() == "up" else "down"
+        )
 
         if normalized_mode == "legacy_message_wheel":
             ok = self._scroll_with_wheel_message(hwnd, direction=normalized_direction)
@@ -613,7 +652,9 @@ class WindowCaptureService:
         """Move cursor to target center and perform a left click."""
 
         hold_mode = self._normalize_cursor_hold_mode(cursor_hold_mode)
-        original_pos = self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+        original_pos = (
+            self._current_cursor_pos() if hold_mode == "restore_each_step" else None
+        )
         if not self._move_cursor_to_window_center(hwnd):
             LOGGER.error(
                 "%s click-center cursor move failed %s",
@@ -654,7 +695,9 @@ class WindowCaptureService:
         """Capture one window using selected backend and deterministic fallbacks."""
 
         if hwnd <= 0:
-            LOGGER.error("%s capture_window invalid hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.error(
+                "%s capture_window invalid hwnd=%s", self._session_prefix(), hwnd
+            )
             return (None, "")
 
         ordered_backends = self._ordered_backends(primary_backend)
@@ -809,9 +852,7 @@ class WindowCaptureService:
         if not cls._is_capture_candidate(int(hwnd)):
             return False
         class_name = cls.window_class_name(int(hwnd))
-        if class_name in ALT_TAB_EXCLUDED_CLASSES:
-            return False
-        return True
+        return class_name not in ALT_TAB_EXCLUDED_CLASSES
 
     @staticmethod
     def _focus_window(hwnd: int) -> None:
@@ -841,7 +882,11 @@ class WindowCaptureService:
         hwnd = int(USER32.GetWindow(start_hwnd, GW_HWNDPREV))
         hop_count = 0
         while hwnd and hop_count < MAX_Z_ORDER_HOPS:
-            if hwnd != own_hwnd and bool(USER32.IsWindowVisible(hwnd)) and not bool(USER32.IsIconic(hwnd)):
+            if (
+                hwnd != own_hwnd
+                and bool(USER32.IsWindowVisible(hwnd))
+                and not bool(USER32.IsIconic(hwnd))
+            ):
                 return hwnd
             hwnd = int(USER32.GetWindow(hwnd, GW_HWNDPREV))
             hop_count += 1
@@ -891,7 +936,9 @@ class WindowCaptureService:
     ) -> QPixmap | None:
         screen = self._screen_for_window(hwnd)
         if screen is None:
-            LOGGER.debug("%s qt_grab_window no screen hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.debug(
+                "%s qt_grab_window no screen hwnd=%s", self._session_prefix(), hwnd
+            )
             return None
         normalized_region = self._normalize_frame_region(frame_region)
         pixmap: QPixmap
@@ -920,7 +967,9 @@ class WindowCaptureService:
         else:
             pixmap = screen.grabWindow(hwnd)
         if pixmap.isNull():
-            LOGGER.debug("%s qt_grab_window null pixmap hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.debug(
+                "%s qt_grab_window null pixmap hwnd=%s", self._session_prefix(), hwnd
+            )
             return None
         if include_mouse_cursor:
             LOGGER.debug(
@@ -958,7 +1007,9 @@ class WindowCaptureService:
             return None
         return (int(top_left.x), int(top_left.y), width, height)
 
-    def _capture_rect(self, hwnd: int, frame_region: str) -> tuple[int, int, int, int] | None:
+    def _capture_rect(
+        self, hwnd: int, frame_region: str
+    ) -> tuple[int, int, int, int] | None:
         normalized = self._normalize_frame_region(frame_region)
         if normalized == "client_area":
             # Prefer client-area bounds so browser chrome/toolbars/status bars are excluded by default.
@@ -987,7 +1038,9 @@ class WindowCaptureService:
         desktop_hwnd = win32gui.GetDesktopWindow()
         desktop_dc = win32gui.GetWindowDC(desktop_hwnd)
         if desktop_dc == 0:
-            LOGGER.debug("%s gdi capture no desktop dc hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.debug(
+                "%s gdi capture no desktop dc hwnd=%s", self._session_prefix(), hwnd
+            )
             return None
         src_dc = win32ui.CreateDCFromHandle(desktop_dc)
         mem_dc = src_dc.CreateCompatibleDC()
@@ -995,7 +1048,9 @@ class WindowCaptureService:
         bitmap.CreateCompatibleBitmap(src_dc, width, height)
         old_obj = mem_dc.SelectObject(bitmap)
         try:
-            mem_dc.BitBlt((0, 0), (width, height), src_dc, (left, top), win32con.SRCCOPY)
+            mem_dc.BitBlt(
+                (0, 0), (width, height), src_dc, (left, top), win32con.SRCCOPY
+            )
             if include_mouse_cursor:
                 self._draw_cursor_on_dc(
                     mem_dc,
@@ -1006,7 +1061,9 @@ class WindowCaptureService:
                 )
             return self._bitmap_to_pixmap(bitmap)
         except Exception:
-            LOGGER.exception("%s gdi capture raised exception hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.exception(
+                "%s gdi capture raised exception hwnd=%s", self._session_prefix(), hwnd
+            )
             return None
         finally:
             mem_dc.SelectObject(old_obj)
@@ -1024,7 +1081,9 @@ class WindowCaptureService:
     ) -> QPixmap | None:
         window_rect = self._window_rect(hwnd)
         if window_rect is None:
-            LOGGER.debug("%s print_window capture no rect hwnd=%s", self._session_prefix(), hwnd)
+            LOGGER.debug(
+                "%s print_window capture no rect hwnd=%s", self._session_prefix(), hwnd
+            )
             return None
         window_left, window_top, width, height = window_rect
         normalized_region = self._normalize_frame_region(frame_region)
@@ -1196,7 +1255,9 @@ class WindowCaptureService:
         wheel_target = self.window_from_point(x_pos, y_pos) or hwnd
         if wheel_target <= 0:
             wheel_target = hwnd
-        normalized_direction = "up" if str(direction).strip().lower() == "up" else "down"
+        normalized_direction = (
+            "up" if str(direction).strip().lower() == "up" else "down"
+        )
         signed_delta = WHEEL_DELTA if normalized_direction == "up" else -WHEEL_DELTA
         wheel_delta = signed_delta & 0xFFFF
         wparam = (wheel_delta << 16) | 0
@@ -1272,7 +1333,9 @@ class WindowCaptureService:
 
     @staticmethod
     def _send_mouse_left_click() -> tuple[bool, int]:
-        down_ok, down_error = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTDOWN)
+        down_ok, down_error = WindowCaptureService._send_mouse_input(
+            MOUSEEVENTF_LEFTDOWN
+        )
         up_ok, up_error = WindowCaptureService._send_mouse_input(MOUSEEVENTF_LEFTUP)
         if down_ok and up_ok:
             return (True, 0)
@@ -1324,7 +1387,10 @@ class WindowCaptureService:
             return False
         x_delta = abs(actual[0] - center[0])
         y_delta = abs(actual[1] - center[1])
-        ok = x_delta <= CURSOR_VERIFY_TOLERANCE_PX and y_delta <= CURSOR_VERIFY_TOLERANCE_PX
+        ok = (
+            x_delta <= CURSOR_VERIFY_TOLERANCE_PX
+            and y_delta <= CURSOR_VERIFY_TOLERANCE_PX
+        )
         LOGGER.debug(
             "%s cursor-move target=%s actual=%s delta=(%s,%s) ok=%s",
             self._session_prefix(),
@@ -1369,7 +1435,9 @@ class WindowCaptureService:
         rect = wintypes.RECT()
         screen: QScreen | None = None
         if USER32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            center_point = QPoint((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+            center_point = QPoint(
+                (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+            )
             screen = QGuiApplication.screenAt(center_point)
         if screen is None:
             screen = QGuiApplication.primaryScreen()

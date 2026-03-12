@@ -92,7 +92,9 @@ def test_activate_window_restores_minimized_target(monkeypatch) -> None:
     show_calls: list[tuple[int, int]] = []
 
     monkeypatch.setattr(capture_service.USER32, "IsWindowVisible", lambda _hwnd: 1)
-    monkeypatch.setattr(capture_service.USER32, "IsIconic", lambda _hwnd: iconic_state["value"])
+    monkeypatch.setattr(
+        capture_service.USER32, "IsIconic", lambda _hwnd: iconic_state["value"]
+    )
 
     def _show_window(hwnd: int, cmd: int) -> int:
         show_calls.append((int(hwnd), int(cmd)))

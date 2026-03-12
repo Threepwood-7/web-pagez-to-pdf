@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
 )
 from threep_commons.qt.widget_identity import assign_widget_identity
 
-from . import widget_naming
 from .capture_service import CAPTURE_FRAME_REGIONS, DEFAULT_CAPTURE_FRAME_REGION
 from .image_processing import PAPER_SIZES
 from .scroll_capture import (
@@ -82,7 +81,9 @@ class SettingsWindow(QDialog):
         self.search_edit = QLineEdit(self)
         self.search_edit.setPlaceholderText("Search settings...")
         self.search_edit.setClearButtonEnabled(True)
-        self._assign_identity(self.search_edit, "window:settings:control:search", "settings.search")
+        self._assign_identity(
+            self.search_edit, "window:settings:control:search", "settings.search"
+        )
         root.addWidget(self.search_edit)
 
         content_host = QWidget(self)
@@ -120,7 +121,8 @@ class SettingsWindow(QDialog):
         self.section_tree.currentItemChanged.connect(self._on_section_changed)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Close,
+            QDialogButtonBox.StandardButton.Apply
+            | QDialogButtonBox.StandardButton.Close,
             parent=self,
         )
         apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
@@ -135,9 +137,15 @@ class SettingsWindow(QDialog):
             self.section_tree.setCurrentItem(self.section_tree.topLevelItem(0))
 
     def _build_sections(self) -> None:
-        capture_group = self._add_section("capture", "Capture", "capture target stop scroll")
-        export_group = self._add_section("export", "Export", "export pdf tiff docx pptx xlsx")
-        layout_group = self._add_section("layout", "Layout", "layout paper margins header footer")
+        capture_group = self._add_section(
+            "capture", "Capture", "capture target stop scroll"
+        )
+        export_group = self._add_section(
+            "export", "Export", "export pdf tiff docx pptx xlsx"
+        )
+        layout_group = self._add_section(
+            "layout", "Layout", "layout paper margins header footer"
+        )
         editor_group = self._add_section("editor", "Editor", "editor overlay debounce")
         ui_group = self._add_section("ui", "UI", "ui tab collapse")
 
@@ -172,11 +180,15 @@ class SettingsWindow(QDialog):
             self.capture_backend_combo,
         )
         self.capture_scroll_mode_combo = QComboBox(self)
-        self.capture_scroll_mode_combo.addItem("Wheel then PageDown", "wheel_then_pagedown")
+        self.capture_scroll_mode_combo.addItem(
+            "Wheel then PageDown", "wheel_then_pagedown"
+        )
         self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
         self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
         self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
-        self.capture_scroll_mode_combo.addItem("Wheel + Click + PageDown", "wheel_click_pagedown")
+        self.capture_scroll_mode_combo.addItem(
+            "Wheel + Click + PageDown", "wheel_click_pagedown"
+        )
         self._add_row(
             capture_group,
             "capture.scroll_mode",
@@ -207,8 +219,12 @@ class SettingsWindow(QDialog):
             self.capture_auto_trim_fixed_checkbox,
         )
         self.capture_frame_region_combo = QComboBox(self)
-        self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
-        self.capture_frame_region_combo.addItem("Full Window (Border + Title Bar)", "full_window")
+        self.capture_frame_region_combo.addItem(
+            "Client Area (No Border)", "client_area"
+        )
+        self.capture_frame_region_combo.addItem(
+            "Full Window (Border + Title Bar)", "full_window"
+        )
         self._add_row(
             capture_group,
             "capture.frame_region",
@@ -293,7 +309,9 @@ class SettingsWindow(QDialog):
             "combine queue default",
             self.default_combine_checkbox,
         )
-        self.default_open_after_export_checkbox = QCheckBox("Open file after export", self)
+        self.default_open_after_export_checkbox = QCheckBox(
+            "Open file after export", self
+        )
         self._add_row(
             export_group,
             "export.open_after_export",
@@ -454,7 +472,9 @@ class SettingsWindow(QDialog):
             self.layout_footer_edit,
         )
 
-        self.editor_overlay_visible_checkbox = QCheckBox("Show split/page overlays", self)
+        self.editor_overlay_visible_checkbox = QCheckBox(
+            "Show split/page overlays", self
+        )
         self._add_row(
             editor_group,
             "ui.editor_overlay_visible",
@@ -519,7 +539,9 @@ class SettingsWindow(QDialog):
         )
         self._set_combo_value(
             self.capture_wheel_injection_combo,
-            str(values.get("capture.wheel_injection_mode", DEFAULT_WHEEL_INJECTION_MODE)),
+            str(
+                values.get("capture.wheel_injection_mode", DEFAULT_WHEEL_INJECTION_MODE)
+            ),
         )
         self._set_combo_value(
             self.capture_cursor_hold_combo,
@@ -535,11 +557,19 @@ class SettingsWindow(QDialog):
             bool(values.get("capture.include_mouse_cursor", False))
         )
         self.default_output_edit.setText(str(values.get("export.output_dir", "")))
-        self.default_basename_edit.setText(str(values.get("export.basename", "capture")))
-        self.default_combine_checkbox.setChecked(bool(values.get("export.combine_mode", True)))
+        self.default_basename_edit.setText(
+            str(values.get("export.basename", "capture"))
+        )
+        self.default_combine_checkbox.setChecked(
+            bool(values.get("export.combine_mode", True))
+        )
         self.default_pdf_checkbox.setChecked(bool(values.get("export.pdf", True)))
-        self.default_paged_checkbox.setChecked(bool(values.get("export.paged_images", False)))
-        self.default_long_checkbox.setChecked(bool(values.get("export.long_image", False)))
+        self.default_paged_checkbox.setChecked(
+            bool(values.get("export.paged_images", False))
+        )
+        self.default_long_checkbox.setChecked(
+            bool(values.get("export.long_image", False))
+        )
         self.default_tiff_checkbox.setChecked(bool(values.get("export.tiff", False)))
         self.default_docx_checkbox.setChecked(bool(values.get("export.docx", False)))
         self.default_pptx_checkbox.setChecked(bool(values.get("export.pptx", False)))
@@ -559,13 +589,25 @@ class SettingsWindow(QDialog):
             self.layout_orientation_combo,
             str(values.get("layout.orientation", "portrait")),
         )
-        self.layout_margin_top_spin.setValue(float(values.get("layout.margin_top_mm", 20.0)))
-        self.layout_margin_bottom_spin.setValue(float(values.get("layout.margin_bottom_mm", 20.0)))
-        self.layout_margin_left_spin.setValue(float(values.get("layout.margin_left_mm", 15.0)))
-        self.layout_margin_right_spin.setValue(float(values.get("layout.margin_right_mm", 15.0)))
+        self.layout_margin_top_spin.setValue(
+            float(values.get("layout.margin_top_mm", 20.0))
+        )
+        self.layout_margin_bottom_spin.setValue(
+            float(values.get("layout.margin_bottom_mm", 20.0))
+        )
+        self.layout_margin_left_spin.setValue(
+            float(values.get("layout.margin_left_mm", 15.0))
+        )
+        self.layout_margin_right_spin.setValue(
+            float(values.get("layout.margin_right_mm", 15.0))
+        )
         self.layout_gutter_spin.setValue(float(values.get("layout.gutter_mm", 0.0)))
-        self.layout_blank_threshold_spin.setValue(int(values.get("layout.blank_row_threshold", 245)))
-        self.layout_search_window_spin.setValue(int(values.get("layout.search_window_px", 300)))
+        self.layout_blank_threshold_spin.setValue(
+            int(values.get("layout.blank_row_threshold", 245))
+        )
+        self.layout_search_window_spin.setValue(
+            int(values.get("layout.search_window_px", 300))
+        )
         self.layout_header_edit.setHtml(str(values.get("layout.header_html", "")))
         self.layout_footer_edit.setHtml(str(values.get("layout.footer_html", "")))
         self.editor_overlay_visible_checkbox.setChecked(
@@ -573,8 +615,12 @@ class SettingsWindow(QDialog):
         )
         debounce_value = int(values.get("editor.preview_debounce_ms", 333))
         self.editor_preview_debounce_spin.setValue(max(0, min(2000, debounce_value)))
-        self.editor_adv_collapsed.setChecked(bool(values.get("ui.editor_adv_collapsed", True)))
-        self.export_adv_collapsed.setChecked(bool(values.get("ui.export_adv_collapsed", True)))
+        self.editor_adv_collapsed.setChecked(
+            bool(values.get("ui.editor_adv_collapsed", True))
+        )
+        self.export_adv_collapsed.setChecked(
+            bool(values.get("ui.export_adv_collapsed", True))
+        )
 
     def values(self) -> dict[str, object]:
         """Collect controls into a settings payload."""
@@ -587,8 +633,12 @@ class SettingsWindow(QDialog):
             "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
             "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
             "capture.frame_region": self._frame_region_value(),
-            "capture.wheel_injection_mode": str(self.capture_wheel_injection_combo.currentData()),
-            "capture.cursor_hold_mode": str(self.capture_cursor_hold_combo.currentData()),
+            "capture.wheel_injection_mode": str(
+                self.capture_wheel_injection_combo.currentData()
+            ),
+            "capture.cursor_hold_mode": str(
+                self.capture_cursor_hold_combo.currentData()
+            ),
             "capture.log_level": normalize_capture_log_level(
                 str(self.capture_log_level_combo.currentData())
             ),
@@ -606,7 +656,9 @@ class SettingsWindow(QDialog):
             "export.open_after_export": self.default_open_after_export_checkbox.isChecked(),
             "export.docx_mode": str(self.default_docx_mode_combo.currentData()),
             "layout.paper_name": str(self.layout_paper_combo.currentData() or "A4"),
-            "layout.orientation": str(self.layout_orientation_combo.currentData() or "portrait"),
+            "layout.orientation": str(
+                self.layout_orientation_combo.currentData() or "portrait"
+            ),
             "layout.margin_top_mm": float(self.layout_margin_top_spin.value()),
             "layout.margin_bottom_mm": float(self.layout_margin_bottom_spin.value()),
             "layout.margin_left_mm": float(self.layout_margin_left_spin.value()),
@@ -617,7 +669,9 @@ class SettingsWindow(QDialog):
             "layout.header_html": self.layout_header_edit.toHtml(),
             "layout.footer_html": self.layout_footer_edit.toHtml(),
             "ui.editor_overlay_visible": self.editor_overlay_visible_checkbox.isChecked(),
-            "editor.preview_debounce_ms": int(self.editor_preview_debounce_spin.value()),
+            "editor.preview_debounce_ms": int(
+                self.editor_preview_debounce_spin.value()
+            ),
             "ui.editor_adv_collapsed": self.editor_adv_collapsed.isChecked(),
             "ui.export_adv_collapsed": self.export_adv_collapsed.isChecked(),
         }
@@ -639,7 +693,9 @@ class SettingsWindow(QDialog):
 
     def _browse_output(self) -> None:
         root_path = self.default_output_edit.text().strip() or str(Path.home())
-        selected = QFileDialog.getExistingDirectory(self, "Select Output Folder", root_path)
+        selected = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder", root_path
+        )
         if selected:
             self.default_output_edit.setText(selected)
 

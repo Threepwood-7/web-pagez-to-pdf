@@ -439,15 +439,25 @@ def run_full_page_capture(
                             )
                             for item in frames
                         ]
-                if auto_trim_scrollbar and frame_region == "client_area" and not trim_right_locked:
-                    estimated_right = _estimate_right_scrollbar_trim_from_pair(frames[-1], frame)
+                if (
+                    auto_trim_scrollbar
+                    and frame_region == "client_area"
+                    and not trim_right_locked
+                ):
+                    estimated_right = _estimate_right_scrollbar_trim_from_pair(
+                        frames[-1], frame
+                    )
                     if estimated_right > 0:
                         if trim_right_candidate_px <= 0:
                             trim_right_candidate_px = int(estimated_right)
                             trim_right_candidate_hits = 1
                         elif abs(trim_right_candidate_px - int(estimated_right)) <= 1:
-                            trim_right_candidate_px = int(
-                                round((float(trim_right_candidate_px) + float(estimated_right)) / 2.0)
+                            trim_right_candidate_px = round(
+                                (
+                                    float(trim_right_candidate_px)
+                                    + float(estimated_right)
+                                )
+                                / 2.0
                             )
                             trim_right_candidate_hits += 1
                         else:
@@ -555,17 +565,19 @@ def _capture_after_scroll_ladder(
             wheel_ok,
         )
         service.send_page_down()
-        frame_after_page, backend_after_page, diff_after_page = _capture_frame_with_diff(
-            service=service,
-            target_hwnd=target_hwnd,
-            previous_frame=previous_frame,
-            capture_backend=capture_backend,
-            delay_ms=delay_ms,
-            frame_region=frame_region,
-            include_mouse_cursor=include_mouse_cursor,
-            trim_top_px=trim_top_px,
-            trim_bottom_px=trim_bottom_px,
-            trim_right_px=trim_right_px,
+        frame_after_page, backend_after_page, diff_after_page = (
+            _capture_frame_with_diff(
+                service=service,
+                target_hwnd=target_hwnd,
+                previous_frame=previous_frame,
+                capture_backend=capture_backend,
+                delay_ms=delay_ms,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+                trim_top_px=trim_top_px,
+                trim_bottom_px=trim_bottom_px,
+                trim_right_px=trim_right_px,
+            )
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -674,23 +686,27 @@ def _capture_after_scroll_ladder(
             frame_index,
             _diff_text(diff_score),
         )
-        click_ok = service.click_window_center(target_hwnd, cursor_hold_mode=cursor_hold_mode)
+        click_ok = service.click_window_center(
+            target_hwnd, cursor_hold_mode=cursor_hold_mode
+        )
         wheel_after_click_ok = service.wheel_down_at_window_center(
             target_hwnd,
             wheel_injection_mode=wheel_mode,
             cursor_hold_mode=cursor_hold_mode,
         )
-        frame_after_click, backend_after_click, diff_after_click = _capture_frame_with_diff(
-            service=service,
-            target_hwnd=target_hwnd,
-            previous_frame=previous_frame,
-            capture_backend=capture_backend,
-            delay_ms=delay_ms,
-            frame_region=frame_region,
-            include_mouse_cursor=include_mouse_cursor,
-            trim_top_px=trim_top_px,
-            trim_bottom_px=trim_bottom_px,
-            trim_right_px=trim_right_px,
+        frame_after_click, backend_after_click, diff_after_click = (
+            _capture_frame_with_diff(
+                service=service,
+                target_hwnd=target_hwnd,
+                previous_frame=previous_frame,
+                capture_backend=capture_backend,
+                delay_ms=delay_ms,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+                trim_top_px=trim_top_px,
+                trim_bottom_px=trim_bottom_px,
+                trim_right_px=trim_right_px,
+            )
         )
         if frame_after_click is None:
             return _ScrollStepOutcome(
@@ -703,18 +719,20 @@ def _capture_after_scroll_ladder(
             )
         frame = frame_after_click
         backend = backend_after_click or backend
-        diff_score, moved_after_click, estimated_top, estimated_bottom = _evaluate_movement(
-            previous_frame=previous_frame,
-            current_frame=frame,
-            observed_diff=diff_after_click,
-            threshold=threshold,
-            trim_top_px=trim_top_px,
-            trim_bottom_px=trim_bottom_px,
-            trim_right_px=trim_right_px,
-            auto_trim_probe=auto_trim_probe,
-            session_id=session_id,
-            frame_index=frame_index,
-            stage_name="click_center_then_wheel",
+        diff_score, moved_after_click, estimated_top, estimated_bottom = (
+            _evaluate_movement(
+                previous_frame=previous_frame,
+                current_frame=frame,
+                observed_diff=diff_after_click,
+                threshold=threshold,
+                trim_top_px=trim_top_px,
+                trim_bottom_px=trim_bottom_px,
+                trim_right_px=trim_right_px,
+                auto_trim_probe=auto_trim_probe,
+                session_id=session_id,
+                frame_index=frame_index,
+                stage_name="click_center_then_wheel",
+            )
         )
         LOGGER.debug(
             "[capture-session:%s] frame=%s stage=click_center_then_wheel click_ok=%s "
@@ -768,17 +786,19 @@ def _capture_after_scroll_ladder(
             _diff_text(diff_score),
         )
         service.send_page_down()
-        frame_after_page, backend_after_page, diff_after_page = _capture_frame_with_diff(
-            service=service,
-            target_hwnd=target_hwnd,
-            previous_frame=previous_frame,
-            capture_backend=capture_backend,
-            delay_ms=delay_ms,
-            frame_region=frame_region,
-            include_mouse_cursor=include_mouse_cursor,
-            trim_top_px=trim_top_px,
-            trim_bottom_px=trim_bottom_px,
-            trim_right_px=trim_right_px,
+        frame_after_page, backend_after_page, diff_after_page = (
+            _capture_frame_with_diff(
+                service=service,
+                target_hwnd=target_hwnd,
+                previous_frame=previous_frame,
+                capture_backend=capture_backend,
+                delay_ms=delay_ms,
+                frame_region=frame_region,
+                include_mouse_cursor=include_mouse_cursor,
+                trim_top_px=trim_top_px,
+                trim_bottom_px=trim_bottom_px,
+                trim_right_px=trim_right_px,
+            )
         )
         if frame_after_page is None:
             return _ScrollStepOutcome(
@@ -1074,7 +1094,9 @@ def _row_delta(
     return float(delta_sum) / float(sample_count)
 
 
-def _safe_trim_values(height: int, trim_top_px: int, trim_bottom_px: int) -> tuple[int, int]:
+def _safe_trim_values(
+    height: int, trim_top_px: int, trim_bottom_px: int
+) -> tuple[int, int]:
     if height <= 2:
         return (0, 0)
     max_per_edge = min(420, max(0, int(height * 0.35)))
@@ -1179,7 +1201,9 @@ def detect_right_scrollbar_trim_single_frame(frame: Image.Image) -> int:
         if boundary_x <= scan_start + 1:
             continue
 
-        band_activity_values = [col_activity.get(x_pos, 255.0) for x_pos in range(boundary_x, width)]
+        band_activity_values = [
+            col_activity.get(x_pos, 255.0) for x_pos in range(boundary_x, width)
+        ]
         band_activity = _average(band_activity_values)
 
         left_window_width = min(24, max(8, candidate_width + 4))
@@ -1187,7 +1211,9 @@ def detect_right_scrollbar_trim_single_frame(frame: Image.Image) -> int:
         left_end = boundary_x
         if left_end - left_start < 3:
             continue
-        left_activity_values = [col_activity.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
+        left_activity_values = [
+            col_activity.get(x_pos, 0.0) for x_pos in range(left_start, left_end)
+        ]
         left_activity = _average(left_activity_values)
         if left_activity <= 0.0:
             continue
@@ -1209,8 +1235,12 @@ def detect_right_scrollbar_trim_single_frame(frame: Image.Image) -> int:
             height=height,
             y_step=y_step,
         )
-        band_luma = _average([col_luma.get(x_pos, 0.0) for x_pos in range(boundary_x, width)])
-        left_luma = _average([col_luma.get(x_pos, 0.0) for x_pos in range(left_start, left_end)])
+        band_luma = _average(
+            [col_luma.get(x_pos, 0.0) for x_pos in range(boundary_x, width)]
+        )
+        left_luma = _average(
+            [col_luma.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
+        )
         luma_delta = abs(left_luma - band_luma)
 
         confidence = 0.0
@@ -1266,7 +1296,9 @@ def _estimate_right_scrollbar_trim_from_pair(
         delta_sum = 0.0
         samples = 0
         for y_pos in range(0, height, y_step):
-            delta_sum += abs(int(prev_pixels[x_pos, y_pos]) - int(curr_pixels[x_pos, y_pos]))
+            delta_sum += abs(
+                int(prev_pixels[x_pos, y_pos]) - int(curr_pixels[x_pos, y_pos])
+            )
             samples += 1
         col_delta[x_pos] = delta_sum / float(max(1, samples))
 
@@ -1298,7 +1330,10 @@ def _estimate_right_scrollbar_trim_from_pair(
     contrast_sum = 0.0
     contrast_count = 0
     for y_pos in range(0, height, y_step):
-        contrast_sum += abs(int(prev_pixels[boundary_x - 1, y_pos]) - int(prev_pixels[boundary_x, y_pos]))
+        contrast_sum += abs(
+            int(prev_pixels[boundary_x - 1, y_pos])
+            - int(prev_pixels[boundary_x, y_pos])
+        )
         contrast_count += 1
     boundary_contrast = contrast_sum / float(max(1, contrast_count))
     if boundary_contrast < 2.5:

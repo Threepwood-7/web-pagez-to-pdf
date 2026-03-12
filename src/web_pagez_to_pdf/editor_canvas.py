@@ -173,7 +173,9 @@ class EditorCanvas(QGraphicsView):
 
         if self._zoom_mode != "manual":
             self._manual_zoom_percent = self._current_transform_zoom_percent()
-        self.set_zoom_mode("manual", manual_percent=self._manual_zoom_percent + int(delta_percent))
+        self.set_zoom_mode(
+            "manual", manual_percent=self._manual_zoom_percent + int(delta_percent)
+        )
 
     def zoom_label_text(self) -> str:
         """Human-readable zoom label for side controls."""
@@ -221,7 +223,9 @@ class EditorCanvas(QGraphicsView):
         self._magnifier_zoom = max(2, min(32, int(zoom_factor)))
         self.viewport().update()
 
-    def sample_hover_zoom(self, *, zoom_factor: int, output_size: int = 220) -> QPixmap | None:
+    def sample_hover_zoom(
+        self, *, zoom_factor: int, output_size: int = 220
+    ) -> QPixmap | None:
         """Return a crosshair patch around last hover point for quick-zoom panel."""
 
         pixmap = self._pixmap_item.pixmap()
@@ -250,10 +254,10 @@ class EditorCanvas(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self._update_hover_state(event.position().toPoint())
 
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self._split_action_mode in {"add", "remove"}
-        ):
+        if event.button() == Qt.MouseButton.LeftButton and self._split_action_mode in {
+            "add",
+            "remove",
+        }:
             marker_y = self._split_action_target_y(event.position().toPoint())
             if marker_y is not None:
                 if self._split_action_mode == "add":
@@ -266,7 +270,9 @@ class EditorCanvas(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton and self._tool == "pan":
             scene_point = self.mapToScene(event.position().toPoint())
             marker = self._nearest_marker(scene_point.y())
-            if marker is not None and self._split_knob_hit(event.position().toPoint(), marker):
+            if marker is not None and self._split_knob_hit(
+                event.position().toPoint(), marker
+            ):
                 self._split_drag_original = int(marker)
                 self._split_drag_current = int(marker)
                 event.accept()
@@ -287,7 +293,9 @@ class EditorCanvas(QGraphicsView):
             self._drag_origin = scene_point
             self._clear_overlay()
             self._rect_item = QGraphicsRectItem(QRectF(scene_point, scene_point))
-            pen_color = Qt.GlobalColor.green if self._tool != "redact" else Qt.GlobalColor.red
+            pen_color = (
+                Qt.GlobalColor.green if self._tool != "redact" else Qt.GlobalColor.red
+            )
             self._rect_item.setPen(QPen(pen_color, 2))
             self._scene.addItem(self._rect_item)
             return
@@ -375,8 +383,12 @@ class EditorCanvas(QGraphicsView):
         self.hover_scene_position_changed.emit(
             {
                 "inside": False,
-                "x": int(self._hover_scene_point.x()) if self._hover_scene_point is not None else -1,
-                "y": int(self._hover_scene_point.y()) if self._hover_scene_point is not None else -1,
+                "x": int(self._hover_scene_point.x())
+                if self._hover_scene_point is not None
+                else -1,
+                "y": int(self._hover_scene_point.y())
+                if self._hover_scene_point is not None
+                else -1,
             }
         )
         self.viewport().update()
@@ -414,7 +426,9 @@ class EditorCanvas(QGraphicsView):
             for y_pos in range(start_y, end_y + step, step):
                 color = light if ((x_pos // step) + (y_pos // step)) % 2 == 0 else dark
                 painter.setBrush(color)
-                painter.drawRect(QRectF(float(x_pos), float(y_pos), float(step), float(step)))
+                painter.drawRect(
+                    QRectF(float(x_pos), float(y_pos), float(step), float(step))
+                )
         painter.restore()
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
@@ -515,7 +529,9 @@ class EditorCanvas(QGraphicsView):
         self._paint_vertical_ticks(painter, right_rect, pixmap.height())
         self._paint_split_knobs(painter, right_rect)
 
-    def _paint_horizontal_ticks(self, painter: QPainter, top_rect: QRect, image_width: int) -> None:
+    def _paint_horizontal_ticks(
+        self, painter: QPainter, top_rect: QRect, image_width: int
+    ) -> None:
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
         start = max(0, int(math.floor(visible_scene.left() / 10.0) * 10))
         end = min(image_width, int(math.ceil(visible_scene.right() / 10.0) * 10))
@@ -539,7 +555,9 @@ class EditorCanvas(QGraphicsView):
                 painter.drawText(QPoint(view_x + 2, top_rect.top() + 12), str(x_pos))
         painter.restore()
 
-    def _paint_vertical_ticks(self, painter: QPainter, right_rect: QRect, image_height: int) -> None:
+    def _paint_vertical_ticks(
+        self, painter: QPainter, right_rect: QRect, image_height: int
+    ) -> None:
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
         start = max(0, int(math.floor(visible_scene.top() / 10.0) * 10))
         end = min(image_height, int(math.ceil(visible_scene.bottom() / 10.0) * 10))
@@ -633,9 +651,13 @@ class EditorCanvas(QGraphicsView):
         return int(max(1, min(pixmap.height() - 1, round(float(y_pos)))))
 
     def _replace_marker(self, old_value: int, new_value: int) -> None:
-        markers = [value for value in self._manual_markers_px if int(value) != int(old_value)]
+        markers = [
+            value for value in self._manual_markers_px if int(value) != int(old_value)
+        ]
         markers.append(int(new_value))
-        self._manual_markers_px = sorted({int(value) for value in markers if int(value) > 0})
+        self._manual_markers_px = sorted(
+            {int(value) for value in markers if int(value) > 0}
+        )
 
     def _update_hover_state(self, view_pos: QPoint) -> None:
         self._hover_view_point = QPoint(int(view_pos.x()), int(view_pos.y()))
@@ -657,8 +679,12 @@ class EditorCanvas(QGraphicsView):
             self.hover_scene_position_changed.emit(
                 {
                     "inside": False,
-                    "x": int(self._hover_scene_point.x()) if self._hover_scene_point is not None else -1,
-                    "y": int(self._hover_scene_point.y()) if self._hover_scene_point is not None else -1,
+                    "x": int(self._hover_scene_point.x())
+                    if self._hover_scene_point is not None
+                    else -1,
+                    "y": int(self._hover_scene_point.y())
+                    if self._hover_scene_point is not None
+                    else -1,
                 }
             )
         self.viewport().update()
@@ -668,7 +694,9 @@ class EditorCanvas(QGraphicsView):
             self._snap_edge_vertical = None
             self._snap_edge_horizontal = None
             return
-        image = pixmap.toImage().convertToFormat(pixmap.toImage().Format.Format_Grayscale8)
+        image = pixmap.toImage().convertToFormat(
+            pixmap.toImage().Format.Format_Grayscale8
+        )
         width = image.width()
         height = image.height()
         if width <= 1 or height <= 1:
@@ -676,7 +704,9 @@ class EditorCanvas(QGraphicsView):
             self._snap_edge_horizontal = None
             return
         ptr = image.constBits()
-        gray = np.frombuffer(ptr, dtype=np.uint8).reshape((height, image.bytesPerLine()))[:, :width]
+        gray = np.frombuffer(ptr, dtype=np.uint8).reshape(
+            (height, image.bytesPerLine())
+        )[:, :width]
         gray_f = gray.astype(np.float32)
         vertical = np.abs(np.diff(gray_f, axis=1, prepend=gray_f[:, :1]))
         horizontal = np.abs(np.diff(gray_f, axis=0, prepend=gray_f[:1, :]))
@@ -702,7 +732,12 @@ class EditorCanvas(QGraphicsView):
             return scene_point
         x_pos = round(scene_point.x())
         y_pos = round(scene_point.y())
-        if x_pos < 0 or y_pos < 0 or x_pos >= pixmap.width() or y_pos >= pixmap.height():
+        if (
+            x_pos < 0
+            or y_pos < 0
+            or x_pos >= pixmap.width()
+            or y_pos >= pixmap.height()
+        ):
             return scene_point
         snapped_x = x_pos
         snapped_y = y_pos
@@ -793,7 +828,9 @@ class EditorCanvas(QGraphicsView):
             Qt.TransformationMode.SmoothTransformation,
         )
         left = max(6, (viewport.width() - scaled.width()) // 2)
-        top = max(int(self._ruler_size_px) + 6, (viewport.height() - scaled.height()) // 2)
+        top = max(
+            int(self._ruler_size_px) + 6, (viewport.height() - scaled.height()) // 2
+        )
         rect = QRect(left, top, scaled.width(), scaled.height())
         painter.save()
         painter.fillRect(rect.adjusted(-6, -6, 6, 6), QColor(0, 0, 0, 150))
@@ -803,7 +840,11 @@ class EditorCanvas(QGraphicsView):
         painter.restore()
 
     def _paint_floating_magnifier(self, painter: QPainter) -> None:
-        if not self._magnifier_enabled or not self._hover_inside_image or self._hover_scene_point is None:
+        if (
+            not self._magnifier_enabled
+            or not self._hover_inside_image
+            or self._hover_scene_point is None
+        ):
             return
         pixmap = self._pixmap_item.pixmap()
         if pixmap.isNull():
@@ -920,4 +961,4 @@ class EditorCanvas(QGraphicsView):
         scale = abs(float(self.transform().m11()))
         if scale <= 0.0001:
             return 100
-        return max(10, min(400, int(round(scale * 100.0))))
+        return max(10, min(400, round(scale * 100.0)))

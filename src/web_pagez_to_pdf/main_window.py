@@ -24,7 +24,15 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixmap, QTextDocument
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -77,11 +85,11 @@ from .image_processing import (
     DEFAULT_CONTENT_SIZING_MODE,
     PAPER_SIZES,
     apply_edit_transform,
-    content_points_per_pixel,
     compute_page_slices,
+    content_points_per_pixel,
     normalize_content_sizing_mode,
-    printable_content_area_points,
     pil_to_qpixmap,
+    printable_content_area_points,
     suggest_auto_vertical_border_crop_with_confidence,
 )
 from .models import (
@@ -169,7 +177,9 @@ class FullCaptureWorker(QThread):
                 progress_callback=_emit_progress,
             )
         except Exception as exc:  # pragma: no cover
-            CAPTURE_UI_LOGGER.exception("worker failure target_hwnd=%s", self._target_hwnd)
+            CAPTURE_UI_LOGGER.exception(
+                "worker failure target_hwnd=%s", self._target_hwnd
+            )
             self.capture_failed.emit(str(exc))
             return
         CAPTURE_UI_LOGGER.info(
@@ -283,7 +293,9 @@ class MainWindow(QMainWindow):
         capture_tab = QWidget(self)
         capture_layout = QVBoxLayout(capture_tab)
         self.capture_splitter = QSplitter(Qt.Orientation.Horizontal, capture_tab)
-        self._assign_control_identity(self.capture_splitter, "capture_splitter", "capture_splitter")
+        self._assign_control_identity(
+            self.capture_splitter, "capture_splitter", "capture_splitter"
+        )
         capture_layout.addWidget(self.capture_splitter, stretch=1)
         left = QWidget(self.capture_splitter)
         left_layout = QVBoxLayout(left)
@@ -341,7 +353,9 @@ class MainWindow(QMainWindow):
         )
         thumbnail_layout = QVBoxLayout(self.capture_thumbnail_group)
         thumbnail_layout.setContentsMargins(8, 8, 8, 8)
-        self.capture_tab_preview_label = QLabel("No capture selected", self.capture_thumbnail_group)
+        self.capture_tab_preview_label = QLabel(
+            "No capture selected", self.capture_thumbnail_group
+        )
         self.capture_tab_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.capture_tab_preview_label.setMinimumHeight(220)
         self.capture_tab_preview_label.setStyleSheet(
@@ -376,11 +390,15 @@ class MainWindow(QMainWindow):
             "capture_backend_combo",
         )
         self.capture_scroll_mode_combo = QComboBox()
-        self.capture_scroll_mode_combo.addItem("Wheel then PageDown", "wheel_then_pagedown")
+        self.capture_scroll_mode_combo.addItem(
+            "Wheel then PageDown", "wheel_then_pagedown"
+        )
         self.capture_scroll_mode_combo.addItem("Wheel", "wheel_only")
         self.capture_scroll_mode_combo.addItem("Wheel + Click", "wheel_click")
         self.capture_scroll_mode_combo.addItem("Wheel + PageDown", "wheel_pagedown")
-        self.capture_scroll_mode_combo.addItem("Wheel + Click + PageDown", "wheel_click_pagedown")
+        self.capture_scroll_mode_combo.addItem(
+            "Wheel + Click + PageDown", "wheel_click_pagedown"
+        )
         self._assign_control_identity(
             self.capture_scroll_mode_combo,
             "capture_scroll_mode_combo",
@@ -417,8 +435,12 @@ class MainWindow(QMainWindow):
             "capture_log_level_combo",
         )
         self.capture_frame_region_combo = QComboBox()
-        self.capture_frame_region_combo.addItem("Client Area (No Border)", "client_area")
-        self.capture_frame_region_combo.addItem("Full Window (Border + Title Bar)", "full_window")
+        self.capture_frame_region_combo.addItem(
+            "Client Area (No Border)", "client_area"
+        )
+        self.capture_frame_region_combo.addItem(
+            "Full Window (Border + Title Bar)", "full_window"
+        )
         self._assign_control_identity(
             self.capture_frame_region_combo,
             "capture_frame_region_combo",
@@ -430,7 +452,9 @@ class MainWindow(QMainWindow):
             "capture_include_mouse_checkbox",
             "capture_include_mouse_checkbox",
         )
-        self.capture_scroll_to_top_checkbox = QCheckBox("Scroll to Top before full capture")
+        self.capture_scroll_to_top_checkbox = QCheckBox(
+            "Scroll to Top before full capture"
+        )
         self._assign_control_identity(
             self.capture_scroll_to_top_checkbox,
             "capture_scroll_to_top_checkbox",
@@ -445,7 +469,9 @@ class MainWindow(QMainWindow):
             "capture_auto_trim_fixed_checkbox",
         )
 
-        self.capture_viewport_options_group = QGroupBox("Viewport Capture", self.capture_advanced_group)
+        self.capture_viewport_options_group = QGroupBox(
+            "Viewport Capture", self.capture_advanced_group
+        )
         self._assign_control_identity(
             self.capture_viewport_options_group,
             "capture_viewport_options_group",
@@ -467,7 +493,9 @@ class MainWindow(QMainWindow):
         viewport_layout.addWidget(self.capture_viewport_hint_label)
         cap_adv_layout.addWidget(self.capture_viewport_options_group)
 
-        self.capture_full_scroll_options_group = QGroupBox("Full-Scroll Capture", self.capture_advanced_group)
+        self.capture_full_scroll_options_group = QGroupBox(
+            "Full-Scroll Capture", self.capture_advanced_group
+        )
         self._assign_control_identity(
             self.capture_full_scroll_options_group,
             "capture_full_scroll_options_group",
@@ -534,7 +562,9 @@ class MainWindow(QMainWindow):
         editor_tab = QWidget(self)
         editor_layout = QVBoxLayout(editor_tab)
         self.editor_splitter = QSplitter(Qt.Orientation.Horizontal, editor_tab)
-        self._assign_control_identity(self.editor_splitter, "editor_splitter", "editor_splitter")
+        self._assign_control_identity(
+            self.editor_splitter, "editor_splitter", "editor_splitter"
+        )
         editor_layout.addWidget(self.editor_splitter, stretch=1)
 
         editor_left = QWidget(self.editor_splitter)
@@ -543,7 +573,9 @@ class MainWindow(QMainWindow):
         editor_left_layout.setSpacing(6)
         editor_left_layout.addWidget(QLabel("Editor Preview"))
         self.editor_canvas = EditorCanvas(editor_left)
-        self._assign_control_identity(self.editor_canvas, "editor_canvas", "editor_canvas")
+        self._assign_control_identity(
+            self.editor_canvas, "editor_canvas", "editor_canvas"
+        )
         editor_left_layout.addWidget(self.editor_canvas, stretch=1)
 
         editor_right = QWidget(self.editor_splitter)
@@ -555,7 +587,9 @@ class MainWindow(QMainWindow):
         editor_right_layout.setSpacing(8)
 
         self.editor_item_label = QLabel("No queue item selected.", editor_right)
-        self._assign_control_identity(self.editor_item_label, "editor_item_label", "editor_item_label")
+        self._assign_control_identity(
+            self.editor_item_label, "editor_item_label", "editor_item_label"
+        )
         editor_right_layout.addWidget(self.editor_item_label)
 
         view_group = QGroupBox("View", editor_right)
@@ -604,9 +638,15 @@ class MainWindow(QMainWindow):
             "Vertical Border Crop",
             "crop_vertical_band",
         )
-        self.vertical_border_crop_button = QPushButton("Auto Vertical Border Crop", tools_group)
-        self.rect_crop_tool_button = self._new_editor_tool_button("Rect Crop", "crop_rect")
-        self.free_crop_tool_button = self._new_editor_tool_button("Free Crop", "crop_free")
+        self.vertical_border_crop_button = QPushButton(
+            "Auto Vertical Border Crop", tools_group
+        )
+        self.rect_crop_tool_button = self._new_editor_tool_button(
+            "Rect Crop", "crop_rect"
+        )
+        self.free_crop_tool_button = self._new_editor_tool_button(
+            "Free Crop", "crop_free"
+        )
         self.redact_tool_button = self._new_editor_tool_button("Redact", "redact")
         for widget, control in (
             (self.pan_tool_button, "pan_tool_button"),
@@ -634,7 +674,9 @@ class MainWindow(QMainWindow):
         tool_modes_bottom_row.addStretch(1)
         tool_action_row = QHBoxLayout()
         tool_action_label = QLabel("One-shot action", tools_group)
-        self._assign_control_identity(tool_action_label, "tool_action_label", "tool_action_label")
+        self._assign_control_identity(
+            tool_action_label, "tool_action_label", "tool_action_label"
+        )
         tool_action_row.addWidget(tool_action_label)
         tool_action_row.addWidget(self.vertical_border_crop_button)
         tool_action_row.addStretch(1)
@@ -648,7 +690,9 @@ class MainWindow(QMainWindow):
         self.content_sizing_mode_combo = QComboBox(transform_group)
         self.content_sizing_mode_combo.addItem("Fit Width", "legacy_fit_width")
         self.content_sizing_mode_combo.addItem("Fit to Page", "fit_to_page")
-        self.content_sizing_mode_combo.addItem("Stretch if Smaller", "stretch_if_smaller")
+        self.content_sizing_mode_combo.addItem(
+            "Stretch if Smaller", "stretch_if_smaller"
+        )
         self.content_sizing_mode_combo.addItem("Original Size", "original_size")
         self.zoom_spin = QDoubleSpinBox(transform_group)
         self.zoom_spin.setRange(10.0, 400.0)
@@ -669,7 +713,9 @@ class MainWindow(QMainWindow):
         transform_layout.addRow("Straighten", self.straighten_spin)
         editor_right_layout.addWidget(transform_group)
 
-        self.layout_preview_group = QGroupBox("Page Layout & Print Preview", editor_right)
+        self.layout_preview_group = QGroupBox(
+            "Page Layout & Print Preview", editor_right
+        )
         self._assign_control_identity(
             self.layout_preview_group,
             "layout_preview_group",
@@ -677,9 +723,15 @@ class MainWindow(QMainWindow):
         )
         layout_preview_layout = QVBoxLayout(self.layout_preview_group)
         layout_form = QFormLayout()
-        layout_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        layout_form.setFormAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        layout_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        layout_form.setFormAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        layout_form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         layout_form.setHorizontalSpacing(10)
         layout_form.setVerticalSpacing(6)
         self.layout_preview_form = layout_form
@@ -774,7 +826,9 @@ class MainWindow(QMainWindow):
             "editor_overlay_toggle",
             "editor_overlay_toggle",
         )
-        self.thumbnail_zoom_slider = QSlider(Qt.Orientation.Horizontal, self.layout_preview_group)
+        self.thumbnail_zoom_slider = QSlider(
+            Qt.Orientation.Horizontal, self.layout_preview_group
+        )
         self.thumbnail_zoom_slider.setRange(90, 320)
         self.thumbnail_zoom_slider.setSingleStep(10)
         self.thumbnail_zoom_slider.setPageStep(20)
@@ -790,7 +844,9 @@ class MainWindow(QMainWindow):
         thumbnail_controls_layout.setSpacing(8)
         thumbnail_controls_layout.addWidget(self.editor_overlay_toggle)
         thumbnail_controls_layout.addStretch(1)
-        thumbnail_controls_layout.addWidget(QLabel("Thumbnail Zoom", thumbnail_controls))
+        thumbnail_controls_layout.addWidget(
+            QLabel("Thumbnail Zoom", thumbnail_controls)
+        )
         thumbnail_controls_layout.addWidget(self.thumbnail_zoom_slider, 1)
         layout_preview_layout.addWidget(thumbnail_controls)
         self.page_preview_list = ThumbnailPreviewList(self.layout_preview_group)
@@ -887,7 +943,9 @@ class MainWindow(QMainWindow):
         self.output_input = QLineEdit()
         self.output_browse_button = QPushButton("Browse")
         self.export_button = QPushButton("Export")
-        self._assign_control_identity(self.export_button, "export_button", "export_button")
+        self._assign_control_identity(
+            self.export_button, "export_button", "export_button"
+        )
         self.export_formats_group = QGroupBox("Formats", export_tab)
         self._assign_control_identity(
             self.export_formats_group,
@@ -952,7 +1010,9 @@ class MainWindow(QMainWindow):
 
     def _bind_events(self) -> None:
         self.pick_target_menu.aboutToShow.connect(self._populate_pick_target_menu)
-        self.capture_last_selected_button.clicked.connect(self._capture_last_selected_window)
+        self.capture_last_selected_button.clicked.connect(
+            self._capture_last_selected_window
+        )
         self.capture_button.clicked.connect(self._capture_selected_viewport)
         self.capture_full_button.clicked.connect(self._capture_full_scroll)
         self.stop_button.clicked.connect(self._request_stop)
@@ -972,22 +1032,40 @@ class MainWindow(QMainWindow):
         self.editor_tool_buttons.buttonClicked.connect(self._on_editor_tool_changed)
         self.editor_canvas.rect_drawn.connect(self._on_editor_rect_drawn)
         self.editor_canvas.free_crop_drawn.connect(self._on_editor_free_crop)
-        self.editor_canvas.split_marker_added.connect(self._on_canvas_split_marker_added)
-        self.editor_canvas.split_marker_moved.connect(self._on_canvas_split_marker_moved)
-        self.editor_canvas.split_marker_removed.connect(self._on_canvas_split_marker_removed)
+        self.editor_canvas.split_marker_added.connect(
+            self._on_canvas_split_marker_added
+        )
+        self.editor_canvas.split_marker_moved.connect(
+            self._on_canvas_split_marker_moved
+        )
+        self.editor_canvas.split_marker_removed.connect(
+            self._on_canvas_split_marker_removed
+        )
         self.editor_canvas.zoom_changed.connect(self._on_editor_canvas_zoom_changed)
-        self.content_sizing_mode_combo.currentIndexChanged.connect(self._editor_controls_changed)
+        self.content_sizing_mode_combo.currentIndexChanged.connect(
+            self._editor_controls_changed
+        )
         self.zoom_spin.valueChanged.connect(self._editor_controls_changed)
         self.rotate_spin.valueChanged.connect(self._editor_controls_changed)
         self.straighten_spin.valueChanged.connect(self._editor_controls_changed)
-        self.zoom_fit_height_button.clicked.connect(lambda: self._set_editor_zoom_mode("fit_height"))
-        self.zoom_fit_width_button.clicked.connect(lambda: self._set_editor_zoom_mode("fit_width"))
-        self.zoom_100_button.clicked.connect(lambda: self._set_editor_zoom_mode("manual", 100))
+        self.zoom_fit_height_button.clicked.connect(
+            lambda: self._set_editor_zoom_mode("fit_height")
+        )
+        self.zoom_fit_width_button.clicked.connect(
+            lambda: self._set_editor_zoom_mode("fit_width")
+        )
+        self.zoom_100_button.clicked.connect(
+            lambda: self._set_editor_zoom_mode("manual", 100)
+        )
         self.zoom_out_button.clicked.connect(lambda: self._adjust_editor_zoom(-10))
         self.zoom_in_button.clicked.connect(lambda: self._adjust_editor_zoom(10))
-        self.editor_view_zoom_spin.valueChanged.connect(self._on_editor_view_zoom_spin_changed)
+        self.editor_view_zoom_spin.valueChanged.connect(
+            self._on_editor_view_zoom_spin_changed
+        )
         self.paper_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
-        self.orientation_combo.currentIndexChanged.connect(self._on_layout_controls_changed)
+        self.orientation_combo.currentIndexChanged.connect(
+            self._on_layout_controls_changed
+        )
         self.margin_top_spin.valueChanged.connect(self._on_layout_controls_changed)
         self.margin_bottom_spin.valueChanged.connect(self._on_layout_controls_changed)
         self.margin_left_spin.valueChanged.connect(self._on_layout_controls_changed)
@@ -998,18 +1076,34 @@ class MainWindow(QMainWindow):
         self.header_input.textChanged.connect(self._on_layout_controls_changed)
         self.footer_input.textChanged.connect(self._on_layout_controls_changed)
         self.editor_overlay_toggle.toggled.connect(self._on_overlay_visibility_changed)
-        self.thumbnail_zoom_slider.valueChanged.connect(self._on_thumbnail_zoom_slider_changed)
-        self.page_preview_list.zoom_delta_requested.connect(self._on_thumbnail_zoom_delta_requested)
+        self.thumbnail_zoom_slider.valueChanged.connect(
+            self._on_thumbnail_zoom_slider_changed
+        )
+        self.page_preview_list.zoom_delta_requested.connect(
+            self._on_thumbnail_zoom_delta_requested
+        )
         self.page_preview_list.currentRowChanged.connect(self._on_page_preview_selected)
         self.page_preview_list.itemEntered.connect(self._on_page_preview_item_hovered)
         self.page_preview_list.viewport().installEventFilter(self)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.capture_splitter.splitterMoved.connect(self._schedule_splitter_sizes_persist)
-        self.editor_splitter.splitterMoved.connect(self._schedule_splitter_sizes_persist)
-        self.capture_backend_combo.currentIndexChanged.connect(self._persist_capture_backend)
-        self.capture_scroll_mode_combo.currentIndexChanged.connect(self._persist_capture_scroll_mode)
-        self.capture_frame_region_combo.currentIndexChanged.connect(self._persist_capture_frame_region)
-        self.capture_scroll_to_top_checkbox.toggled.connect(self._persist_capture_scroll_to_top_on_full)
+        self.capture_splitter.splitterMoved.connect(
+            self._schedule_splitter_sizes_persist
+        )
+        self.editor_splitter.splitterMoved.connect(
+            self._schedule_splitter_sizes_persist
+        )
+        self.capture_backend_combo.currentIndexChanged.connect(
+            self._persist_capture_backend
+        )
+        self.capture_scroll_mode_combo.currentIndexChanged.connect(
+            self._persist_capture_scroll_mode
+        )
+        self.capture_frame_region_combo.currentIndexChanged.connect(
+            self._persist_capture_frame_region
+        )
+        self.capture_scroll_to_top_checkbox.toggled.connect(
+            self._persist_capture_scroll_to_top_on_full
+        )
         self.capture_auto_trim_fixed_checkbox.toggled.connect(
             self._persist_capture_auto_trim_fixed_strips
         )
@@ -1025,7 +1119,9 @@ class MainWindow(QMainWindow):
         self.capture_log_level_combo.currentIndexChanged.connect(
             self._persist_capture_log_level
         )
-        self._hotkeys.capture_selected_requested.connect(self._capture_selected_viewport)
+        self._hotkeys.capture_selected_requested.connect(
+            self._capture_selected_viewport
+        )
         self._hotkeys.capture_full_requested.connect(self._capture_full_scroll)
         self._hotkeys.stop_capture_requested.connect(self._request_stop)
         self._stop_overlay.stop_requested.connect(self._request_stop)
@@ -1069,43 +1165,91 @@ class MainWindow(QMainWindow):
                 self.capture_full_button,
                 "Capture a full scrolling page from the selected window (Ctrl+Shift+S).",
             ),
-            (self.capture_last_selected_button, "Capture the last window you selected in the OS."),
+            (
+                self.capture_last_selected_button,
+                "Capture the last window you selected in the OS.",
+            ),
             (self.stop_button, "Stop an active full-page capture (Ctrl+Shift+X)."),
             (self.import_button, "Import existing image files into the queue."),
-            (self.queue_list, "Queue of captured/imported images used by Editor and Export."),
+            (
+                self.queue_list,
+                "Queue of captured/imported images used by Editor and Export.",
+            ),
             (self.up_button, "Move the selected queue item up."),
             (self.down_button, "Move the selected queue item down."),
             (self.remove_button, "Remove the selected queue item from the queue."),
             (self.max_pages_spin, "Maximum pages captured during a full-scroll run."),
-            (self.capture_delay_spin, "Delay between scroll steps during full capture."),
+            (
+                self.capture_delay_spin,
+                "Delay between scroll steps during full capture.",
+            ),
             (self.capture_backend_combo, "Primary backend used to grab image frames."),
-            (self.capture_scroll_mode_combo, "Scroll automation strategy used for full capture."),
-            (self.capture_scroll_to_top_checkbox, "Try to jump to the top before full capture starts."),
-            (self.capture_auto_trim_fixed_checkbox, "Auto-trim repeated fixed top/bottom strips after capture."),
-            (self.capture_frame_region_combo, "Choose client-only or full-window capture region."),
-            (self.capture_wheel_injection_combo, "How wheel input is injected into the target window."),
-            (self.capture_cursor_hold_combo, "How the mouse cursor is positioned while scrolling."),
+            (
+                self.capture_scroll_mode_combo,
+                "Scroll automation strategy used for full capture.",
+            ),
+            (
+                self.capture_scroll_to_top_checkbox,
+                "Try to jump to the top before full capture starts.",
+            ),
+            (
+                self.capture_auto_trim_fixed_checkbox,
+                "Auto-trim repeated fixed top/bottom strips after capture.",
+            ),
+            (
+                self.capture_frame_region_combo,
+                "Choose client-only or full-window capture region.",
+            ),
+            (
+                self.capture_wheel_injection_combo,
+                "How wheel input is injected into the target window.",
+            ),
+            (
+                self.capture_cursor_hold_combo,
+                "How the mouse cursor is positioned while scrolling.",
+            ),
             (self.capture_log_level_combo, "Capture diagnostics log verbosity."),
-            (self.capture_include_mouse_checkbox, "Include the mouse cursor in captured frames."),
+            (
+                self.capture_include_mouse_checkbox,
+                "Include the mouse cursor in captured frames.",
+            ),
             (self.capture_log_list, "Capture diagnostics log entries."),
-            (self.editor_canvas, "Preview image. Use tools to crop/redact/split directly on the image."),
-            (self.zoom_fit_height_button, "Fit the preview to the available viewport height."),
-            (self.zoom_fit_width_button, "Fit the preview to the available viewport width."),
+            (
+                self.editor_canvas,
+                "Preview image. Use tools to crop/redact/split directly on the image.",
+            ),
+            (
+                self.zoom_fit_height_button,
+                "Fit the preview to the available viewport height.",
+            ),
+            (
+                self.zoom_fit_width_button,
+                "Fit the preview to the available viewport width.",
+            ),
             (self.zoom_100_button, "Show preview at 100% zoom."),
             (self.zoom_out_button, "Zoom out by 10%."),
             (self.zoom_in_button, "Zoom in by 10%."),
             (self.editor_view_zoom_spin, "Manual editor view zoom percent."),
-            (self.pan_tool_button, "Persistent tool mode: pan/scroll the preview while left mouse is pressed."),
+            (
+                self.pan_tool_button,
+                "Persistent tool mode: pan/scroll the preview while left mouse is pressed.",
+            ),
             (
                 self.vertical_crop_tool_button,
                 "Persistent tool mode: draw a manual vertical crop band for the selected item.",
             ),
-            (self.rect_crop_tool_button, "Persistent tool mode: draw a rectangular crop area."),
+            (
+                self.rect_crop_tool_button,
+                "Persistent tool mode: draw a rectangular crop area.",
+            ),
             (
                 self.free_crop_tool_button,
                 "Persistent tool mode: draw free-form crop points, then double-click to apply.",
             ),
-            (self.redact_tool_button, "Persistent tool mode: draw redaction rectangles."),
+            (
+                self.redact_tool_button,
+                "Persistent tool mode: draw redaction rectangles.",
+            ),
             (
                 self.content_sizing_mode_combo,
                 "Persistent transform mode for print sizing: Fit Width scales content to printable width; "
@@ -1135,16 +1279,31 @@ class MainWindow(QMainWindow):
                 "Search window in pixels around each ideal page break. Larger windows can find cleaner blank-row "
                 "cuts farther from the ideal split; smaller windows keep cuts closer to the target position.",
             ),
-            (self.header_input, "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
-            (self.footer_input, "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}."),
-            (self.editor_overlay_toggle, "Toggle page-break guides, split markers, labels, and printable area guides."),
+            (
+                self.header_input,
+                "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}.",
+            ),
+            (
+                self.footer_input,
+                "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}.",
+            ),
+            (
+                self.editor_overlay_toggle,
+                "Toggle page-break guides, split markers, labels, and printable area guides.",
+            ),
             (self.thumbnail_zoom_slider, "Scale the bottom thumbnail preview row."),
-            (self.page_preview_list, "Live page thumbnails generated from current edit and layout settings."),
+            (
+                self.page_preview_list,
+                "Live page thumbnails generated from current edit and layout settings.",
+            ),
             (
                 self.add_split_button,
                 "Arm one-shot split add mode. Then click the image area or Y ruler to place a split marker.",
             ),
-            (self.split_list, "Current split markers for this queue item (auto-calculated when no edits are persisted)."),
+            (
+                self.split_list,
+                "Current split markers for this queue item (auto-calculated when no edits are persisted).",
+            ),
             (
                 self.remove_split_button,
                 "Arm one-shot split remove mode. Then click a split marker on the image or Y ruler to remove it.",
@@ -1157,21 +1316,36 @@ class MainWindow(QMainWindow):
                 self.vertical_border_crop_button,
                 "One-shot action: auto-detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
             ),
-            (self.clear_redactions_button, "One-shot action: remove all redactions for the selected item."),
-            (self.reset_item_edits_button, "One-shot action: reset all editor operations for the selected item."),
+            (
+                self.clear_redactions_button,
+                "One-shot action: remove all redactions for the selected item.",
+            ),
+            (
+                self.reset_item_edits_button,
+                "One-shot action: reset all editor operations for the selected item.",
+            ),
             (self.combine_checkbox, "Export all queue items as one combined job."),
             (self.pdf_checkbox, "Export PDF output."),
-            (self.paged_images_checkbox, "Export one PNG file per computed page slice."),
+            (
+                self.paged_images_checkbox,
+                "Export one PNG file per computed page slice.",
+            ),
             (self.long_image_checkbox, "Export one long stitched PNG image."),
             (self.tiff_checkbox, "Export one multi-page TIFF."),
             (self.docx_checkbox, "Export DOCX output."),
             (self.pptx_checkbox, "Export PPTX output."),
-            (self.xlsx_checkbox, "Export XLSX output with metadata and image previews."),
+            (
+                self.xlsx_checkbox,
+                "Export XLSX output with metadata and image previews.",
+            ),
             (
                 self.open_after_export_checkbox,
                 "Open output file (or folder when multiple files are generated) after export.",
             ),
-            (self.docx_mode_combo, "Choose whether DOCX/PPTX/XLSX uses split pages or per-capture images."),
+            (
+                self.docx_mode_combo,
+                "Choose whether DOCX/PPTX/XLSX uses split pages or per-capture images.",
+            ),
             (self.base_input, "Base filename used for exported files."),
             (self.output_input, "Destination folder for exported files."),
             (self.output_browse_button, "Choose destination folder."),
@@ -1180,7 +1354,9 @@ class MainWindow(QMainWindow):
         for widget, tip in tooltip_map:
             self._set_tooltip(widget, tip)
 
-    def _new_editor_tool_button(self, text: str, tool: str, *, checked: bool = False) -> QToolButton:
+    def _new_editor_tool_button(
+        self, text: str, tool: str, *, checked: bool = False
+    ) -> QToolButton:
         button = QToolButton(self)
         button.setText(text)
         button.setCheckable(True)
@@ -1242,17 +1418,21 @@ class MainWindow(QMainWindow):
         return {
             "capture.max_pages": int(self.max_pages_spin.value()),
             "capture.delay_ms": int(self.capture_delay_spin.value()),
-            "capture.backend_primary": str(self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND),
+            "capture.backend_primary": str(
+                self.capture_backend_combo.currentData() or DEFAULT_CAPTURE_BACKEND
+            ),
             "capture.scroll_mode": str(
                 self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
             ),
             "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
             "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
             "capture.frame_region": str(
-                self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION
+                self.capture_frame_region_combo.currentData()
+                or DEFAULT_CAPTURE_FRAME_REGION
             ),
             "capture.wheel_injection_mode": str(
-                self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
+                self.capture_wheel_injection_combo.currentData()
+                or DEFAULT_WHEEL_INJECTION_MODE
             ),
             "capture.cursor_hold_mode": str(
                 self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
@@ -1296,14 +1476,24 @@ class MainWindow(QMainWindow):
     def _load_runtime_settings(self) -> None:
         self._editor_loading = True
         try:
-            self.max_pages_spin.setValue(int(self._settings.value("capture.max_pages", 50)))
-            self.capture_delay_spin.setValue(int(self._settings.value("capture.delay_ms", 333)))
-            backend = str(self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND))
+            self.max_pages_spin.setValue(
+                int(self._settings.value("capture.max_pages", 50))
+            )
+            self.capture_delay_spin.setValue(
+                int(self._settings.value("capture.delay_ms", 333))
+            )
+            backend = str(
+                self._settings.value("capture.backend_primary", DEFAULT_CAPTURE_BACKEND)
+            )
             self._set_capture_backend_combo(backend)
-            scroll_mode = str(self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE))
+            scroll_mode = str(
+                self._settings.value("capture.scroll_mode", DEFAULT_SCROLL_MODE)
+            )
             self._set_scroll_mode_combo(scroll_mode)
             self.capture_scroll_to_top_checkbox.setChecked(
-                self._bool_setting("capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL)
+                self._bool_setting(
+                    "capture.scroll_to_top_on_full", DEFAULT_SCROLL_TO_TOP_ON_FULL
+                )
             )
             self.capture_auto_trim_fixed_checkbox.setChecked(
                 self._bool_setting(
@@ -1314,7 +1504,9 @@ class MainWindow(QMainWindow):
             if self._settings.contains("capture.auto_trim_scrollbar"):
                 self._settings.remove("capture.auto_trim_scrollbar")
             frame_region = str(
-                self._settings.value("capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION)
+                self._settings.value(
+                    "capture.frame_region", DEFAULT_CAPTURE_FRAME_REGION
+                )
             )
             self._set_capture_frame_region_combo(frame_region)
             wheel_injection = str(
@@ -1335,15 +1527,23 @@ class MainWindow(QMainWindow):
                 self._bool_setting("capture.include_mouse_cursor", False)
             )
             capture_log_level = normalize_capture_log_level(
-                str(self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
+                str(
+                    self._settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL)
+                )
             )
             self._set_capture_log_level_combo(capture_log_level)
             self._apply_capture_logger_level(capture_log_level)
 
-            self.combine_checkbox.setChecked(self._bool_setting("export.combine_mode", True))
+            self.combine_checkbox.setChecked(
+                self._bool_setting("export.combine_mode", True)
+            )
             self.pdf_checkbox.setChecked(self._bool_setting("export.pdf", True))
-            self.paged_images_checkbox.setChecked(self._bool_setting("export.paged_images", False))
-            self.long_image_checkbox.setChecked(self._bool_setting("export.long_image", False))
+            self.paged_images_checkbox.setChecked(
+                self._bool_setting("export.paged_images", False)
+            )
+            self.long_image_checkbox.setChecked(
+                self._bool_setting("export.long_image", False)
+            )
             self.tiff_checkbox.setChecked(self._bool_setting("export.tiff", False))
             self.docx_checkbox.setChecked(self._bool_setting("export.docx", False))
             self.pptx_checkbox.setChecked(self._bool_setting("export.pptx", False))
@@ -1359,7 +1559,9 @@ class MainWindow(QMainWindow):
             self.base_input.setText(
                 str(self._settings.value("export.basename", self.base_input.text()))
             )
-            output_dir = str(self._settings.value("export.output_dir", self.output_input.text()))
+            output_dir = str(
+                self._settings.value("export.output_dir", self.output_input.text())
+            )
             if output_dir:
                 self.output_input.setText(output_dir)
 
@@ -1369,17 +1571,27 @@ class MainWindow(QMainWindow):
             orientation = str(self._settings.value("layout.orientation", "portrait"))
             if self.orientation_combo.findText(orientation) >= 0:
                 self.orientation_combo.setCurrentText(orientation)
-            self.margin_top_spin.setValue(float(self._settings.value("layout.margin_top_mm", 20.0)))
+            self.margin_top_spin.setValue(
+                float(self._settings.value("layout.margin_top_mm", 20.0))
+            )
             self.margin_bottom_spin.setValue(
                 float(self._settings.value("layout.margin_bottom_mm", 20.0))
             )
-            self.margin_left_spin.setValue(float(self._settings.value("layout.margin_left_mm", 15.0)))
+            self.margin_left_spin.setValue(
+                float(self._settings.value("layout.margin_left_mm", 15.0))
+            )
             self.margin_right_spin.setValue(
                 float(self._settings.value("layout.margin_right_mm", 15.0))
             )
-            self.gutter_spin.setValue(float(self._settings.value("layout.gutter_mm", 0.0)))
-            self.blank_spin.setValue(int(self._settings.value("layout.blank_row_threshold", 245)))
-            self.search_spin.setValue(int(self._settings.value("layout.search_window_px", 300)))
+            self.gutter_spin.setValue(
+                float(self._settings.value("layout.gutter_mm", 0.0))
+            )
+            self.blank_spin.setValue(
+                int(self._settings.value("layout.blank_row_threshold", 245))
+            )
+            self.search_spin.setValue(
+                int(self._settings.value("layout.search_window_px", 300))
+            )
             header_html = str(self._settings.value("layout.header_html", ""))
             footer_html = str(self._settings.value("layout.footer_html", ""))
             self.header_input.setHtml(header_html)
@@ -1466,14 +1678,20 @@ class MainWindow(QMainWindow):
         return max(0, min(2000, parsed))
 
     def _persist_splitter_sizes(self, *_args: object) -> None:
-        self._settings.set_value("ui.capture_splitter_sizes", self.capture_splitter.sizes())
-        self._settings.set_value("ui.editor_splitter_sizes", self.editor_splitter.sizes())
+        self._settings.set_value(
+            "ui.capture_splitter_sizes", self.capture_splitter.sizes()
+        )
+        self._settings.set_value(
+            "ui.editor_splitter_sizes", self.editor_splitter.sizes()
+        )
 
     def _schedule_splitter_sizes_persist(self, *_args: object) -> None:
         self._splitter_sizes_timer.start()
 
     @staticmethod
-    def _set_splitter_right_pane_width(splitter: QSplitter, right_width_px: int) -> None:
+    def _set_splitter_right_pane_width(
+        splitter: QSplitter, right_width_px: int
+    ) -> None:
         total_width = int(splitter.width())
         if total_width <= 0:
             sizes = splitter.sizes()
@@ -1564,7 +1782,9 @@ class MainWindow(QMainWindow):
         return DEFAULT_CAPTURE_BACKEND
 
     def _persist_capture_backend(self) -> None:
-        self._settings.set_value("capture.backend_primary", self._capture_backend_primary())
+        self._settings.set_value(
+            "capture.backend_primary", self._capture_backend_primary()
+        )
 
     def _set_scroll_mode_combo(self, mode: str) -> None:
         normalized = str(mode or "").strip().lower()
@@ -1596,7 +1816,10 @@ class MainWindow(QMainWindow):
         self.capture_frame_region_combo.setCurrentIndex(0)
 
     def _capture_frame_region(self) -> str:
-        value = str(self.capture_frame_region_combo.currentData() or DEFAULT_CAPTURE_FRAME_REGION)
+        value = str(
+            self.capture_frame_region_combo.currentData()
+            or DEFAULT_CAPTURE_FRAME_REGION
+        )
         if value in CAPTURE_FRAME_REGIONS:
             return value
         return DEFAULT_CAPTURE_FRAME_REGION
@@ -1643,7 +1866,8 @@ class MainWindow(QMainWindow):
 
     def _capture_wheel_injection_mode(self) -> str:
         value = str(
-            self.capture_wheel_injection_combo.currentData() or DEFAULT_WHEEL_INJECTION_MODE
+            self.capture_wheel_injection_combo.currentData()
+            or DEFAULT_WHEEL_INJECTION_MODE
         )
         if value in WHEEL_INJECTION_MODES:
             return value
@@ -1666,7 +1890,9 @@ class MainWindow(QMainWindow):
         self.capture_cursor_hold_combo.setCurrentIndex(0)
 
     def _capture_cursor_hold_mode(self) -> str:
-        value = str(self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE)
+        value = str(
+            self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
+        )
         if value in CURSOR_HOLD_MODES:
             return value
         return DEFAULT_CURSOR_HOLD_MODE
@@ -1716,7 +1942,9 @@ class MainWindow(QMainWindow):
             elif isinstance(raw_geometry, str) and raw_geometry.strip():
                 with suppress(Exception):
                     restored = self.restoreGeometry(
-                        QByteArray.fromBase64(raw_geometry.encode("ascii", errors="ignore"))
+                        QByteArray.fromBase64(
+                            raw_geometry.encode("ascii", errors="ignore")
+                        )
                     )
 
             if restored:
@@ -1806,7 +2034,9 @@ class MainWindow(QMainWindow):
         self._crosshair_overlay = CrosshairPickerOverlay(self)
         self._crosshair_overlay.pick_requested.connect(self._pick_from_crosshair_point)
         self._crosshair_overlay.show_fullscreen_on_cursor_screen()
-        self.status_label.setText("Crosshair mode active. Click target window or Esc to cancel.")
+        self.status_label.setText(
+            "Crosshair mode active. Click target window or Esc to cancel."
+        )
 
     def _pick_from_crosshair_point(self, x_pos: int, y_pos: int) -> None:
         hwnd = self._capture_service.window_from_point(x_pos, y_pos)
@@ -1836,7 +2066,9 @@ class MainWindow(QMainWindow):
             "%s aborted: no selected target and no second-last active window",
             capture_kind,
         )
-        self.status_label.setText("No target selected and no second-last active window found.")
+        self.status_label.setText(
+            "No target selected and no second-last active window found."
+        )
         return False
 
     def _picked_window_from_hwnd(self, hwnd: int) -> PickedWindow:
@@ -1857,7 +2089,9 @@ class MainWindow(QMainWindow):
         windows = self._capture_service.list_top_windows(int(self.winId()))
         if not windows:
             return
-        process_rank = {name: index for index, name in enumerate(BROWSER_PROCESS_PRIORITY)}
+        process_rank = {
+            name: index for index, name in enumerate(BROWSER_PROCESS_PRIORITY)
+        }
         browser_candidates = [
             item
             for item in windows
@@ -1885,17 +2119,25 @@ class MainWindow(QMainWindow):
             retries=1,
         )
         if hwnd is None:
-            CAPTURE_UI_LOGGER.error("quick capture failed: Alt+Tab did not resolve a valid target")
+            CAPTURE_UI_LOGGER.error(
+                "quick capture failed: Alt+Tab did not resolve a valid target"
+            )
             self.status_label.setText("Alt+Tab did not resolve a valid target window.")
-            self._append_capture_log("Alt+Tab quick capture failed: no valid foreground target.")
+            self._append_capture_log(
+                "Alt+Tab quick capture failed: no valid foreground target."
+            )
             return
         self._set_target(self._picked_window_from_hwnd(hwnd))
-        self._append_capture_log(f"Alt+Tab selected target: {self._selected_target.label}.")
+        self._append_capture_log(
+            f"Alt+Tab selected target: {self._selected_target.label}."
+        )
         self._capture_selected_viewport()
 
     def _set_target(self, target: PickedWindow) -> None:
         self._selected_target = target
-        CAPTURE_UI_LOGGER.info("target selected hwnd=%s label=%r", target.hwnd, target.label)
+        CAPTURE_UI_LOGGER.info(
+            "target selected hwnd=%s label=%r", target.hwnd, target.label
+        )
         self.target_label.setText(f"Target: {target.label}")
         if self.base_input.text().strip() in {"", "capture"}:
             seed_name = target.title or target.label
@@ -1914,7 +2156,9 @@ class MainWindow(QMainWindow):
             self._capture_frame_region(),
             self._capture_include_mouse_cursor(),
         )
-        focused, message = self._capture_service.activate_window(self._selected_target.hwnd)
+        focused, message = self._capture_service.activate_window(
+            self._selected_target.hwnd
+        )
         if not focused:
             CAPTURE_UI_LOGGER.error(
                 "viewport capture focus failed hwnd=%s reason=%s",
@@ -1998,7 +2242,9 @@ class MainWindow(QMainWindow):
                 self._selected_target.hwnd,
                 message or "unknown",
             )
-            self.status_label.setText(message or "Could not focus selected target window.")
+            self.status_label.setText(
+                message or "Could not focus selected target window."
+            )
             self._append_capture_log(
                 f"Failed to focus target before full capture: {message or 'unknown reason'}"
             )
@@ -2028,9 +2274,7 @@ class MainWindow(QMainWindow):
         self._capture_worker.capture_progress.connect(self._on_full_capture_progress)
         self._capture_worker.finished.connect(self._full_capture_finished)
         self.capture_log_list.clear()
-        self._append_capture_log(
-            f"Target focused: {self._selected_target.label}."
-        )
+        self._append_capture_log(f"Target focused: {self._selected_target.label}.")
         self._append_capture_log(
             "Full capture started "
             f"(backend={self._capture_backend_primary()}, scroll_mode={self._capture_scroll_mode()}, "
@@ -2073,7 +2317,9 @@ class MainWindow(QMainWindow):
             self._stop_overlay.hide()
             self._capture_worker = None
             return
-        self.status_label.setText("Full capture running. Hover red stop badge or press Ctrl+Shift+X.")
+        self.status_label.setText(
+            "Full capture running. Hover red stop badge or press Ctrl+Shift+X."
+        )
 
     def _request_stop(self) -> None:
         self._stop_event.set()
@@ -2084,7 +2330,11 @@ class MainWindow(QMainWindow):
     def _on_full_capture_progress(self, progress_obj: object) -> None:
         if not isinstance(progress_obj, ScrollCaptureProgress):
             return
-        diff_text = "n/a" if progress_obj.diff_score is None else f"{progress_obj.diff_score:.2f}"
+        diff_text = (
+            "n/a"
+            if progress_obj.diff_score is None
+            else f"{progress_obj.diff_score:.2f}"
+        )
         status = (
             f"Full capture frame {progress_obj.frame_index}: "
             f"scroll={progress_obj.scroll_method}, backend={progress_obj.backend_used or 'unknown'}, "
@@ -2173,7 +2423,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         output_dir = Path(self.output_input.text().strip())
         output_dir.mkdir(parents=True, exist_ok=True)
-        stem = sanitize_basename(f"{title}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}")
+        stem = sanitize_basename(
+            f"{title}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        )
         path = output_dir / f"{stem}.png"
         image.save(path, format="PNG")
         item = CaptureItem(
@@ -2207,7 +2459,9 @@ class MainWindow(QMainWindow):
                 image = Image.open(path).convert("RGB")
             except Exception:
                 continue
-            self._add_capture(image=image, title=path.stem, source_hwnd=None, frame_count=None)
+            self._add_capture(
+                image=image, title=path.stem, source_hwnd=None, frame_count=None
+            )
             added += 1
         self.status_label.setText(f"Imported {added} image(s).")
 
@@ -2297,7 +2551,8 @@ class MainWindow(QMainWindow):
         current = self._current_item()
         return _EditorHistoryEntry(
             edits_by_item_id={
-                item_id: edits.clone() for item_id, edits in self._sessions.edits_by_item_id.items()
+                item_id: edits.clone()
+                for item_id, edits in self._sessions.edits_by_item_id.items()
             },
             selected_item_id=current.item_id if current is not None else None,
         )
@@ -2319,7 +2574,8 @@ class MainWindow(QMainWindow):
         self._history_restoring = True
         try:
             self._sessions.edits_by_item_id = {
-                item_id: edits.clone() for item_id, edits in entry.edits_by_item_id.items()
+                item_id: edits.clone()
+                for item_id, edits in entry.edits_by_item_id.items()
             }
             row = self._history_item_row(entry.selected_item_id)
             with QSignalBlocker(self.queue_list):
@@ -2369,7 +2625,9 @@ class MainWindow(QMainWindow):
         current_item = self._current_item()
         if current_item is None:
             return
-        selected_mode = normalize_content_sizing_mode(self.content_sizing_mode_combo.currentData())
+        selected_mode = normalize_content_sizing_mode(
+            self.content_sizing_mode_combo.currentData()
+        )
         self._pending_transform_item_id = current_item.item_id
         self._pending_transform_values = (
             int(self.zoom_spin.value()),
@@ -2391,7 +2649,10 @@ class MainWindow(QMainWindow):
         self._preview_update_pending_layout = (
             self._preview_update_pending_layout or bool(layout_changed)
         )
-        if not self._preview_update_pending_transform and not self._preview_update_pending_layout:
+        if (
+            not self._preview_update_pending_transform
+            and not self._preview_update_pending_layout
+        ):
             return
         if self._editor_preview_debounce_ms <= 0:
             self._flush_debounced_preview_update()
@@ -2417,7 +2678,12 @@ class MainWindow(QMainWindow):
             else:
                 edits = None
             if edits is not None and transform_values is not None:
-                zoom_percent, rotate_degrees, straighten_degrees, content_sizing_mode = transform_values
+                (
+                    zoom_percent,
+                    rotate_degrees,
+                    straighten_degrees,
+                    content_sizing_mode,
+                ) = transform_values
                 before = self._snapshot_history_entry()
                 self._set_scalar_operation(
                     edits,
@@ -2462,7 +2728,11 @@ class MainWindow(QMainWindow):
         if edits is None:
             return DEFAULT_CONTENT_SIZING_MODE
         mode_op = edits.get_operation("content_sizing_mode")
-        mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
+        mode_value = (
+            mode_op.params.get("mode")
+            if mode_op is not None
+            else DEFAULT_CONTENT_SIZING_MODE
+        )
         return normalize_content_sizing_mode(mode_value)
 
     @staticmethod
@@ -2477,7 +2747,9 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return 100.0
 
-    def _set_content_sizing_mode_operation(self, edits: EditAdjustments, mode: str) -> None:
+    def _set_content_sizing_mode_operation(
+        self, edits: EditAdjustments, mode: str
+    ) -> None:
         normalized = normalize_content_sizing_mode(mode)
         if normalized == DEFAULT_CONTENT_SIZING_MODE:
             edits.remove_operation("content_sizing_mode")
@@ -2500,8 +2772,12 @@ class MainWindow(QMainWindow):
             sizing_mode = self._content_sizing_mode_for_edits(edits)
             mode_index = self.content_sizing_mode_combo.findData(sizing_mode)
             self.content_sizing_mode_combo.setCurrentIndex(max(0, mode_index))
-            self.zoom_spin.setValue(float(scale_op.params.get("percent", 100)) if scale_op else 100.0)
-            self.rotate_spin.setValue(int(rotate_op.params.get("degrees", 0)) if rotate_op else 0)
+            self.zoom_spin.setValue(
+                float(scale_op.params.get("percent", 100)) if scale_op else 100.0
+            )
+            self.rotate_spin.setValue(
+                int(rotate_op.params.get("degrees", 0)) if rotate_op else 0
+            )
             self.straighten_spin.setValue(
                 int(straighten_op.params.get("degrees", 0)) if straighten_op else 0
             )
@@ -2616,8 +2892,12 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
 
     def _refresh_queue_summary(self) -> None:
-        selected = self.queue_list.currentRow() + 1 if self.queue_list.currentRow() >= 0 else 0
-        self.queue_summary_label.setText(f"Queue: {len(self._queue)} item(s), selected: {selected}")
+        selected = (
+            self.queue_list.currentRow() + 1 if self.queue_list.currentRow() >= 0 else 0
+        )
+        self.queue_summary_label.setText(
+            f"Queue: {len(self._queue)} item(s), selected: {selected}"
+        )
 
     def _append_capture_log(self, message: str) -> None:
         text = str(message or "").strip()
@@ -2697,7 +2977,7 @@ class MainWindow(QMainWindow):
 
         text_top = float(top + 3)
         if align_bottom:
-            text_top = float(top + max(1, height - int(round(doc_height)) - 3))
+            text_top = float(top + max(1, height - round(doc_height) - 3))
 
         painter = QPainter(qimage)
         try:
@@ -2746,7 +3026,10 @@ class MainWindow(QMainWindow):
 
     def _on_thumbnail_zoom_delta_requested(self, delta: int) -> None:
         next_value = int(self.thumbnail_zoom_slider.value()) + int(delta)
-        next_value = max(self.thumbnail_zoom_slider.minimum(), min(next_value, self.thumbnail_zoom_slider.maximum()))
+        next_value = max(
+            self.thumbnail_zoom_slider.minimum(),
+            min(next_value, self.thumbnail_zoom_slider.maximum()),
+        )
         self.thumbnail_zoom_slider.setValue(next_value)
 
     def _apply_thumbnail_icon_size(self, value: int) -> None:
@@ -2816,7 +3099,9 @@ class MainWindow(QMainWindow):
         margin_bottom_pt = max(0.0, float(active_layout.margin_bottom_mm) * mm)
         gutter_pt = max(0.0, float(active_layout.gutter_mm) * mm)
         if content_points_per_pixel is None:
-            avail_w_pt = float(page_w_pt) - (margin_left_pt + margin_right_pt + gutter_pt)
+            avail_w_pt = float(page_w_pt) - (
+                margin_left_pt + margin_right_pt + gutter_pt
+            )
             if avail_w_pt <= 1.0:
                 avail_w_pt = 1.0
             points_per_px = max(0.0001, float(avail_w_pt) / float(slice_w))
@@ -2824,30 +3109,32 @@ class MainWindow(QMainWindow):
             points_per_px = max(0.0001, float(content_points_per_pixel))
         px_per_pt = 1.0 / points_per_px
 
-        page_w_px = max(slice_w + 2, int(round(float(page_w_pt) * px_per_pt)))
-        page_h_px = max(slice_h + 2, int(round(float(page_h_pt) * px_per_pt)))
+        page_w_px = max(slice_w + 2, round(float(page_w_pt) * px_per_pt))
+        page_h_px = max(slice_h + 2, round(float(page_h_pt) * px_per_pt))
         decorated = Image.new("RGB", (page_w_px, page_h_px), (244, 244, 244))
         draw = ImageDraw.Draw(decorated, "RGBA")
         legend_h = 22
 
-        left_margin_boundary = max(0, min(page_w_px - 2, int(round(margin_left_pt * px_per_pt))))
+        left_margin_boundary = max(
+            0, min(page_w_px - 2, round(margin_left_pt * px_per_pt))
+        )
         printable_left = max(
             0,
-            min(page_w_px - 2, int(round((margin_left_pt + gutter_pt) * px_per_pt))),
+            min(page_w_px - 2, round((margin_left_pt + gutter_pt) * px_per_pt)),
         )
-        printable_top = max(0, min(page_h_px - 2, int(round(margin_top_pt * px_per_pt))))
+        printable_top = max(0, min(page_h_px - 2, round(margin_top_pt * px_per_pt)))
         printable_right = max(
             printable_left + 1,
             min(
                 page_w_px - 1,
-                int(round((float(page_w_pt) - margin_right_pt) * px_per_pt)),
+                round((float(page_w_pt) - margin_right_pt) * px_per_pt),
             ),
         )
         printable_bottom = max(
             printable_top + 1,
             min(
                 page_h_px - 1,
-                int(round((float(page_h_pt) - margin_bottom_pt) * px_per_pt)),
+                round((float(page_h_pt) - margin_bottom_pt) * px_per_pt),
             ),
         )
 
@@ -2856,7 +3143,6 @@ class MainWindow(QMainWindow):
         max_render_w = max(1, page_w_px - image_left - 1)
         image_width = max(1, min(int(slice_w), int(max_render_w)))
         visible_height = max(1, min(int(slice_h), int(printable_bottom - image_top)))
-        image_right = max(image_left + 1, min(page_w_px - 1, image_left + image_width))
         image_crop = page_image.crop((0, 0, image_width, visible_height)).convert("RGB")
         decorated.paste(image_crop, (image_left, image_top))
 
@@ -3009,15 +3295,20 @@ class MainWindow(QMainWindow):
     def _sync_editor_view_zoom_controls(self) -> None:
         self.zoom_status_label.setText(self.editor_canvas.zoom_label_text())
         with QSignalBlocker(self.editor_view_zoom_spin):
-            self.editor_view_zoom_spin.setValue(self.editor_canvas.manual_zoom_percent())
-        self.editor_view_zoom_spin.setEnabled(self.editor_canvas.zoom_mode() == "manual")
+            self.editor_view_zoom_spin.setValue(
+                self.editor_canvas.manual_zoom_percent()
+            )
+        self.editor_view_zoom_spin.setEnabled(
+            self.editor_canvas.zoom_mode() == "manual"
+        )
 
     def _on_editor_canvas_zoom_changed(self, _mode: str, _manual_percent: int) -> None:
         self._sync_editor_view_zoom_controls()
 
     def _on_editor_view_zoom_spin_changed(self, value: int) -> None:
-        if self.editor_canvas.zoom_mode() == "manual" and self.editor_canvas.manual_zoom_percent() == int(
-            value
+        if (
+            self.editor_canvas.zoom_mode() == "manual"
+            and self.editor_canvas.manual_zoom_percent() == int(value)
         ):
             return
         self._set_editor_zoom_mode("manual", int(value), refresh_preview=False)
@@ -3079,7 +3370,9 @@ class MainWindow(QMainWindow):
         if reason:
             self.status_label.setText(reason)
 
-    def _clear_crop_operations(self, edits: EditAdjustments, *, keep: str | None = None) -> None:
+    def _clear_crop_operations(
+        self, edits: EditAdjustments, *, keep: str | None = None
+    ) -> None:
         keep_normalized = str(keep or "").strip().lower()
         for op_type in (
             "crop_rect",
@@ -3176,7 +3469,9 @@ class MainWindow(QMainWindow):
             self.capture_tab_preview_label.setText("No capture selected")
             self._sync_split_marker_list()
             return
-        self.editor_item_label.setText(f"Editing: {item.title} [{item.image_path.name}]")
+        self.editor_item_label.setText(
+            f"Editing: {item.title} [{item.image_path.name}]"
+        )
         if not item.image_path.exists():
             self.editor_item_label.setText(f"Editing: {item.title} [image missing]")
             self.editor_canvas.set_image(QPixmap())
@@ -3217,7 +3512,9 @@ class MainWindow(QMainWindow):
             content_sizing_mode=content_sizing_mode,
             scale_percent=scale_percent,
         )
-        self._current_preview_slices = [(slice_obj.top, slice_obj.bottom) for slice_obj in slices]
+        self._current_preview_slices = [
+            (slice_obj.top, slice_obj.bottom) for slice_obj in slices
+        ]
         self._effective_auto_split_markers = self._auto_split_markers_from_slices(
             self._current_preview_slices,
             image_height=preview.height,
@@ -3226,11 +3523,14 @@ class MainWindow(QMainWindow):
         full_pixmap = pil_to_qpixmap(preview)
         self.editor_canvas.set_image(full_pixmap)
         self.editor_canvas.set_hover_overlay_pixmap(None)
-        self.editor_canvas.set_overlay_visibility(self.editor_overlay_toggle.isChecked())
+        self.editor_canvas.set_overlay_visibility(
+            self.editor_overlay_toggle.isChecked()
+        )
         self._apply_magnifier_visibility_for_tool()
         printable_w_pt, _printable_h_pt = printable_content_area_points(layout)
-        printable_width_px = int(
-            round(float(printable_w_pt) / max(0.0001, float(self._current_content_points_per_pixel)))
+        printable_width_px = round(
+            float(printable_w_pt)
+            / max(0.0001, float(self._current_content_points_per_pixel))
         )
         self.editor_canvas.set_page_overlays(
             effective_markers,
@@ -3266,8 +3566,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Select queue item first.")
             return
         image = Image.open(item.image_path).convert("RGB")
-        left_px, right_px, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
-            image
+        left_px, right_px, left_ok, right_ok = (
+            suggest_auto_vertical_border_crop_with_confidence(image)
         )
         before = self._snapshot_history_entry()
         edits = self._session_for_item(item.item_id)
@@ -3380,7 +3680,11 @@ class MainWindow(QMainWindow):
                 "No split marker near click. Click a marker line or ruler triangle to remove."
             )
             return
-        markers = [value for value in self._editable_split_markers_base() if int(value) != int(nearest)]
+        markers = [
+            value
+            for value in self._editable_split_markers_base()
+            if int(value) != int(nearest)
+        ]
         self._set_manual_split_markers(markers)
         self._set_split_action_mode("none")
         self._activate_pan_mode(preserve_status=True)
@@ -3418,9 +3722,13 @@ class MainWindow(QMainWindow):
         footer_raw = self.footer_input.toHtml()
         layout = self._collect_layout()
         if header_raw.strip() and not layout.header_rich_text:
-            CAPTURE_UI_LOGGER.info("header rich text ignored: no meaningful content detected")
+            CAPTURE_UI_LOGGER.info(
+                "header rich text ignored: no meaningful content detected"
+            )
         if footer_raw.strip() and not layout.footer_rich_text:
-            CAPTURE_UI_LOGGER.info("footer rich text ignored: no meaningful content detected")
+            CAPTURE_UI_LOGGER.info(
+                "footer rich text ignored: no meaningful content detected"
+            )
         request = ExportRequest(
             captures=captures,
             combine_mode=self.combine_checkbox.isChecked(),
@@ -3434,7 +3742,9 @@ class MainWindow(QMainWindow):
                 xlsx=self.xlsx_checkbox.isChecked(),
             ),
             output_dir=Path(self.output_input.text().strip()),
-            basename=sanitize_basename(f"{self.base_input.text().strip()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"),
+            basename=sanitize_basename(
+                f"{self.base_input.text().strip()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            ),
             docx_pptx_mode=str(self.docx_mode_combo.currentData()),
             layout=layout,
             edits_by_item_id={
@@ -3493,7 +3803,9 @@ class MainWindow(QMainWindow):
             with suppress(OSError):
                 open_path_in_default_app(launch_path)
 
-    def _assign_control_identity(self, widget: QWidget, control: str, alias: str) -> None:
+    def _assign_control_identity(
+        self, widget: QWidget, control: str, alias: str
+    ) -> None:
         widget_id = widget_naming.control_widget_id(self.window_id, control)
         assign_widget_identity(widget, widget_id=widget_id, widget_alias=alias)
 

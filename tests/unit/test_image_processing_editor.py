@@ -4,8 +4,8 @@ from PIL import Image
 
 from web_pagez_to_pdf.image_processing import (
     apply_edit_transform,
-    content_points_per_pixel,
     compute_page_slices,
+    content_points_per_pixel,
     normalize_content_sizing_mode,
     suggest_auto_vertical_border_crop_with_confidence,
     suggest_navigation_crop,
@@ -41,7 +41,9 @@ def test_navigation_crop_suggestion_is_bounded() -> None:
 
 def test_navigation_crop_confidence_on_blank_image_is_false() -> None:
     image = Image.new("RGB", (320, 480), "white")
-    left, right, left_confident, right_confident = suggest_navigation_crop_with_confidence(image)
+    left, right, left_confident, right_confident = (
+        suggest_navigation_crop_with_confidence(image)
+    )
 
     assert left == 0
     assert right == 0
@@ -58,7 +60,9 @@ def test_auto_vertical_border_crop_detects_side_borders() -> None:
             for x_pos in range(70, 250, 14):
                 image.putpixel((x_pos, y_pos), (30, 30, 30))
 
-    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(image)
+    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
+        image
+    )
 
     assert left_ok and right_ok
     assert left >= 20
@@ -68,7 +72,9 @@ def test_auto_vertical_border_crop_detects_side_borders() -> None:
 def test_auto_vertical_border_crop_blank_image_is_noop() -> None:
     image = Image.new("RGB", (320, 240), "white")
 
-    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(image)
+    left, right, left_ok, right_ok = suggest_auto_vertical_border_crop_with_confidence(
+        image
+    )
 
     assert left == 0
     assert right == 0
@@ -121,7 +127,9 @@ def test_content_points_per_pixel_scales_by_mode() -> None:
     legacy_ppp = content_points_per_pixel(420, 2400, layout, "legacy_fit_width")
     fit_ppp = content_points_per_pixel(420, 2400, layout, "fit_to_page")
     original_ppp = content_points_per_pixel(420, 2400, layout, "original_size")
-    stretch_large_ppp = content_points_per_pixel(420, 2400, layout, "stretch_if_smaller")
+    stretch_large_ppp = content_points_per_pixel(
+        420, 2400, layout, "stretch_if_smaller"
+    )
     stretch_small_ppp = content_points_per_pixel(200, 120, layout, "stretch_if_smaller")
     original_small_ppp = content_points_per_pixel(200, 120, layout, "original_size")
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from PIL import Image
 from reportlab.lib.pagesizes import A4
@@ -23,8 +23,8 @@ from .image_processing import (
     PAPER_SIZES,
     PageSlice,
     apply_edit_transform,
-    content_points_per_pixel,
     compute_page_slices,
+    content_points_per_pixel,
     normalize_content_sizing_mode,
 )
 from .models import EditAdjustments
@@ -57,7 +57,16 @@ EXPORT_LOGGER = logging.getLogger("web_pagez_to_pdf.export")
 class _RichTextProbe(HTMLParser):
     """Detect whether an HTML fragment contains meaningful visible content."""
 
-    _VOID_MEDIA_TAGS = {"img", "hr", "svg", "canvas", "video", "audio", "object", "iframe"}
+    _VOID_MEDIA_TAGS: ClassVar[set[str]] = {
+        "img",
+        "hr",
+        "svg",
+        "canvas",
+        "video",
+        "audio",
+        "object",
+        "iframe",
+    }
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -65,7 +74,7 @@ class _RichTextProbe(HTMLParser):
         self.has_visible_text = False
         self.has_media_content = False
 
-    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: D401
+    def handle_starttag(self, tag: str, attrs) -> None:
         del attrs
         name = str(tag or "").strip().lower()
         if name in {"style", "script", "head"}:
@@ -74,12 +83,12 @@ class _RichTextProbe(HTMLParser):
         if name in self._VOID_MEDIA_TAGS:
             self.has_media_content = True
 
-    def handle_endtag(self, tag: str) -> None:  # noqa: D401
+    def handle_endtag(self, tag: str) -> None:
         name = str(tag or "").strip().lower()
         if name in {"style", "script", "head"} and self._suppress_depth > 0:
             self._suppress_depth -= 1
 
-    def handle_data(self, data: str) -> None:  # noqa: D401
+    def handle_data(self, data: str) -> None:
         if self._suppress_depth > 0:
             return
         if re.sub(r"\s+", "", str(data or "")):
@@ -185,14 +194,18 @@ def run_export(request: ExportRequest) -> ExportResult:
     return ExportResult(generated_paths=generated)
 
 
-def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tuple[CaptureItem, Image.Image]]]:
+def build_page_frames(
+    request: ExportRequest,
+) -> tuple[list[PageFrame], list[tuple[CaptureItem, Image.Image]]]:
     """Build transformed images and split frames according to export mode."""
 
     transformed_images: list[tuple[CaptureItem, Image.Image]] = []
     for item in request.captures:
         image = Image.open(item.image_path).convert("RGB")
         edits = _edits_for_item(request, item)
-        transformed = apply_edit_transform(image, request.layout, edits, include_scale=False)
+        transformed = apply_edit_transform(
+            image, request.layout, edits, include_scale=False
+        )
         transformed_images.append((item, transformed))
 
     frames: list[PageFrame] = []
@@ -254,12 +267,18 @@ def build_page_frames(request: ExportRequest) -> tuple[list[PageFrame], list[tup
 
 
 def _edits_for_item(request: ExportRequest, item: CaptureItem) -> EditAdjustments:
-    return request.edits_by_item_id.get(item.item_id) or request.edits or EditAdjustments()
+    return (
+        request.edits_by_item_id.get(item.item_id) or request.edits or EditAdjustments()
+    )
 
 
 def _content_sizing_mode_for_edits(edits: EditAdjustments) -> str:
     mode_op = edits.get_operation("content_sizing_mode")
-    mode_value = mode_op.params.get("mode") if mode_op is not None else DEFAULT_CONTENT_SIZING_MODE
+    mode_value = (
+        mode_op.params.get("mode")
+        if mode_op is not None
+        else DEFAULT_CONTENT_SIZING_MODE
+    )
     return normalize_content_sizing_mode(mode_value)
 
 
@@ -308,7 +327,15 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
     output_path = request.output_dir / f"{request.basename}.pdf"
     pdf = canvas.Canvas(str(output_path), pagesize=(page_w, page_h))
     total_pages = len(frames)
-    avail_w = page_w - (request.layout.margin_left_mm + request.layout.margin_right_mm + request.layout.gutter_mm) * mm
+    avail_w = (
+        page_w
+        - (
+            request.layout.margin_left_mm
+            + request.layout.margin_right_mm
+            + request.layout.gutter_mm
+        )
+        * mm
+    )
     content_x = (request.layout.margin_left_mm + request.layout.gutter_mm) * mm
     for page_index, frame in enumerate(frames, start=1):
         points_per_px = float(frame.content_points_per_pixel)
@@ -317,7 +344,9 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
         rendered_w = float(frame.image.width) * points_per_px
         rendered_h = float(frame.image.height) * points_per_px
         y = page_h - request.layout.margin_top_mm * mm - rendered_h
-        pdf.drawInlineImage(frame.image, content_x, y, width=rendered_w, height=rendered_h)
+        pdf.drawInlineImage(
+            frame.image, content_x, y, width=rendered_w, height=rendered_h
+        )
 
         context = {
             "title": frame.title,
@@ -325,8 +354,17 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
             "page": str(page_index),
             "pages": str(total_pages),
         }
-        _draw_rich_text(pdf, request.layout.header_rich_text, context, content_x, page_h - 16, avail_w)
-        _draw_rich_text(pdf, request.layout.footer_rich_text, context, content_x, 12, avail_w)
+        _draw_rich_text(
+            pdf,
+            request.layout.header_rich_text,
+            context,
+            content_x,
+            page_h - 16,
+            avail_w,
+        )
+        _draw_rich_text(
+            pdf, request.layout.footer_rich_text, context, content_x, 12, avail_w
+        )
         if page_index < total_pages:
             pdf.showPage()
             pdf.setPageSize((page_w, page_h))
@@ -334,7 +372,14 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
     return output_path
 
 
-def _draw_rich_text(pdf: canvas.Canvas, rich_text: str, context: dict[str, str], x_pos: float, y_pos: float, width: float) -> None:
+def _draw_rich_text(
+    pdf: canvas.Canvas,
+    rich_text: str,
+    context: dict[str, str],
+    x_pos: float,
+    y_pos: float,
+    width: float,
+) -> None:
     source = _meaningful_rich_text_or_empty(rich_text)
     text = _apply_tokens(source, context).strip()
     if not text:
@@ -358,12 +403,17 @@ def export_paged_images(request: ExportRequest, frames: list[PageFrame]) -> list
     return generated
 
 
-def export_long_image(request: ExportRequest, transformed: list[tuple[CaptureItem, Image.Image]]) -> Path:
+def export_long_image(
+    request: ExportRequest, transformed: list[tuple[CaptureItem, Image.Image]]
+) -> Path:
     """Export one long stitched image for selected captures."""
 
     if request.combine_mode:
         width = max(img.width for _item, img in transformed)
-        total_height = sum(img.height for _item, img in transformed) + max(0, len(transformed) - 1) * 16
+        total_height = (
+            sum(img.height for _item, img in transformed)
+            + max(0, len(transformed) - 1) * 16
+        )
         canvas_img = Image.new("RGB", (width, total_height), "white")
         y_pos = 0
         for _item, image in transformed:
@@ -462,7 +512,9 @@ def export_pptx(
         with BytesIO() as buffer:
             image.save(buffer, format="PNG")
             buffer.seek(0)
-            slide.shapes.add_picture(buffer, Inches(0.3), Inches(0.3), width=Inches(12.7))
+            slide.shapes.add_picture(
+                buffer, Inches(0.3), Inches(0.3), width=Inches(12.7)
+            )
     presentation.save(output)
     return output
 

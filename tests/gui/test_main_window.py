@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from PIL import Image, ImageChops, ImageDraw
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFormLayout, QHBoxLayout, QVBoxLayout
 from reportlab.lib.units import mm
-import pytest
 from threep_commons.settings import QSettingsValueStore
 
 from web_pagez_to_pdf.capture_service import WindowInfo
 from web_pagez_to_pdf.constants import APP_IDENTITY
 from web_pagez_to_pdf.exporters import ExportResult
-from web_pagez_to_pdf.image_processing import PAPER_SIZES, apply_edit_transform, compute_page_slices
+from web_pagez_to_pdf.image_processing import (
+    PAPER_SIZES,
+    apply_edit_transform,
+    compute_page_slices,
+)
 from web_pagez_to_pdf.main_window import (
     THUMBNAIL_BORDER_CUE_COLOR,
     THUMBNAIL_GUTTER_CUE_COLOR,
@@ -51,7 +55,9 @@ def _line_cue_image(width: int = 420, height: int = 280) -> Image.Image:
     return image
 
 
-def _has_near_color(image: Image.Image, target: tuple[int, int, int], tolerance: int = 16) -> bool:
+def _has_near_color(
+    image: Image.Image, target: tuple[int, int, int], tolerance: int = 16
+) -> bool:
     rgb = image.convert("RGB")
     px = rgb.load()
     for y_pos in range(rgb.height):
@@ -70,8 +76,8 @@ def _sample_viewport_pixel(widget, point: QPoint):
     pixmap = widget.grab()
     image = pixmap.toImage()
     dpr = max(1.0, float(pixmap.devicePixelRatio()))
-    x_pos = int(round(float(point.x()) * dpr))
-    y_pos = int(round(float(point.y()) * dpr))
+    x_pos = round(float(point.x()) * dpr)
+    y_pos = round(float(point.y()) * dpr)
     x_pos = max(0, min(image.width() - 1, x_pos))
     y_pos = max(0, min(image.height() - 1, y_pos))
     return image.pixelColor(x_pos, y_pos)
@@ -113,7 +119,11 @@ def _find_color_bbox(
     for y_pos in range(rgb.height):
         for x_pos in range(rgb.width):
             red, green, blue = px[x_pos, y_pos]
-            if int(red) >= red_min and int(green) <= green_max and int(blue) <= blue_max:
+            if (
+                int(red) >= red_min
+                and int(green) <= green_max
+                and int(blue) <= blue_max
+            ):
                 min_x = min(min_x, x_pos)
                 min_y = min(min_y, y_pos)
                 max_x = max(max_x, x_pos)
@@ -123,7 +133,9 @@ def _find_color_bbox(
     return (min_x, min_y, max_x, max_y)
 
 
-def _find_exact_color_bbox(image: Image.Image, color: tuple[int, int, int]) -> tuple[int, int, int, int] | None:
+def _find_exact_color_bbox(
+    image: Image.Image, color: tuple[int, int, int]
+) -> tuple[int, int, int, int] | None:
     rgb = image.convert("RGB")
     px = rgb.load()
     min_x = rgb.width
@@ -149,18 +161,27 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
 
     assert window.property("widget_id") == "window:main"
     assert window.property("widget_alias") == "window"
-    assert window.capture_button.property("widget_id") == "window:main:control:capture_button"
+    assert (
+        window.capture_button.property("widget_id")
+        == "window:main:control:capture_button"
+    )
     assert window.capture_button.property("widget_alias") == "capture_button"
     assert (
         window.capture_last_selected_button.property("widget_id")
         == "window:main:control:capture_last_selected_button"
     )
-    assert window.capture_backend_combo.property("widget_id") == "window:main:control:capture_backend_combo"
+    assert (
+        window.capture_backend_combo.property("widget_id")
+        == "window:main:control:capture_backend_combo"
+    )
     assert (
         window.capture_scroll_mode_combo.property("widget_id")
         == "window:main:control:capture_scroll_mode_combo"
     )
-    assert window.capture_wheel_injection_combo.property("widget_id") == "window:main:control:capture_wheel_injection_combo"
+    assert (
+        window.capture_wheel_injection_combo.property("widget_id")
+        == "window:main:control:capture_wheel_injection_combo"
+    )
     assert (
         window.capture_cursor_hold_combo.property("widget_id")
         == "window:main:control:capture_cursor_hold_combo"
@@ -217,7 +238,10 @@ def test_main_window_widget_identity_contract(qtbot: QtBot) -> None:
         window.capture_log_group.property("widget_id")
         == "window:main:control:capture_log_group"
     )
-    assert window.capture_log_list.property("widget_id") == "window:main:control:capture_log_list"
+    assert (
+        window.capture_log_list.property("widget_id")
+        == "window:main:control:capture_log_list"
+    )
     assert (
         window.layout_preview_group.property("widget_id")
         == "window:main:control:layout_preview_group"
@@ -310,29 +334,58 @@ def test_capture_advanced_controls_grouped_by_capture_type(qtbot: QtBot) -> None
     qtbot.addWidget(window)
     window.show()
 
-    assert _is_descendant(window.capture_viewport_hint_label, window.capture_viewport_options_group)
+    assert _is_descendant(
+        window.capture_viewport_hint_label, window.capture_viewport_options_group
+    )
 
-    assert _is_descendant(window.max_pages_spin, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_delay_spin, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_scroll_mode_combo, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_scroll_to_top_checkbox, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_auto_trim_fixed_checkbox, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_wheel_injection_combo, window.capture_full_scroll_options_group)
-    assert _is_descendant(window.capture_cursor_hold_combo, window.capture_full_scroll_options_group)
+    assert _is_descendant(
+        window.max_pages_spin, window.capture_full_scroll_options_group
+    )
+    assert _is_descendant(
+        window.capture_delay_spin, window.capture_full_scroll_options_group
+    )
+    assert _is_descendant(
+        window.capture_scroll_mode_combo, window.capture_full_scroll_options_group
+    )
+    assert _is_descendant(
+        window.capture_scroll_to_top_checkbox, window.capture_full_scroll_options_group
+    )
+    assert _is_descendant(
+        window.capture_auto_trim_fixed_checkbox,
+        window.capture_full_scroll_options_group,
+    )
+    assert _is_descendant(
+        window.capture_wheel_injection_combo, window.capture_full_scroll_options_group
+    )
+    assert _is_descendant(
+        window.capture_cursor_hold_combo, window.capture_full_scroll_options_group
+    )
 
-    assert _is_descendant(window.capture_backend_combo, window.capture_shared_diagnostics_group)
-    assert _is_descendant(window.capture_frame_region_combo, window.capture_shared_diagnostics_group)
-    assert _is_descendant(window.capture_include_mouse_checkbox, window.capture_shared_diagnostics_group)
-    assert _is_descendant(window.capture_log_level_combo, window.capture_shared_diagnostics_group)
+    assert _is_descendant(
+        window.capture_backend_combo, window.capture_shared_diagnostics_group
+    )
+    assert _is_descendant(
+        window.capture_frame_region_combo, window.capture_shared_diagnostics_group
+    )
+    assert _is_descendant(
+        window.capture_include_mouse_checkbox, window.capture_shared_diagnostics_group
+    )
+    assert _is_descendant(
+        window.capture_log_level_combo, window.capture_shared_diagnostics_group
+    )
 
 
-def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_path: Path) -> None:
+def test_capture_last_selected_window_button_triggers_capture(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
 
-    def _resolve_alt_tab_target(_own_hwnd: int, *, retries: int = 1, settle_ms: int = 180) -> int | None:
+    def _resolve_alt_tab_target(
+        _own_hwnd: int, *, retries: int = 1, settle_ms: int = 180
+    ) -> int | None:
         _unused = retries
         _unused2 = settle_ms
         return 4242
@@ -367,7 +420,9 @@ def test_capture_last_selected_window_button_triggers_capture(qtbot: QtBot, tmp_
     assert "captured selected viewport" in window.status_label.text().lower()
 
 
-def test_capture_last_selected_restores_focus_to_app(qtbot: QtBot, tmp_path: Path) -> None:
+def test_capture_last_selected_restores_focus_to_app(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -445,7 +500,12 @@ def test_capture_progress_updates_status_and_log(qtbot: QtBot) -> None:
     window._on_full_capture_progress(payload)
 
     assert window.capture_log_list.count() >= 1
-    assert "frame 2 captured" in window.capture_log_list.item(window.capture_log_list.count() - 1).text().lower()
+    assert (
+        "frame 2 captured"
+        in window.capture_log_list.item(window.capture_log_list.count() - 1)
+        .text()
+        .lower()
+    )
     assert "full capture frame 2" in window.status_label.text().lower()
 
 
@@ -508,7 +568,7 @@ def test_vertical_border_crop_button_exists(qtbot: QtBot) -> None:
     button_parent = window.vertical_border_crop_button.parentWidget()
     assert button_parent is not None
     assert callable(getattr(button_parent, "title", None))
-    assert getattr(button_parent, "title")() == "Tools"
+    assert button_parent.title() == "Tools"
     assert button_parent is not window.clear_redactions_button.parentWidget()
 
 
@@ -615,7 +675,11 @@ def test_pick_menu_sorted_and_target_label_format(
     window.show()
     window._populate_pick_target_menu()
 
-    actions = [action for action in window.pick_target_menu.actions() if not action.isSeparator()]
+    actions = [
+        action
+        for action in window.pick_target_menu.actions()
+        if not action.isSeparator()
+    ]
     assert actions[0].text() == "Pick with Crosshair..."
     assert actions[1].text() == "chrome - A Site [111, 4001]"
     assert actions[2].text() == "chrome - B Site [222, 4002]"
@@ -626,7 +690,9 @@ def test_pick_menu_sorted_and_target_label_format(
     assert window.target_label.text() == "Target: chrome - B Site [222, 4002]"
 
 
-def test_default_browser_target_selected_on_start(qtbot: QtBot, monkeypatch: MonkeyPatch) -> None:
+def test_default_browser_target_selected_on_start(
+    qtbot: QtBot, monkeypatch: MonkeyPatch
+) -> None:
     def _list_top_windows(
         _self,
         _own_hwnd: int,
@@ -711,12 +777,16 @@ def test_viewport_capture_auto_resolves_target_when_none_selected(
     assert len(window._queue) == 1
 
 
-def test_viewport_capture_does_not_auto_trim_scrollbar(qtbot: QtBot, tmp_path: Path) -> None:
+def test_viewport_capture_does_not_auto_trim_scrollbar(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
-    window._set_target(PickedWindow(hwnd=7070, label="viewport-target", title="viewport-target"))
+    window._set_target(
+        PickedWindow(hwnd=7070, label="viewport-target", title="viewport-target")
+    )
 
     window._capture_service.activate_window = lambda _hwnd: (True, "")  # type: ignore[method-assign]
 
@@ -832,7 +902,12 @@ def test_full_capture_finished_restores_focus_to_app(qtbot: QtBot) -> None:
     window._full_capture_finished()
 
     assert called["hwnd"] == int(window.winId())
-    assert "focus returned" in window.capture_log_list.item(window.capture_log_list.count() - 1).text().lower()
+    assert (
+        "focus returned"
+        in window.capture_log_list.item(window.capture_log_list.count() - 1)
+        .text()
+        .lower()
+    )
 
 
 def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:
@@ -840,10 +915,16 @@ def test_file_exit_action_has_required_shortcuts(qtbot: QtBot) -> None:
     qtbot.addWidget(window)
     window.show()
 
-    actions = [action for action in window.menuBar().actions() if action.menu() is not None]
-    file_menu = next((action.menu() for action in actions if action.text() == "File"), None)
+    actions = [
+        action for action in window.menuBar().actions() if action.menu() is not None
+    ]
+    file_menu = next(
+        (action.menu() for action in actions if action.text() == "File"), None
+    )
     assert file_menu is not None
-    exit_action = next((action for action in file_menu.actions() if action.text() == "E&xit"), None)
+    exit_action = next(
+        (action for action in file_menu.actions() if action.text() == "E&xit"), None
+    )
     assert isinstance(exit_action, QAction)
     shortcut_texts = {shortcut.toString() for shortcut in exit_action.shortcuts()}
     assert "Ctrl+Q" in shortcut_texts
@@ -855,18 +936,28 @@ def test_edit_menu_has_undo_redo_shortcuts(qtbot: QtBot) -> None:
     qtbot.addWidget(window)
     window.show()
 
-    actions = [action for action in window.menuBar().actions() if action.menu() is not None]
-    edit_menu = next((action.menu() for action in actions if action.text() == "Edit"), None)
+    actions = [
+        action for action in window.menuBar().actions() if action.menu() is not None
+    ]
+    edit_menu = next(
+        (action.menu() for action in actions if action.text() == "Edit"), None
+    )
     assert edit_menu is not None
-    undo_action = next((action for action in edit_menu.actions() if action.text() == "Undo"), None)
-    redo_action = next((action for action in edit_menu.actions() if action.text() == "Redo"), None)
+    undo_action = next(
+        (action for action in edit_menu.actions() if action.text() == "Undo"), None
+    )
+    redo_action = next(
+        (action for action in edit_menu.actions() if action.text() == "Redo"), None
+    )
     assert isinstance(undo_action, QAction)
     assert isinstance(redo_action, QAction)
     assert undo_action.shortcut().toString() == "Ctrl+Z"
     assert redo_action.shortcut().toString() == "Ctrl+Y"
 
 
-def test_startup_tab_forced_capture_even_if_settings_saved_other_tab(qtbot: QtBot) -> None:
+def test_startup_tab_forced_capture_even_if_settings_saved_other_tab(
+    qtbot: QtBot,
+) -> None:
     settings = QSettings()
     settings.setValue("ui.start_tab", "export")
     settings.sync()
@@ -877,7 +968,9 @@ def test_startup_tab_forced_capture_even_if_settings_saved_other_tab(qtbot: QtBo
     assert window.tabs.currentIndex() == 0
 
 
-def test_editor_zoom_defaults_fit_width_and_manual_controls(qtbot: QtBot, tmp_path: Path) -> None:
+def test_editor_zoom_defaults_fit_width_and_manual_controls(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -909,7 +1002,7 @@ def test_editor_zoom_defaults_fit_width_and_manual_controls(qtbot: QtBot, tmp_pa
             self._delta = int(delta_y)
             self.accepted = False
 
-        def angleDelta(self) -> QPoint:
+        def angleDelta(self) -> QPoint:  # noqa: N802
             return QPoint(0, self._delta)
 
         def accept(self) -> None:
@@ -956,7 +1049,9 @@ def test_vertical_border_crop_is_additive_with_existing_crop(
     item = window._current_item()
     assert item is not None
     edits = window._session_for_item(item.item_id)
-    edits.set_operation("crop_rect", {"left": 10, "top": 10, "width": 100, "height": 100})
+    edits.set_operation(
+        "crop_rect", {"left": 10, "top": 10, "width": 100, "height": 100}
+    )
     monkeypatch.setattr(
         "web_pagez_to_pdf.main_window.suggest_auto_vertical_border_crop_with_confidence",
         lambda _image: (14, 12, True, True),
@@ -1052,7 +1147,9 @@ def test_layout_controls_live_in_editor_tab_not_export_tab(qtbot: QtBot) -> None
     assert not _is_descendant(window.footer_input, export_tab)
 
 
-def test_layout_preview_has_no_quick_zoom_panel_and_header_footer_labels(qtbot: QtBot) -> None:
+def test_layout_preview_has_no_quick_zoom_panel_and_header_footer_labels(
+    qtbot: QtBot,
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1066,15 +1163,21 @@ def test_layout_preview_has_no_quick_zoom_panel_and_header_footer_labels(qtbot: 
         window.layout_preview_form.fieldGrowthPolicy()
         == QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
     )
-    assert window.layout_paper_orientation_row.width() >= int(window.layout_preview_group.width() * 0.55)
+    assert window.layout_paper_orientation_row.width() >= int(
+        window.layout_preview_group.width() * 0.55
+    )
     header_parent = window.header_label.parentWidget()
     footer_parent = window.footer_label.parentWidget()
     assert header_parent is not None and header_parent.layout() is not None
     assert footer_parent is not None and footer_parent.layout() is not None
     header_layout = header_parent.layout()
     footer_layout = footer_parent.layout()
-    assert header_layout.indexOf(window.header_label) < header_layout.indexOf(window.header_input)
-    assert footer_layout.indexOf(window.footer_label) < footer_layout.indexOf(window.footer_input)
+    assert header_layout.indexOf(window.header_label) < header_layout.indexOf(
+        window.header_input
+    )
+    assert footer_layout.indexOf(window.footer_label) < footer_layout.indexOf(
+        window.footer_input
+    )
     assert _is_descendant(window.page_preview_list, window.layout_preview_group)
 
 
@@ -1140,12 +1243,17 @@ def test_thumbnail_virtual_page_geometry_matches_export_layout(qtbot: QtBot) -> 
     assert max_y < decorated.height - 6
 
     page_w_pt, page_h_pt = PAPER_SIZES["A4"]
-    avail_w_pt = page_w_pt - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    avail_w_pt = (
+        page_w_pt
+        - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    )
     px_per_pt = float(source.width) / float(avail_w_pt)
-    expected_left_margin_boundary = int(round(float(layout.margin_left_mm) * mm * px_per_pt))
-    expected_left = int(round((float(layout.margin_left_mm) + float(layout.gutter_mm)) * mm * px_per_pt))
-    expected_top = int(round(float(layout.margin_top_mm) * mm * px_per_pt))
-    expected_page_h = int(round(float(page_h_pt) * px_per_pt))
+    expected_left_margin_boundary = round(float(layout.margin_left_mm) * mm * px_per_pt)
+    expected_left = round(
+        (float(layout.margin_left_mm) + float(layout.gutter_mm)) * mm * px_per_pt
+    )
+    expected_top = round(float(layout.margin_top_mm) * mm * px_per_pt)
+    expected_page_h = round(float(page_h_pt) * px_per_pt)
 
     assert abs(min_x - expected_left) <= 3
     assert abs(min_y - expected_top) <= 3
@@ -1207,10 +1315,15 @@ def test_thumbnail_preview_renders_header_footer_with_tokens(qtbot: QtBot) -> No
         page_count=5,
     )
     page_w_pt, page_h_pt = PAPER_SIZES["A4"]
-    avail_w_pt = page_w_pt - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    avail_w_pt = (
+        page_w_pt
+        - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    )
     px_per_pt = float(260) / float(avail_w_pt)
-    image_top = int(round(float(layout.margin_top_mm) * mm * px_per_pt))
-    printable_bottom = int(round((float(page_h_pt) - float(layout.margin_bottom_mm) * mm) * px_per_pt))
+    image_top = round(float(layout.margin_top_mm) * mm * px_per_pt)
+    printable_bottom = round(
+        (float(page_h_pt) - float(layout.margin_bottom_mm) * mm) * px_per_pt
+    )
     header_region = (40, 26, decorated.width - 40, max(27, image_top - 1))
     footer_region = (
         40,
@@ -1296,7 +1409,10 @@ def test_split_marker_and_layout_changes_refresh_page_preview_sidebar(
     window.add_split_button.click()
     _click_y_ruler_at_image_y(qtbot, window, 120.0)
     qtbot.waitUntil(
-        lambda: any(abs(int(bottom) - 120) <= 4 for _top, bottom in window._current_preview_slices)
+        lambda: any(
+            abs(int(bottom) - 120) <= 4
+            for _top, bottom in window._current_preview_slices
+        )
     )
     with_marker_count = window.page_preview_list.count()
     assert window._current_preview_slices != initial_slices
@@ -1375,7 +1491,9 @@ def test_thumbnail_hover_overlay_appears_and_clears_on_leave(
     assert masked.green() < 80
     assert masked.blue() < 80
 
-    QApplication.sendEvent(window.page_preview_list.viewport(), QEvent(QEvent.Type.Leave))
+    QApplication.sendEvent(
+        window.page_preview_list.viewport(), QEvent(QEvent.Type.Leave)
+    )
     qtbot.wait(50)
     assert window.editor_canvas._hover_overlay_pixmap is None
     unmasked = _sample_viewport_pixel(window.editor_canvas.viewport(), probe_view)
@@ -1415,8 +1533,10 @@ def test_editor_scroll_resets_to_top_when_entering_editor_after_new_capture(
     )
     window.tabs.setCurrentIndex(1)
     qtbot.waitUntil(
-        lambda: window.editor_canvas.verticalScrollBar().value()
-        == window.editor_canvas.verticalScrollBar().minimum()
+        lambda: (
+            window.editor_canvas.verticalScrollBar().value()
+            == window.editor_canvas.verticalScrollBar().minimum()
+        )
     )
 
 
@@ -1716,7 +1836,9 @@ def test_export_open_after_and_preview_debounce_settings_persist(qtbot: QtBot) -
     window._settings.sync()
 
 
-def test_editor_preview_debounce_applies_transform_after_delay(qtbot: QtBot, tmp_path: Path) -> None:
+def test_editor_preview_debounce_applies_transform_after_delay(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1744,7 +1866,9 @@ def test_editor_preview_debounce_applies_transform_after_delay(qtbot: QtBot, tmp
     assert int(edits.get_operation("rotate").params.get("degrees", 0)) == 3  # type: ignore[union-attr]
 
 
-def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path: Path) -> None:
+def test_editor_preview_debounce_zero_applies_immediately(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1787,7 +1911,9 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     window._settings.sync()
 
 
-def test_transform_sizing_mode_defaults_to_legacy_fit_width(qtbot: QtBot, tmp_path: Path) -> None:
+def test_transform_sizing_mode_defaults_to_legacy_fit_width(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1830,7 +1956,12 @@ def test_transform_sizing_mode_persists_per_item(qtbot: QtBot, tmp_path: Path) -
     item_a = window._current_item()
     assert item_a is not None
     qtbot.waitUntil(
-        lambda: window._session_for_item(item_a.item_id).get_operation("content_sizing_mode") is not None,
+        lambda: (
+            window._session_for_item(item_a.item_id).get_operation(
+                "content_sizing_mode"
+            )
+            is not None
+        ),
         timeout=1200,
     )
     window.queue_list.setCurrentRow(1)
@@ -1839,7 +1970,9 @@ def test_transform_sizing_mode_persists_per_item(qtbot: QtBot, tmp_path: Path) -
     assert str(window.content_sizing_mode_combo.currentData()) == "fit_to_page"
 
 
-def test_transform_sizing_modes_update_preview_page_counts(qtbot: QtBot, tmp_path: Path) -> None:
+def test_transform_sizing_modes_update_preview_page_counts(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1869,7 +2002,9 @@ def test_transform_sizing_modes_update_preview_page_counts(qtbot: QtBot, tmp_pat
     stretch_idx = window.content_sizing_mode_combo.findData("stretch_if_smaller")
     assert stretch_idx >= 0
     window.content_sizing_mode_combo.setCurrentIndex(stretch_idx)
-    qtbot.waitUntil(lambda: window.page_preview_list.count() == original_count, timeout=2000)
+    qtbot.waitUntil(
+        lambda: window.page_preview_list.count() == original_count, timeout=2000
+    )
 
 
 def test_fit_to_page_forces_single_page_even_with_markers_and_scale(
@@ -1898,7 +2033,9 @@ def test_fit_to_page_forces_single_page_even_with_markers_and_scale(
     assert fit_idx >= 0
     window.content_sizing_mode_combo.setCurrentIndex(fit_idx)
     qtbot.waitUntil(lambda: window.page_preview_list.count() == 1, timeout=2000)
-    assert window._current_preview_slices == [(0, window.editor_canvas._pixmap_item.pixmap().height())]
+    assert window._current_preview_slices == [
+        (0, window.editor_canvas._pixmap_item.pixmap().height())
+    ]
 
 
 def test_transform_scale_updates_page_preview_count_without_changing_view_zoom(
@@ -1924,14 +2061,18 @@ def test_transform_scale_updates_page_preview_count_without_changing_view_zoom(
     qtbot.waitUntil(lambda: window.page_preview_list.count() > 0, timeout=1200)
     baseline_count = window.page_preview_list.count()
     window.zoom_spin.setValue(180)
-    qtbot.waitUntil(lambda: window.page_preview_list.count() > baseline_count, timeout=2000)
+    qtbot.waitUntil(
+        lambda: window.page_preview_list.count() > baseline_count, timeout=2000
+    )
 
     assert window.editor_canvas.zoom_mode() == "manual"
     assert window.editor_view_zoom_spin.value() == 100
     assert window.zoom_status_label.text() == baseline_status
 
 
-def test_stretch_if_smaller_upscales_small_image_preview_scale(qtbot: QtBot, tmp_path: Path) -> None:
+def test_stretch_if_smaller_upscales_small_image_preview_scale(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -1954,7 +2095,8 @@ def test_stretch_if_smaller_upscales_small_image_preview_scale(qtbot: QtBot, tmp
     qtbot.waitUntil(
         lambda: (
             edits.get_operation("content_sizing_mode") is not None
-            and str(edits.get_operation("content_sizing_mode").params.get("mode")) == "original_size"  # type: ignore[union-attr]
+            and str(edits.get_operation("content_sizing_mode").params.get("mode"))
+            == "original_size"  # type: ignore[union-attr]
         ),
         timeout=1500,
     )
@@ -1964,7 +2106,9 @@ def test_stretch_if_smaller_upscales_small_image_preview_scale(qtbot: QtBot, tmp
     assert stretch_idx >= 0
     window.content_sizing_mode_combo.setCurrentIndex(stretch_idx)
     qtbot.waitUntil(
-        lambda: float(window._current_content_points_per_pixel) > original_points_per_px,
+        lambda: (
+            float(window._current_content_points_per_pixel) > original_points_per_px
+        ),
         timeout=1500,
     )
 
@@ -2013,16 +2157,25 @@ def test_split_marker_drag_moves_visible_marker_by_ruler_triangle(
     end = window.editor_canvas.mapFromScene(QPointF(0.0, float(target + 70)))
     start_pos = QPoint(window.editor_canvas.viewport().width() - 8, int(start.y()))
     end_pos = QPoint(window.editor_canvas.viewport().width() - 8, int(end.y()))
-    qtbot.mousePress(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_pos)
+    qtbot.mousePress(
+        window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_pos
+    )
     qtbot.mouseMove(window.editor_canvas.viewport(), pos=end_pos)
-    qtbot.mouseRelease(window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end_pos)
-    qtbot.waitUntil(lambda: any(value != target for value in _split_list_values(window)), timeout=1000)
+    qtbot.mouseRelease(
+        window.editor_canvas.viewport(), Qt.MouseButton.LeftButton, pos=end_pos
+    )
+    qtbot.waitUntil(
+        lambda: any(value != target for value in _split_list_values(window)),
+        timeout=1000,
+    )
     moved_markers = _split_list_values(window)
     assert len(moved_markers) in {original_count, original_count - 1}
     assert window._split_markers()
 
 
-def test_pan_does_not_continue_after_mouse_release(qtbot: QtBot, tmp_path: Path) -> None:
+def test_pan_does_not_continue_after_mouse_release(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -2050,7 +2203,9 @@ def test_pan_does_not_continue_after_mouse_release(qtbot: QtBot, tmp_path: Path)
     qtbot.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
     qtbot.waitUntil(lambda: vbar.value() != before_drag, timeout=1000)
     after_release = vbar.value()
-    post_release_pos = QPoint(int(center.x()), min(canvas.viewport().height() - 4, int(center.y()) + 100))
+    post_release_pos = QPoint(
+        int(center.x()), min(canvas.viewport().height() - 4, int(center.y()) + 100)
+    )
     qtbot.mouseMove(canvas.viewport(), pos=post_release_pos)
     qtbot.wait(30)
     assert vbar.value() == after_release
@@ -2333,7 +2488,9 @@ def test_crop_snap_rect_vertical_and_free_with_shift_override(
     assert abs(free_unsnapped.y() - 77.0) <= 0.6
 
 
-def test_crosshair_magnifier_visible_only_for_crop_tools(qtbot: QtBot, tmp_path: Path) -> None:
+def test_crosshair_magnifier_visible_only_for_crop_tools(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -2436,5 +2593,9 @@ def test_interactive_controls_have_tooltips(qtbot: QtBot) -> None:
         window.output_input,
         window.export_button,
     ]
-    missing = [widget.objectName() or widget.__class__.__name__ for widget in controls if not widget.toolTip().strip()]
+    missing = [
+        widget.objectName() or widget.__class__.__name__
+        for widget in controls
+        if not widget.toolTip().strip()
+    ]
     assert not missing

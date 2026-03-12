@@ -69,9 +69,10 @@ def printable_content_area_points(layout: PrintLayout) -> tuple[float, float]:
     page_w, page_h = page_size
     if layout.orientation.lower() == "landscape":
         page_w, page_h = page_h, page_w
-    avail_w = page_w - (
-        layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm
-    ) * mm
+    avail_w = (
+        page_w
+        - (layout.margin_left_mm + layout.margin_right_mm + layout.gutter_mm) * mm
+    )
     avail_h = page_h - (layout.margin_top_mm + layout.margin_bottom_mm) * mm
     return (max(1.0, float(avail_w)), max(1.0, float(avail_h)))
 
@@ -175,7 +176,10 @@ def apply_edit_transform(
                 "left": 0,
                 "top": int(edits.crop_top_px),
                 "width": transformed.width,
-                "height": max(1, transformed.height - int(edits.crop_top_px + edits.crop_bottom_px)),
+                "height": max(
+                    1,
+                    transformed.height - int(edits.crop_top_px + edits.crop_bottom_px),
+                ),
             },
         )
 
@@ -244,7 +248,9 @@ def _apply_crop_free(image: Image.Image, params: dict[str, object]) -> Image.Ima
     return image.crop((left, top, right, bottom))
 
 
-def _apply_crop_vertical_band(image: Image.Image, params: dict[str, object]) -> Image.Image:
+def _apply_crop_vertical_band(
+    image: Image.Image, params: dict[str, object]
+) -> Image.Image:
     left = max(0, int(params.get("left", 0)))
     width = max(1, int(params.get("width", image.width)))
     x1 = min(left, max(0, image.width - 1))
@@ -331,7 +337,9 @@ def suggest_auto_vertical_border_crop_with_confidence(
         left_ref = float(np.median(row[:border_band]))
         right_ref = float(np.median(row[width - border_band : width]))
         left_threshold = max(8.0, float(np.std(row[:border_band])) * 2.8 + 6.0)
-        right_threshold = max(8.0, float(np.std(row[width - border_band : width])) * 2.8 + 6.0)
+        right_threshold = max(
+            8.0, float(np.std(row[width - border_band : width])) * 2.8 + 6.0
+        )
         gradient_threshold = max(6.0, float(np.percentile(gradients, 85.0)) * 1.1)
 
         left_edge = _scan_row_content_edge(
@@ -365,7 +373,7 @@ def suggest_auto_vertical_border_crop_with_confidence(
 
     content_left = min(left_bounds) if left_bounds else 0
     content_right = max(right_bounds) if right_bounds else width - 1
-    padding = max(2, min(12, int(round(width * 0.01))))
+    padding = max(2, min(12, round(width * 0.01)))
     content_left = max(0, content_left - padding)
     content_right = min(width - 1, content_right + padding)
     if content_right <= content_left:
@@ -409,7 +417,7 @@ def _robust_content_center(gray: np.ndarray, sampled_rows: np.ndarray) -> int | 
         centers.append(float(np.median(content)))
     if not centers:
         return None
-    center_x = int(round(float(np.median(np.asarray(centers, dtype=np.float32)))))
+    center_x = round(float(np.median(np.asarray(centers, dtype=np.float32))))
     return max(1, min(width - 2, center_x))
 
 
@@ -431,8 +439,12 @@ def _scan_row_content_edge(
     border_run = 0
     for x_pos in range(int(start_x), int(stop_x), int(step)):
         amplitude = abs(float(row[x_pos]) - float(border_reference))
-        gradient = float(gradients[x_pos]) if 0 <= x_pos < int(gradients.shape[0]) else 0.0
-        if amplitude >= float(amplitude_threshold) or gradient >= float(gradient_threshold):
+        gradient = (
+            float(gradients[x_pos]) if 0 <= x_pos < int(gradients.shape[0]) else 0.0
+        )
+        if amplitude >= float(amplitude_threshold) or gradient >= float(
+            gradient_threshold
+        ):
             last_content = int(x_pos)
             border_run = 0
             continue
@@ -494,7 +506,9 @@ def compute_page_slices(
         if ideal_bottom >= image_height:
             slices.append(PageSlice(top=top, bottom=image_height))
             break
-        cut = find_best_cut(blank_rows, ideal_bottom, max(40, int(layout.search_window_px)))
+        cut = find_best_cut(
+            blank_rows, ideal_bottom, max(40, int(layout.search_window_px))
+        )
         if cut <= top:
             cut = ideal_bottom
         slices.append(PageSlice(top=top, bottom=cut))

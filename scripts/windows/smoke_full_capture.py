@@ -39,13 +39,19 @@ class AttemptProfile:
 
 
 PROFILES: tuple[AttemptProfile, ...] = (
-    AttemptProfile("screen_region_gdi", "wheel_then_pagedown", "physical_center_sendinput"),
+    AttemptProfile(
+        "screen_region_gdi", "wheel_then_pagedown", "physical_center_sendinput"
+    ),
     AttemptProfile("print_window", "wheel_then_pagedown", "physical_center_sendinput"),
-    AttemptProfile("qt_grab_window", "wheel_then_pagedown", "physical_center_sendinput"),
+    AttemptProfile(
+        "qt_grab_window", "wheel_then_pagedown", "physical_center_sendinput"
+    ),
     AttemptProfile("screen_region_gdi", "wheel_pagedown", "physical_center_sendinput"),
     AttemptProfile("print_window", "wheel_pagedown", "physical_center_sendinput"),
     AttemptProfile("qt_grab_window", "wheel_pagedown", "physical_center_sendinput"),
-    AttemptProfile("screen_region_gdi", "wheel_click_pagedown", "physical_center_sendinput"),
+    AttemptProfile(
+        "screen_region_gdi", "wheel_click_pagedown", "physical_center_sendinput"
+    ),
 )
 
 
@@ -130,7 +136,9 @@ def _wait_for_capture_finish(app: QApplication, window) -> bool:
     return False
 
 
-def _run_attempt(app: QApplication, attempt_number: int, profile: AttemptProfile) -> tuple[bool, str]:
+def _run_attempt(
+    app: QApplication, attempt_number: int, profile: AttemptProfile
+) -> tuple[bool, str]:
     _app_identity, _default_log_filename, main_window_type = _load_app_types()
     settings = QSettings()
     settings.clear()
@@ -166,7 +174,9 @@ def _run_attempt(app: QApplication, attempt_number: int, profile: AttemptProfile
     queue_frames = int(new_item.frame_count or 0) if new_item is not None else 0
     frame_count = max(log_frames, queue_frames)
     has_client_area = "frame_region=client_area" in log_chunk
-    has_scroll_to_top_log = "scroll-to-top preflight wheel_up_ok=True home_sent=True" in log_chunk
+    has_scroll_to_top_log = (
+        "scroll-to-top preflight wheel_up_ok=True home_sent=True" in log_chunk
+    )
     trim_top_px, trim_bottom_px = _latest_trim_values(log_chunk)
     has_trim_log = "trim_top_px=" in log_chunk and "trim_bottom_px=" in log_chunk
     has_any_trim = trim_top_px > 0 or trim_bottom_px > 0
@@ -211,6 +221,7 @@ def main() -> int:
             return 0
     print("FAIL no successful full-capture attempt after 7 tries")
     return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

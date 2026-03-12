@@ -79,7 +79,9 @@ class EditAdjustments:
         """Return an isolated deep copy suitable for UI editors."""
 
         return EditAdjustments(
-            operations=[EditOperation(op.op_type, deepcopy(op.params)) for op in self.operations],
+            operations=[
+                EditOperation(op.op_type, deepcopy(op.params)) for op in self.operations
+            ],
             split_markers_px=list(self.split_markers_px),
             crop_left_px=self.crop_left_px,
             crop_right_px=self.crop_right_px,

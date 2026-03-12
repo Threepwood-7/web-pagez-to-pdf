@@ -138,11 +138,15 @@ class _FakeService:
 
 
 def _monkeypatch_image_pipeline(monkeypatch) -> None:
-    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+    monkeypatch.setattr(
+        scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image
+    )
     monkeypatch.setattr(
         scroll_capture,
         "frame_diff_score",
-        lambda left, right: 0.0 if left.getpixel((0, 0)) == right.getpixel((0, 0)) else 10.0,
+        lambda left, right: (
+            0.0 if left.getpixel((0, 0)) == right.getpixel((0, 0)) else 10.0
+        ),
     )
     monkeypatch.setattr(
         scroll_capture,
@@ -274,7 +278,8 @@ def test_run_full_capture_logs_movement_probe_verdicts(monkeypatch, caplog) -> N
 
     assert result.stop_reason == "max_pages"
     assert any(
-        "fallback=click_center_then_wheel" in record.message for record in caplog.records
+        "fallback=click_center_then_wheel" in record.message
+        for record in caplog.records
     )
     assert any(
         "movement probe verdict=moved" in record.message for record in caplog.records
@@ -491,8 +496,12 @@ def test_estimate_fixed_vertical_strips_detects_top_and_bottom() -> None:
     assert bottom_trim >= 24
 
 
-def test_auto_trim_removes_fixed_top_and_bottom_strips_from_output_frames(monkeypatch) -> None:
-    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+def test_auto_trim_removes_fixed_top_and_bottom_strips_from_output_frames(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image
+    )
 
     def _diff_score(left: Image.Image, right: Image.Image) -> float:
         width = min(left.width, right.width)
@@ -558,11 +567,18 @@ def test_auto_trim_removes_fixed_top_and_bottom_strips_from_output_frames(monkey
 
     assert result.stop_reason == "max_pages"
     assert captured_heights
-    assert all(height_value <= (height - fixed_top - fixed_bottom) for height_value in captured_heights)
+    assert all(
+        height_value <= (height - fixed_top - fixed_bottom)
+        for height_value in captured_heights
+    )
 
 
-def test_auto_trim_keeps_movement_detection_with_fixed_top_and_bottom(monkeypatch) -> None:
-    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+def test_auto_trim_keeps_movement_detection_with_fixed_top_and_bottom(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image
+    )
 
     def _diff_score(left: Image.Image, right: Image.Image) -> float:
         width = min(left.width, right.width)
@@ -662,17 +678,27 @@ def _make_right_scrollbar_frame(
 
 
 def test_estimate_right_scrollbar_trim_from_pair_detects_stable_band() -> None:
-    left = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
-    right = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=7)
+    left = _make_right_scrollbar_frame(
+        width=220, height=180, scrollbar_width=14, offset=0
+    )
+    right = _make_right_scrollbar_frame(
+        width=220, height=180, scrollbar_width=14, offset=7
+    )
 
     trim = scroll_capture._estimate_right_scrollbar_trim_from_pair(left, right)
 
     assert 10 <= trim <= 18
 
 
-def test_estimate_right_scrollbar_trim_from_pair_returns_zero_without_left_movement() -> None:
-    left = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
-    right = _make_right_scrollbar_frame(width=220, height=180, scrollbar_width=14, offset=0)
+def test_estimate_right_scrollbar_trim_from_pair_returns_zero_without_left_movement() -> (
+    None
+):
+    left = _make_right_scrollbar_frame(
+        width=220, height=180, scrollbar_width=14, offset=0
+    )
+    right = _make_right_scrollbar_frame(
+        width=220, height=180, scrollbar_width=14, offset=0
+    )
 
     trim = scroll_capture._estimate_right_scrollbar_trim_from_pair(left, right)
 
@@ -680,7 +706,9 @@ def test_estimate_right_scrollbar_trim_from_pair_returns_zero_without_left_movem
 
 
 def test_detect_right_scrollbar_trim_single_frame_detects_band() -> None:
-    frame = _make_right_scrollbar_frame(width=200, height=160, scrollbar_width=12, offset=4)
+    frame = _make_right_scrollbar_frame(
+        width=200, height=160, scrollbar_width=12, offset=4
+    )
 
     trim = scroll_capture.detect_right_scrollbar_trim_single_frame(frame)
 
@@ -723,7 +751,9 @@ def test_detect_right_scrollbar_trim_single_frame_detects_low_contrast_band() ->
     assert 7 <= trim <= 16
 
 
-def test_detect_right_scrollbar_trim_single_frame_returns_zero_for_uncertain_right_strip() -> None:
+def test_detect_right_scrollbar_trim_single_frame_returns_zero_for_uncertain_right_strip() -> (
+    None
+):
     frame = Image.new("RGB", (220, 160), (205, 205, 205))
     for y_pos in range(frame.height):
         for x_pos in range(frame.width):
@@ -740,7 +770,9 @@ def test_detect_right_scrollbar_trim_single_frame_returns_zero_for_uncertain_rig
 
 
 def test_auto_trim_scrollbar_reduces_output_width_when_enabled(monkeypatch) -> None:
-    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+    monkeypatch.setattr(
+        scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image
+    )
     monkeypatch.setattr(scroll_capture, "frame_diff_score", lambda _a, _b: 12.0)
 
     output_widths: list[int] = []
@@ -753,9 +785,24 @@ def test_auto_trim_scrollbar_reduces_output_width_when_enabled(monkeypatch) -> N
 
     service = _FakeService(
         captures=[
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=0), "screen_region_gdi"),
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=5), "screen_region_gdi"),
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=10), "screen_region_gdi"),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=0
+                ),
+                "screen_region_gdi",
+            ),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=5
+                ),
+                "screen_region_gdi",
+            ),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=10
+                ),
+                "screen_region_gdi",
+            ),
         ],
     )
     result = scroll_capture.run_full_page_capture(
@@ -776,7 +823,9 @@ def test_auto_trim_scrollbar_reduces_output_width_when_enabled(monkeypatch) -> N
 
 
 def test_auto_trim_scrollbar_keeps_output_width_when_disabled(monkeypatch) -> None:
-    monkeypatch.setattr(scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image)
+    monkeypatch.setattr(
+        scroll_capture.ImageQt, "fromqpixmap", lambda pixmap: pixmap.image
+    )
     monkeypatch.setattr(scroll_capture, "frame_diff_score", lambda _a, _b: 12.0)
 
     output_widths: list[int] = []
@@ -789,9 +838,24 @@ def test_auto_trim_scrollbar_keeps_output_width_when_disabled(monkeypatch) -> No
 
     service = _FakeService(
         captures=[
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=0), "screen_region_gdi"),
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=5), "screen_region_gdi"),
-            (_make_right_scrollbar_frame(width=210, height=150, scrollbar_width=12, offset=10), "screen_region_gdi"),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=0
+                ),
+                "screen_region_gdi",
+            ),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=5
+                ),
+                "screen_region_gdi",
+            ),
+            (
+                _make_right_scrollbar_frame(
+                    width=210, height=150, scrollbar_width=12, offset=10
+                ),
+                "screen_region_gdi",
+            ),
         ],
     )
     result = scroll_capture.run_full_page_capture(

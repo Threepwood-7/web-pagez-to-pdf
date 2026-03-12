@@ -71,7 +71,11 @@ def stitch_frames(frames: list[Image.Image]) -> StitchResult:
         overlaps.append(overlap)
         crop_top = max(0, overlap)
         appended = frame.crop((0, crop_top, frame.width, frame.height))
-        canvas = Image.new("RGB", (max(stitched.width, appended.width), stitched.height + appended.height), "white")
+        canvas = Image.new(
+            "RGB",
+            (max(stitched.width, appended.width), stitched.height + appended.height),
+            "white",
+        )
         canvas.paste(stitched, (0, 0))
         canvas.paste(appended, (0, stitched.height))
         stitched = canvas

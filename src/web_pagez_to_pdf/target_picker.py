@@ -33,7 +33,9 @@ class PickedWindow:
 class WindowPickerDialog(QDialog):
     """Simple top-level visible-window list picker."""
 
-    def __init__(self, windows: list[WindowInfo], parent: QWidget | None = None) -> None:
+    def __init__(
+        self, windows: list[WindowInfo], parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._windows = windows
         self._build_ui()
