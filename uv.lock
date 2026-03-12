@@ -347,8 +347,8 @@ wheels = [
 
 [[package]]
 name = "threep-commons"
-version = "0.1.0"
-source = { git = "https://github.com/Threepwood-7/threep-commons?rev=v0.1.0#2e377f74a3084d90ba0a8fade3296c6eaee17d06" }
+version = "0.3.0"
+source = { git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.0#8b44b52332bf4caeb064b4e8a6c0d73014eeefab" }
 dependencies = [
     { name = "pyside6" },
 ]
@@ -388,7 +388,7 @@ requires-dist = [
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "pywin32", specifier = ">=311" },
     { name = "reportlab", specifier = ">=4.4.4" },
-    { name = "threep-commons", git = "https://github.com/Threepwood-7/threep-commons?rev=v0.1.0" },
+    { name = "threep-commons", git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.0" },
 ]
 
 [[package]]
