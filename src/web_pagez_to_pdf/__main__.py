@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 from threep_commons.logging import setup_logging_from_identity
 from threep_commons.paths import configure_qsettings
+from threep_commons.settings import QSettingsValueStore
 
 from .constants import APP_IDENTITY
 from .main_window import MainWindow
@@ -23,7 +23,7 @@ def main() -> int:
     """Launch the desktop application main window."""
 
     configure_qsettings(APP_IDENTITY)
-    settings = QSettings()
+    settings = QSettingsValueStore.from_identity(APP_IDENTITY)
     configured_level = normalize_capture_log_level(
         str(settings.value("capture.log_level", DEFAULT_CAPTURE_LOG_LEVEL))
     )

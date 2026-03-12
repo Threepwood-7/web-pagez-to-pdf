@@ -17,7 +17,6 @@ from PySide6.QtCore import (
     QByteArray,
     QEvent,
     QRectF,
-    QSettings,
     QSignalBlocker,
     QSize,
     Qt,
@@ -58,6 +57,7 @@ from reportlab.lib.units import mm
 from threep_commons.desktop import open_path_in_default_app
 from threep_commons.paths import resolve_app_data_dir
 from threep_commons.qt.widget_identity import assign_widget_identity
+from threep_commons.settings import QSettingsValueStore
 
 from . import widget_naming
 from .capture_service import (
@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.window_id = "main"
-        self._settings = QSettings()
+        self._settings = QSettingsValueStore.from_identity(APP_IDENTITY)
         self._capture_service = WindowCaptureService()
         self._hotkeys = GlobalHotkeyPoller()
         self._stop_overlay = HoverStopOverlay()
@@ -1233,7 +1233,7 @@ class MainWindow(QMainWindow):
         self._flush_debounced_preview_update()
         payload = payload_obj if isinstance(payload_obj, dict) else {}
         for key, value in payload.items():
-            self._settings.setValue(key, value)
+            self._settings.set_value(key, value)
         self._settings.sync()
         self._load_runtime_settings()
         self.status_label.setText("Settings applied.")
@@ -1466,8 +1466,8 @@ class MainWindow(QMainWindow):
         return max(0, min(2000, parsed))
 
     def _persist_splitter_sizes(self, *_args: object) -> None:
-        self._settings.setValue("ui.capture_splitter_sizes", self.capture_splitter.sizes())
-        self._settings.setValue("ui.editor_splitter_sizes", self.editor_splitter.sizes())
+        self._settings.set_value("ui.capture_splitter_sizes", self.capture_splitter.sizes())
+        self._settings.set_value("ui.editor_splitter_sizes", self.editor_splitter.sizes())
 
     def _schedule_splitter_sizes_persist(self, *_args: object) -> None:
         self._splitter_sizes_timer.start()
@@ -1564,7 +1564,7 @@ class MainWindow(QMainWindow):
         return DEFAULT_CAPTURE_BACKEND
 
     def _persist_capture_backend(self) -> None:
-        self._settings.setValue("capture.backend_primary", self._capture_backend_primary())
+        self._settings.set_value("capture.backend_primary", self._capture_backend_primary())
 
     def _set_scroll_mode_combo(self, mode: str) -> None:
         normalized = str(mode or "").strip().lower()
@@ -1583,7 +1583,7 @@ class MainWindow(QMainWindow):
         return DEFAULT_SCROLL_MODE
 
     def _persist_capture_scroll_mode(self) -> None:
-        self._settings.setValue("capture.scroll_mode", self._capture_scroll_mode())
+        self._settings.set_value("capture.scroll_mode", self._capture_scroll_mode())
 
     def _set_capture_frame_region_combo(self, frame_region: str) -> None:
         normalized = str(frame_region or "").strip().lower()
@@ -1602,7 +1602,7 @@ class MainWindow(QMainWindow):
         return DEFAULT_CAPTURE_FRAME_REGION
 
     def _persist_capture_frame_region(self) -> None:
-        self._settings.setValue("capture.frame_region", self._capture_frame_region())
+        self._settings.set_value("capture.frame_region", self._capture_frame_region())
 
     def _capture_include_mouse_cursor(self) -> bool:
         return bool(self.capture_include_mouse_checkbox.isChecked())
@@ -1611,7 +1611,7 @@ class MainWindow(QMainWindow):
         return bool(self.capture_scroll_to_top_checkbox.isChecked())
 
     def _persist_capture_scroll_to_top_on_full(self) -> None:
-        self._settings.setValue(
+        self._settings.set_value(
             "capture.scroll_to_top_on_full",
             self._capture_scroll_to_top_on_full(),
         )
@@ -1620,13 +1620,13 @@ class MainWindow(QMainWindow):
         return bool(self.capture_auto_trim_fixed_checkbox.isChecked())
 
     def _persist_capture_auto_trim_fixed_strips(self) -> None:
-        self._settings.setValue(
+        self._settings.set_value(
             "capture.auto_trim_fixed_strips",
             self._capture_auto_trim_fixed_strips(),
         )
 
     def _persist_capture_include_mouse_cursor(self) -> None:
-        self._settings.setValue(
+        self._settings.set_value(
             "capture.include_mouse_cursor",
             self._capture_include_mouse_cursor(),
         )
@@ -1650,7 +1650,7 @@ class MainWindow(QMainWindow):
         return DEFAULT_WHEEL_INJECTION_MODE
 
     def _persist_capture_wheel_injection_mode(self) -> None:
-        self._settings.setValue(
+        self._settings.set_value(
             "capture.wheel_injection_mode",
             self._capture_wheel_injection_mode(),
         )
@@ -1672,7 +1672,7 @@ class MainWindow(QMainWindow):
         return DEFAULT_CURSOR_HOLD_MODE
 
     def _persist_capture_cursor_hold_mode(self) -> None:
-        self._settings.setValue(
+        self._settings.set_value(
             "capture.cursor_hold_mode",
             self._capture_cursor_hold_mode(),
         )
@@ -1695,7 +1695,7 @@ class MainWindow(QMainWindow):
 
     def _persist_capture_log_level(self) -> None:
         level = self._capture_log_level()
-        self._settings.setValue("capture.log_level", level)
+        self._settings.set_value("capture.log_level", level)
         self._apply_capture_logger_level(level)
 
     @staticmethod
@@ -1736,8 +1736,8 @@ class MainWindow(QMainWindow):
         if self._window_state_restore_in_progress:
             return
         self._splitter_sizes_timer.stop()
-        self._settings.setValue("ui.window_geometry", self.saveGeometry())
-        self._settings.setValue("ui.window_is_maximized", self.isMaximized())
+        self._settings.set_value("ui.window_geometry", self.saveGeometry())
+        self._settings.set_value("ui.window_is_maximized", self.isMaximized())
         self._persist_splitter_sizes()
 
     def moveEvent(self, event) -> None:  # noqa: N802
@@ -3504,7 +3504,7 @@ class MainWindow(QMainWindow):
         self._splitter_sizes_timer.stop()
         self._persist_window_state_snapshot()
         for key, value in self._collect_settings_payload().items():
-            self._settings.setValue(key, value)
+            self._settings.set_value(key, value)
         self._settings.sync()
         self._hotkeys.stop()
         self._stop_overlay.hide()

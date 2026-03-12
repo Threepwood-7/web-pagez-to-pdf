@@ -7,6 +7,8 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFormLayout, QHBoxLayout, QVBoxLayout
 from reportlab.lib.units import mm
+import pytest
+from threep_commons.settings import QSettingsValueStore
 
 from web_pagez_to_pdf.capture_service import WindowInfo
 from web_pagez_to_pdf.constants import APP_IDENTITY
@@ -27,6 +29,16 @@ if TYPE_CHECKING:
 
     from pytest import MonkeyPatch
     from pytestqt.qtbot import QtBot
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings_store() -> None:
+    settings = QSettingsValueStore.from_identity(APP_IDENTITY)
+    settings.clear_all()
+    settings.sync()
+    yield
+    settings.clear_all()
+    settings.sync()
 
 
 def _line_cue_image(width: int = 420, height: int = 280) -> Image.Image:
@@ -1512,7 +1524,7 @@ def _clear_window_state_settings() -> None:
     if app is not None:
         app.setOrganizationName(APP_IDENTITY.org_name)
         app.setApplicationName(APP_IDENTITY.app_name)
-    settings = QSettings(APP_IDENTITY.org_name, APP_IDENTITY.app_name)
+    settings = QSettingsValueStore.from_identity(APP_IDENTITY)
     for key in (
         "ui.window_geometry",
         "ui.window_is_maximized",
@@ -1659,11 +1671,13 @@ def test_export_xlsx_setting_persists_and_defaults_false(qtbot: QtBot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    window._settings = QSettings(
-        "web-pagez-to-pdf-tests",
-        "test_export_xlsx_setting_persists_and_defaults_false",
+    window._settings = QSettingsValueStore(
+        QSettings(
+            "web-pagez-to-pdf-tests",
+            "test_export_xlsx_setting_persists_and_defaults_false",
+        )
     )
-    window._settings.clear()
+    window._settings.clear_all()
     window._settings.sync()
 
 
@@ -1671,22 +1685,24 @@ def test_export_open_after_and_preview_debounce_settings_persist(qtbot: QtBot) -
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    window._settings = QSettings(
-        "web-pagez-to-pdf-tests",
-        "test_export_open_after_and_preview_debounce_settings_persist",
+    window._settings = QSettingsValueStore(
+        QSettings(
+            "web-pagez-to-pdf-tests",
+            "test_export_open_after_and_preview_debounce_settings_persist",
+        )
     )
-    window._settings.clear()
+    window._settings.clear_all()
     window._settings.sync()
 
-    window._settings.setValue("export.open_after_export", False)
-    window._settings.setValue("editor.preview_debounce_ms", 0)
+    window._settings.set_value("export.open_after_export", False)
+    window._settings.set_value("editor.preview_debounce_ms", 0)
     window._settings.sync()
     window._load_runtime_settings()
     assert not window.open_after_export_checkbox.isChecked()
     assert window._editor_preview_debounce_ms == 0
 
-    window._settings.setValue("export.open_after_export", True)
-    window._settings.setValue("editor.preview_debounce_ms", 9999)
+    window._settings.set_value("export.open_after_export", True)
+    window._settings.set_value("editor.preview_debounce_ms", 9999)
     window._settings.sync()
     window._load_runtime_settings()
     assert window.open_after_export_checkbox.isChecked()
@@ -1696,7 +1712,7 @@ def test_export_open_after_and_preview_debounce_settings_persist(qtbot: QtBot) -
     assert bool(payload["export.open_after_export"]) is True
     assert int(payload["editor.preview_debounce_ms"]) == 2000
 
-    window._settings.clear()
+    window._settings.clear_all()
     window._settings.sync()
 
 
@@ -1705,7 +1721,7 @@ def test_editor_preview_debounce_applies_transform_after_delay(qtbot: QtBot, tmp
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
-    window._settings.setValue("editor.preview_debounce_ms", 180)
+    window._settings.set_value("editor.preview_debounce_ms", 180)
     window._settings.sync()
     window._load_runtime_settings()
     window._add_capture(
@@ -1733,7 +1749,7 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     qtbot.addWidget(window)
     window.show()
     window.output_input.setText(str(tmp_path))
-    window._settings.setValue("editor.preview_debounce_ms", 0)
+    window._settings.set_value("editor.preview_debounce_ms", 0)
     window._settings.sync()
     window._load_runtime_settings()
     window._add_capture(
@@ -1760,14 +1776,14 @@ def test_editor_preview_debounce_zero_applies_immediately(qtbot: QtBot, tmp_path
     payload = window._collect_settings_payload()
     assert bool(payload["export.xlsx"]) is True
 
-    window._settings.setValue("export.xlsx", True)
+    window._settings.set_value("export.xlsx", True)
     window._settings.sync()
     window._load_runtime_settings()
     assert window.xlsx_checkbox.isChecked()
     payload_after_apply = window._collect_settings_payload()
     assert bool(payload_after_apply["export.xlsx"]) is True
 
-    window._settings.clear()
+    window._settings.clear_all()
     window._settings.sync()
 
 
