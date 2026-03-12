@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageQt
+from PySide6.QtGui import QPixmap
 from reportlab.lib.pagesizes import A0, A1, A2, A3, A4, A5, A6, LEGAL, LETTER, TABLOID
 from reportlab.lib.units import mm
 
@@ -47,10 +49,14 @@ class PageSlice:
     bottom: int
 
 
-def pil_to_qpixmap(image: Image.Image):
+def pil_to_qpixmap(image: Image.Image) -> QPixmap:
     """Convert PIL image to Qt pixmap."""
 
-    return ImageQt.toqpixmap(image)
+    image_qt: Any = ImageQt
+    pixmap = image_qt.toqpixmap(image)
+    if isinstance(pixmap, QPixmap):
+        return pixmap
+    raise TypeError("ImageQt.toqpixmap did not return a QPixmap")
 
 
 def normalize_content_sizing_mode(mode: object) -> str:
@@ -190,14 +196,14 @@ def apply_edit_transform(
 
 
 def _apply_rotation(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    degrees = float(params.get("degrees", 0.0))
+    degrees = _coerce_float(params.get("degrees"), default=0.0)
     if abs(degrees) <= 0.01:
         return image
     return image.rotate(-degrees, expand=True, fillcolor="white")
 
 
 def _apply_scale(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    percent = max(10.0, float(params.get("percent", 100.0)))
+    percent = max(10.0, _coerce_float(params.get("percent"), default=100.0))
     if abs(percent - 100.0) <= 0.01:
         return image
     factor = percent / 100.0
@@ -209,10 +215,10 @@ def _apply_scale(image: Image.Image, params: dict[str, object]) -> Image.Image:
 
 
 def _apply_crop_rect(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    left = max(0, int(params.get("left", 0)))
-    top = max(0, int(params.get("top", 0)))
-    width = max(1, int(params.get("width", image.width)))
-    height = max(1, int(params.get("height", image.height)))
+    left = max(0, _coerce_int(params.get("left"), default=0))
+    top = max(0, _coerce_int(params.get("top"), default=0))
+    width = max(1, _coerce_int(params.get("width"), default=image.width))
+    height = max(1, _coerce_int(params.get("height"), default=image.height))
 
     x1 = min(left, max(0, image.width - 1))
     y1 = min(top, max(0, image.height - 1))
@@ -226,17 +232,18 @@ def _apply_crop_rect(image: Image.Image, params: dict[str, object]) -> Image.Ima
 
 
 def _apply_crop_free(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    points = params.get("points")
-    if not isinstance(points, list) or len(points) < 2:
+    point_values = _object_sequence(params.get("points"))
+    if point_values is None or len(point_values) < 2:
         return image
 
     xs: list[int] = []
     ys: list[int] = []
-    for point in points:
-        if not isinstance(point, (list, tuple)) or len(point) < 2:
+    for point in point_values:
+        point_pair = _coerce_point_pair(point)
+        if point_pair is None:
             continue
-        xs.append(int(point[0]))
-        ys.append(int(point[1]))
+        xs.append(point_pair[0])
+        ys.append(point_pair[1])
     if len(xs) < 2 or len(ys) < 2:
         return image
     left = max(0, min(xs))
@@ -251,8 +258,8 @@ def _apply_crop_free(image: Image.Image, params: dict[str, object]) -> Image.Ima
 def _apply_crop_vertical_band(
     image: Image.Image, params: dict[str, object]
 ) -> Image.Image:
-    left = max(0, int(params.get("left", 0)))
-    width = max(1, int(params.get("width", image.width)))
+    left = max(0, _coerce_int(params.get("left"), default=0))
+    width = max(1, _coerce_int(params.get("width"), default=image.width))
     x1 = min(left, max(0, image.width - 1))
     x2 = min(image.width, x1 + width)
     if x2 <= x1:
@@ -261,8 +268,8 @@ def _apply_crop_vertical_band(
 
 
 def _apply_nav_crop(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    left = max(0, int(params.get("left", 0)))
-    right = max(0, int(params.get("right", 0)))
+    left = max(0, _coerce_int(params.get("left"), default=0))
+    right = max(0, _coerce_int(params.get("right"), default=0))
     x1 = min(left, max(0, image.width - 1))
     x2 = max(1, image.width - right)
     if x2 <= x1:
@@ -271,18 +278,19 @@ def _apply_nav_crop(image: Image.Image, params: dict[str, object]) -> Image.Imag
 
 
 def _apply_redactions(image: Image.Image, params: dict[str, object]) -> Image.Image:
-    rectangles = params.get("rectangles")
-    if not isinstance(rectangles, list) or not rectangles:
+    rectangles = _object_sequence(params.get("rectangles"))
+    if rectangles is None or not rectangles:
         return image
     redacted = image.copy()
     draw = ImageDraw.Draw(redacted)
     for rect in rectangles:
-        if not isinstance(rect, dict):
+        rect_values = _string_object_mapping(rect)
+        if rect_values is None:
             continue
-        x_pos = int(rect.get("x", 0))
-        y_pos = int(rect.get("y", 0))
-        width = max(1, int(rect.get("width", 1)))
-        height = max(1, int(rect.get("height", 1)))
+        x_pos = _coerce_int(rect_values.get("x"), default=0)
+        y_pos = _coerce_int(rect_values.get("y"), default=0)
+        width = max(1, _coerce_int(rect_values.get("width"), default=1))
+        height = max(1, _coerce_int(rect_values.get("height"), default=1))
         x1 = max(0, min(image.width - 1, x_pos))
         y1 = max(0, min(image.height - 1, y_pos))
         x2 = max(1, min(image.width, x1 + width))
@@ -525,3 +533,72 @@ def find_best_cut(blank_rows: np.ndarray, ideal_px: int, search_window: int) -> 
         if bool(blank_rows[row]):
             return row
     return safe_ideal
+
+
+def _coerce_int(value: object, *, default: int) -> int:
+    """Coerce loose JSON-like payload values into ints for edit operations."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_float(value: object, *, default: float) -> float:
+    """Coerce loose JSON-like payload values into floats for edit operations."""
+
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return float(stripped)
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_point_pair(value: object) -> tuple[int, int] | None:
+    """Normalize a free-crop point payload into integer X/Y coordinates."""
+
+    point_values = _object_sequence(value)
+    if point_values is None or len(point_values) < 2:
+        return None
+    return (
+        _coerce_int(point_values[0], default=0),
+        _coerce_int(point_values[1], default=0),
+    )
+
+
+def _object_sequence(value: object) -> Sequence[object] | None:
+    """Return list/tuple payloads as a typed object sequence."""
+
+    if isinstance(value, (list, tuple)):
+        return list(cast(Sequence[object], value))
+    return None
+
+
+def _string_object_mapping(value: object) -> Mapping[str, object] | None:
+    """Normalize ad-hoc dict payloads to string-key object mappings."""
+
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, object] = {}
+    for key, item in cast(Mapping[object, object], value).items():
+        normalized[str(key)] = item
+    return normalized

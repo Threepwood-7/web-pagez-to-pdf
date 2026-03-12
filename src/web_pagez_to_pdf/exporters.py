@@ -10,7 +10,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
 from PIL import Image
 from reportlab.lib.pagesizes import A4
@@ -74,7 +74,9 @@ class _RichTextProbe(HTMLParser):
         self.has_visible_text = False
         self.has_media_content = False
 
-    def handle_starttag(self, tag: str, attrs) -> None:
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
         del attrs
         name = str(tag or "").strip().lower()
         if name in {"style", "script", "head"}:
@@ -125,6 +127,19 @@ class _XlsxExportRow:
     page_index: int
     page_count: int
     image: Image.Image
+
+
+class _PdfCanvas(Protocol):
+    """Subset of reportlab canvas methods used by this exporter module."""
+
+    def drawInlineImage(
+        self,
+        image: Image.Image,
+        x: float,
+        y: float,
+        width: float | None = None,
+        height: float | None = None,
+    ) -> object: ...
 
 
 def run_export(request: ExportRequest) -> ExportResult:
@@ -326,6 +341,7 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
 
     output_path = request.output_dir / f"{request.basename}.pdf"
     pdf = canvas.Canvas(str(output_path), pagesize=(page_w, page_h))
+    pdf_writer = cast(_PdfCanvas, pdf)
     total_pages = len(frames)
     avail_w = (
         page_w
@@ -344,7 +360,7 @@ def export_pdf(request: ExportRequest, frames: list[PageFrame]) -> Path:
         rendered_w = float(frame.image.width) * points_per_px
         rendered_h = float(frame.image.height) * points_per_px
         y = page_h - request.layout.margin_top_mm * mm - rendered_h
-        pdf.drawInlineImage(
+        pdf_writer.drawInlineImage(
             frame.image, content_x, y, width=rendered_w, height=rendered_h
         )
 
@@ -487,7 +503,7 @@ def export_docx(
             image.save(buffer, format="PNG")
             buffer.seek(0)
             paragraph.add_run().add_picture(buffer, width=Mm(170))
-    document.save(output)
+    document.save(str(output))
     return output
 
 
@@ -515,7 +531,7 @@ def export_pptx(
             slide.shapes.add_picture(
                 buffer, Inches(0.3), Inches(0.3), width=Inches(12.7)
             )
-    presentation.save(output)
+    presentation.save(str(output))
     return output
 
 

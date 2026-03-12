@@ -206,6 +206,7 @@ package_module_name_map = { pywin32 = ["win32con", "win32gui", "win32ui"] }
 pythonVersion = "3.13"
 pythonPlatform = "All"
 typeCheckingMode = "strict"
+stubPath = "typings"
 # Keep strict mode enabled while suppressing the current application-level
 # backlog of noisy diagnostics that would otherwise block rollout validation.
 reportArgumentType = "none"
