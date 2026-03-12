@@ -376,6 +376,7 @@ dependencies = [
     { name = "pywin32" },
     { name = "reportlab" },
     { name = "threep-commons" },
+    { name = "xlsxwriter" },
 ]
 
 [package.metadata]
@@ -389,6 +390,7 @@ requires-dist = [
     { name = "pywin32", specifier = ">=311" },
     { name = "reportlab", specifier = ">=4.4.4" },
     { name = "threep-commons", git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.0" },
+    { name = "xlsxwriter", specifier = ">=3.2.9" },
 ]
 
 [[package]]
