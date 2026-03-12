@@ -1,4 +1,4 @@
-"""Tests for web_pagez_to_pdf."""
+"""Import-level smoke tests for the package."""
 
 import importlib
 
