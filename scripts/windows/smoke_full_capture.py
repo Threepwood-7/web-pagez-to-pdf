@@ -192,7 +192,14 @@ def _run_attempt(
     )
 
     outcome = (
-        f"attempt={attempt_number} backend={profile.backend} scroll={profile.scroll_mode} "
+        " ".join(
+            [
+                f"attempt={attempt_number}",
+                f"backend={profile.backend}",
+                f"scroll={profile.scroll_mode}",
+            ]
+        )
+        + " "
         f"stop_reason={stop_reason or 'missing'} frames={frame_count} "
         f"client_area={has_client_area} scroll_to_top_log={has_scroll_to_top_log} "
         f"trim_top_px={trim_top_px} trim_bottom_px={trim_bottom_px}"
