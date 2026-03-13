@@ -157,7 +157,8 @@ def run_export(request: ExportRequest) -> ExportResult:
         if enabled
     ]
     EXPORT_LOGGER.info(
-        "run_export start captures=%s combine_mode=%s formats=%s output_dir=%s basename=%s",
+        "run_export start captures=%s combine_mode=%s formats=%s "
+        "output_dir=%s basename=%s",
         len(request.captures),
         request.combine_mode,
         ",".join(requested_formats) or "none",

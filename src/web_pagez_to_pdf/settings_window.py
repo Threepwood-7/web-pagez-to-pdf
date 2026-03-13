@@ -640,8 +640,12 @@ class SettingsWindow(QDialog):
             "capture.delay_ms": int(self.capture_delay_spin.value()),
             "capture.backend_primary": str(self.capture_backend_combo.currentData()),
             "capture.scroll_mode": self._scroll_mode_value(),
-            "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
-            "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
+            "capture.scroll_to_top_on_full": (
+                self.capture_scroll_to_top_checkbox.isChecked()
+            ),
+            "capture.auto_trim_fixed_strips": (
+                self.capture_auto_trim_fixed_checkbox.isChecked()
+            ),
             "capture.frame_region": self._frame_region_value(),
             "capture.wheel_injection_mode": str(
                 self.capture_wheel_injection_combo.currentData()
@@ -652,7 +656,9 @@ class SettingsWindow(QDialog):
             "capture.log_level": normalize_capture_log_level(
                 str(self.capture_log_level_combo.currentData())
             ),
-            "capture.include_mouse_cursor": self.capture_include_mouse_checkbox.isChecked(),
+            "capture.include_mouse_cursor": (
+                self.capture_include_mouse_checkbox.isChecked()
+            ),
             "export.output_dir": self.default_output_edit.text().strip(),
             "export.basename": self.default_basename_edit.text().strip() or "capture",
             "export.combine_mode": self.default_combine_checkbox.isChecked(),
@@ -663,7 +669,9 @@ class SettingsWindow(QDialog):
             "export.docx": self.default_docx_checkbox.isChecked(),
             "export.pptx": self.default_pptx_checkbox.isChecked(),
             "export.xlsx": self.default_xlsx_checkbox.isChecked(),
-            "export.open_after_export": self.default_open_after_export_checkbox.isChecked(),
+            "export.open_after_export": (
+                self.default_open_after_export_checkbox.isChecked()
+            ),
             "export.docx_mode": str(self.default_docx_mode_combo.currentData()),
             "layout.paper_name": str(self.layout_paper_combo.currentData() or "A4"),
             "layout.orientation": str(
@@ -678,7 +686,9 @@ class SettingsWindow(QDialog):
             "layout.search_window_px": int(self.layout_search_window_spin.value()),
             "layout.header_html": self.layout_header_edit.toHtml(),
             "layout.footer_html": self.layout_footer_edit.toHtml(),
-            "ui.editor_overlay_visible": self.editor_overlay_visible_checkbox.isChecked(),
+            "ui.editor_overlay_visible": (
+                self.editor_overlay_visible_checkbox.isChecked()
+            ),
             "editor.preview_debounce_ms": int(
                 self.editor_preview_debounce_spin.value()
             ),

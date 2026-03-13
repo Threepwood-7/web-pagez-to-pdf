@@ -145,6 +145,353 @@ class _ScrollStepOutcome:
     estimated_trim_bottom_px: int = 0
 
 
+@dataclass(slots=True)
+class _CaptureLoopState:
+    """Mutable state carried across full-capture loop iterations."""
+
+    frames: list[Image.Image]
+    output_frames: list[Image.Image]
+    trim_top_px: int = 0
+    trim_bottom_px: int = 0
+    trim_right_px: int = 0
+    trim_top_locked: bool = False
+    trim_bottom_locked: bool = False
+    trim_right_locked: bool = False
+    trim_right_candidate_px: int = 0
+    trim_right_candidate_hits: int = 0
+    repeated_count: int = 0
+    stop_reason: str = STOP_REASON_RUNNING
+
+
+def _rebuild_output_frames(
+    frames: list[Image.Image],
+    *,
+    trim_top_px: int,
+    trim_bottom_px: int,
+    trim_right_px: int,
+) -> list[Image.Image]:
+    """Rebuild prepared output frames after trim settings change."""
+
+    return [
+        _prepare_output_frame(
+            frame,
+            trim_top_px=trim_top_px,
+            trim_bottom_px=trim_bottom_px,
+            trim_right_px=trim_right_px,
+        )
+        for frame in frames
+    ]
+
+
+def _initial_capture_state(first_frame: Image.Image) -> _CaptureLoopState:
+    """Create the mutable full-capture loop state from the first frame."""
+
+    return _CaptureLoopState(
+        frames=[first_frame],
+        output_frames=[
+            _prepare_output_frame(
+                first_frame,
+                trim_top_px=0,
+                trim_bottom_px=0,
+                trim_right_px=0,
+            )
+        ],
+    )
+
+
+def _emit_capture_progress_message(
+    progress_callback: Callable[[ScrollCaptureProgress], None] | None,
+    *,
+    frame_index: int,
+    backend_used: str,
+    scroll_method: str,
+    diff_score: float | None,
+    repeated_count: int,
+    stop_reason: str,
+    message: str,
+) -> None:
+    """Emit one strongly-typed progress event for the capture loop."""
+
+    _emit_progress(
+        progress_callback,
+        ScrollCaptureProgress(
+            frame_index=frame_index,
+            backend_used=backend_used,
+            scroll_method=scroll_method,
+            diff_score=diff_score,
+            repeated_count=repeated_count,
+            stop_reason=stop_reason,
+            message=message,
+        ),
+    )
+
+
+def _stop_for_focus_failure(
+    progress_callback: Callable[[ScrollCaptureProgress], None] | None,
+    *,
+    attempted_frame_index: int,
+    repeated_count: int,
+    focus_reason: str,
+) -> None:
+    """Publish a focus-failure progress event before capture stops."""
+
+    _emit_capture_progress_message(
+        progress_callback,
+        frame_index=attempted_frame_index - 1,
+        backend_used="",
+        scroll_method="focus",
+        diff_score=None,
+        repeated_count=repeated_count,
+        stop_reason=STOP_REASON_CAPTURE_FAILED,
+        message=focus_reason or "Could not refocus target window.",
+    )
+
+
+def _stop_for_missing_frame(
+    progress_callback: Callable[[ScrollCaptureProgress], None] | None,
+    *,
+    attempted_frame_index: int,
+    outcome: _ScrollStepOutcome,
+    repeated_count: int,
+) -> None:
+    """Publish a capture-failure progress event for a missing frame."""
+
+    _emit_capture_progress_message(
+        progress_callback,
+        frame_index=attempted_frame_index,
+        backend_used=outcome.backend_used,
+        scroll_method=outcome.scroll_method,
+        diff_score=None,
+        repeated_count=repeated_count,
+        stop_reason=STOP_REASON_CAPTURE_FAILED,
+        message=(
+            f"Frame {attempted_frame_index} capture failed "
+            f"after scroll={outcome.scroll_method}."
+        ),
+    )
+
+
+def _update_fixed_strip_trims(
+    state: _CaptureLoopState,
+    outcome: _ScrollStepOutcome,
+    *,
+    session_id: str,
+) -> None:
+    """Lock detected fixed-strip trims and rebuild prepared frames if needed."""
+
+    trim_changed = False
+    if not state.trim_top_locked and outcome.estimated_trim_top_px > 0:
+        state.trim_top_px = int(outcome.estimated_trim_top_px)
+        state.trim_top_locked = True
+        trim_changed = True
+        LOGGER.info(
+            "[capture-session:%s] auto-trim lock edge=top rows=%s",
+            session_id,
+            state.trim_top_px,
+        )
+    if not state.trim_bottom_locked and outcome.estimated_trim_bottom_px > 0:
+        state.trim_bottom_px = int(outcome.estimated_trim_bottom_px)
+        state.trim_bottom_locked = True
+        trim_changed = True
+        LOGGER.info(
+            "[capture-session:%s] auto-trim lock edge=bottom rows=%s",
+            session_id,
+            state.trim_bottom_px,
+        )
+    if trim_changed:
+        state.output_frames = _rebuild_output_frames(
+            state.frames,
+            trim_top_px=state.trim_top_px,
+            trim_bottom_px=state.trim_bottom_px,
+            trim_right_px=state.trim_right_px,
+        )
+
+
+def _update_scrollbar_trim_candidate(
+    state: _CaptureLoopState,
+    *,
+    previous_frame: Image.Image,
+    current_frame: Image.Image,
+    session_id: str,
+) -> None:
+    """Lock the right-edge scrollbar trim after repeated stable estimates."""
+
+    estimated_right = _estimate_right_scrollbar_trim_from_pair(
+        previous_frame,
+        current_frame,
+    )
+    if estimated_right > 0:
+        if state.trim_right_candidate_px <= 0:
+            state.trim_right_candidate_px = int(estimated_right)
+            state.trim_right_candidate_hits = 1
+        elif abs(state.trim_right_candidate_px - int(estimated_right)) <= 1:
+            state.trim_right_candidate_px = round(
+                (float(state.trim_right_candidate_px) + float(estimated_right)) / 2.0
+            )
+            state.trim_right_candidate_hits += 1
+        else:
+            state.trim_right_candidate_px = int(estimated_right)
+            state.trim_right_candidate_hits = 1
+    else:
+        state.trim_right_candidate_px = 0
+        state.trim_right_candidate_hits = 0
+
+    if state.trim_right_candidate_hits < 2 or state.trim_right_candidate_px <= 0:
+        return
+    state.trim_right_px = int(state.trim_right_candidate_px)
+    state.trim_right_locked = True
+    state.output_frames = _rebuild_output_frames(
+        state.frames,
+        trim_top_px=state.trim_top_px,
+        trim_bottom_px=state.trim_bottom_px,
+        trim_right_px=state.trim_right_px,
+    )
+    LOGGER.info(
+        "[capture-session:%s] auto-trim lock edge=right cols=%s",
+        session_id,
+        state.trim_right_px,
+    )
+
+
+def _handle_movement_capture_outcome(
+    state: _CaptureLoopState,
+    outcome: _ScrollStepOutcome,
+    *,
+    frame_region: str,
+    auto_trim_fixed_strips: bool,
+    auto_trim_scrollbar: bool,
+    session_id: str,
+) -> str:
+    """Update trim state for a moved frame and return the success message."""
+
+    state.repeated_count = 0
+    message = (
+        f"Frame {len(state.frames) + 1} captured via "
+        f"{outcome.backend_used or 'unknown backend'} "
+        f"(scroll={outcome.scroll_method}, diff={_diff_text(outcome.diff_score)})."
+    )
+    if (
+        auto_trim_fixed_strips
+        and frame_region == "client_area"
+        and (not state.trim_top_locked or not state.trim_bottom_locked)
+    ):
+        _update_fixed_strip_trims(state, outcome, session_id=session_id)
+    if (
+        auto_trim_scrollbar
+        and frame_region == "client_area"
+        and not state.trim_right_locked
+    ):
+        _update_scrollbar_trim_candidate(
+            state,
+            previous_frame=state.frames[-1],
+            current_frame=cast("Image.Image", outcome.frame),
+            session_id=session_id,
+        )
+    return message
+
+
+def _handle_stalled_capture_outcome(
+    state: _CaptureLoopState,
+    outcome: _ScrollStepOutcome,
+    *,
+    attempted_frame_index: int,
+    repeat_stop: int,
+    progress_callback: Callable[[ScrollCaptureProgress], None] | None,
+    session_id: str,
+) -> tuple[str, bool]:
+    """Update repeat detection state and report whether capture should stop."""
+
+    diff_text = _diff_text(outcome.diff_score)
+    state.repeated_count += 1
+    if outcome.probe_exhausted:
+        state.stop_reason = STOP_REASON_CAPTURE_FAILED
+        message = (
+            f"Frame {attempted_frame_index}: movement probe failed "
+            f"(scroll={outcome.scroll_method}, diff={diff_text})."
+        )
+        LOGGER.error(
+            "[capture-session:%s] movement probe verdict=stalled frame=%s "
+            "method=%s diff=%s backend=%s action=stop_capture_failed",
+            session_id,
+            attempted_frame_index,
+            outcome.scroll_method,
+            diff_text,
+            outcome.backend_used or "unknown",
+        )
+        _emit_capture_progress_message(
+            progress_callback,
+            frame_index=attempted_frame_index,
+            backend_used=outcome.backend_used,
+            scroll_method=outcome.scroll_method,
+            diff_score=outcome.diff_score,
+            repeated_count=state.repeated_count,
+            stop_reason=STOP_REASON_CAPTURE_FAILED,
+            message=message,
+        )
+        return message, True
+
+    message = (
+        f"Frame {attempted_frame_index}: no movement "
+        f"(scroll={outcome.scroll_method}, diff={diff_text}, "
+        f"repeat={state.repeated_count}/{repeat_stop})."
+    )
+    LOGGER.info(
+        "[capture-session:%s] movement probe verdict=stalled frame=%s method=%s "
+        "diff=%s repeat=%s/%s",
+        session_id,
+        attempted_frame_index,
+        outcome.scroll_method,
+        diff_text,
+        state.repeated_count,
+        repeat_stop,
+    )
+    if state.repeated_count < repeat_stop:
+        return message, False
+    state.stop_reason = STOP_REASON_REPEAT
+    _emit_capture_progress_message(
+        progress_callback,
+        frame_index=attempted_frame_index,
+        backend_used=outcome.backend_used,
+        scroll_method=outcome.scroll_method,
+        diff_score=outcome.diff_score,
+        repeated_count=state.repeated_count,
+        stop_reason=state.stop_reason,
+        message=message,
+    )
+    return message, True
+
+
+def _append_capture_frame(
+    state: _CaptureLoopState,
+    *,
+    frame: Image.Image,
+    outcome: _ScrollStepOutcome,
+    message: str,
+    progress_callback: Callable[[ScrollCaptureProgress], None] | None,
+) -> None:
+    """Append a successful frame and emit normal running progress."""
+
+    state.frames.append(frame)
+    state.output_frames.append(
+        _prepare_output_frame(
+            frame,
+            trim_top_px=state.trim_top_px,
+            trim_bottom_px=state.trim_bottom_px,
+            trim_right_px=state.trim_right_px,
+        )
+    )
+    _emit_capture_progress_message(
+        progress_callback,
+        frame_index=len(state.frames),
+        backend_used=outcome.backend_used,
+        scroll_method=outcome.scroll_method,
+        diff_score=outcome.diff_score,
+        repeated_count=state.repeated_count,
+        stop_reason=STOP_REASON_RUNNING,
+        message=message,
+    )
+
+
 def run_full_page_capture(
     service: WindowCaptureService,
     target_hwnd: int,
@@ -181,9 +528,12 @@ def run_full_page_capture(
     auto_trim_fixed_strips = bool(options.auto_trim_fixed_strips)
     auto_trim_scrollbar = bool(options.auto_trim_scrollbar)
     LOGGER.info(
-        "[capture-session:%s] full-capture start hwnd=%s title=%r process=%r backend=%s "
-        "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s include_mouse_cursor=%s "
-        "scroll_to_top=%s auto_trim_fixed_strips=%s auto_trim_scrollbar=%s max_pages=%s delay_ms=%s",
+        "[capture-session:%s] full-capture start "
+        "hwnd=%s title=%r process=%r backend=%s "
+        "scroll_mode=%s wheel=%s cursor_hold=%s frame_region=%s "
+        "include_mouse_cursor=%s scroll_to_top=%s "
+        "auto_trim_fixed_strips=%s auto_trim_scrollbar=%s "
+        "max_pages=%s delay_ms=%s",
         session_id,
         target_hwnd,
         target_title,
@@ -236,50 +586,32 @@ def run_full_page_capture(
             )
             raise RuntimeError("No frames were captured.")
 
-        frames: list[Image.Image] = [first_frame]
-        output_frames: list[Image.Image] = [
-            _prepare_output_frame(
-                first_frame,
-                trim_top_px=0,
-                trim_bottom_px=0,
-                trim_right_px=0,
-            )
-        ]
-        trim_top_px = 0
-        trim_bottom_px = 0
-        trim_right_px = 0
-        trim_top_locked = False
-        trim_bottom_locked = False
-        trim_right_locked = False
-        trim_right_candidate_px = 0
-        trim_right_candidate_hits = 0
-        repeated_count = 0
-        stop_reason = STOP_REASON_RUNNING
+        state = _initial_capture_state(first_frame)
         LOGGER.info(
             "[capture-session:%s] frame=1 backend=%s method=initial movement=accepted",
             session_id,
             first_backend or "unknown",
         )
-        _emit_progress(
+        _emit_capture_progress_message(
             progress_callback,
-            ScrollCaptureProgress(
-                frame_index=1,
-                backend_used=first_backend,
-                scroll_method="initial",
-                diff_score=None,
-                repeated_count=0,
-                stop_reason=STOP_REASON_RUNNING,
-                message=f"Frame 1 captured via {first_backend or 'unknown backend'} (initial).",
+            frame_index=1,
+            backend_used=first_backend,
+            scroll_method="initial",
+            diff_score=None,
+            repeated_count=0,
+            stop_reason=STOP_REASON_RUNNING,
+            message=(
+                f"Frame 1 captured via {first_backend or 'unknown backend'} (initial)."
             ),
         )
 
-        while len(frames) < max_pages:
+        while len(state.frames) < max_pages:
             if stop_requested():
-                stop_reason = STOP_REASON_USER
+                state.stop_reason = STOP_REASON_USER
                 LOGGER.info(
                     "[capture-session:%s] stop requested by user at frame_count=%s",
                     session_id,
-                    len(frames),
+                    len(state.frames),
                 )
                 break
 
@@ -287,37 +619,31 @@ def run_full_page_capture(
             LOGGER.debug(
                 "[capture-session:%s] focus-check frame=%s focused=%s reason=%s",
                 session_id,
-                len(frames) + 1,
+                len(state.frames) + 1,
                 focused,
                 focus_reason or "",
             )
             if not focused:
-                stop_reason = STOP_REASON_CAPTURE_FAILED
+                state.stop_reason = STOP_REASON_CAPTURE_FAILED
                 LOGGER.error(
                     "[capture-session:%s] focus-check failed frame=%s reason=%s",
                     session_id,
-                    len(frames) + 1,
+                    len(state.frames) + 1,
                     focus_reason or "unknown",
                 )
-                _emit_progress(
+                _stop_for_focus_failure(
                     progress_callback,
-                    ScrollCaptureProgress(
-                        frame_index=len(frames),
-                        backend_used="",
-                        scroll_method="focus",
-                        diff_score=None,
-                        repeated_count=repeated_count,
-                        stop_reason=stop_reason,
-                        message=focus_reason or "Could not refocus target window.",
-                    ),
+                    attempted_frame_index=len(state.frames) + 1,
+                    repeated_count=state.repeated_count,
+                    focus_reason=focus_reason or "",
                 )
                 break
 
-            attempted_frame_index = len(frames) + 1
+            attempted_frame_index = len(state.frames) + 1
             outcome = _capture_after_scroll_ladder(
                 service=service,
                 target_hwnd=target_hwnd,
-                previous_frame=frames[-1],
+                previous_frame=state.frames[-1],
                 frame_index=attempted_frame_index,
                 session_id=session_id,
                 delay_ms=delay_ms,
@@ -327,19 +653,19 @@ def run_full_page_capture(
                 cursor_hold_mode=cursor_hold_mode,
                 frame_region=frame_region,
                 include_mouse_cursor=include_mouse_cursor,
-                trim_top_px=trim_top_px,
-                trim_bottom_px=trim_bottom_px,
-                trim_right_px=trim_right_px,
+                trim_top_px=state.trim_top_px,
+                trim_bottom_px=state.trim_bottom_px,
+                trim_right_px=state.trim_right_px,
                 auto_trim_probe=(
                     auto_trim_fixed_strips
                     and frame_region == "client_area"
-                    and (not trim_top_locked or not trim_bottom_locked)
+                    and (not state.trim_top_locked or not state.trim_bottom_locked)
                 ),
                 threshold=threshold,
             )
             frame = outcome.frame
             if frame is None:
-                stop_reason = STOP_REASON_CAPTURE_FAILED
+                state.stop_reason = STOP_REASON_CAPTURE_FAILED
                 LOGGER.error(
                     "[capture-session:%s] frame=%s capture failed method=%s backend=%s",
                     session_id,
@@ -347,223 +673,72 @@ def run_full_page_capture(
                     outcome.scroll_method,
                     outcome.backend_used or "unknown",
                 )
-                _emit_progress(
+                _stop_for_missing_frame(
                     progress_callback,
-                    ScrollCaptureProgress(
-                        frame_index=attempted_frame_index,
-                        backend_used=outcome.backend_used,
-                        scroll_method=outcome.scroll_method,
-                        diff_score=None,
-                        repeated_count=repeated_count,
-                        stop_reason=stop_reason,
-                        message=(
-                            f"Frame {attempted_frame_index} capture failed "
-                            f"after scroll={outcome.scroll_method}."
-                        ),
-                    ),
+                    attempted_frame_index=attempted_frame_index,
+                    outcome=outcome,
+                    repeated_count=state.repeated_count,
                 )
                 break
 
-            diff_score = outcome.diff_score
-            diff_text = _diff_text(diff_score)
             if not outcome.movement_detected:
-                repeated_count += 1
-                if outcome.probe_exhausted:
-                    stop_reason = STOP_REASON_CAPTURE_FAILED
-                    message = (
-                        f"Frame {attempted_frame_index}: movement probe failed "
-                        f"(scroll={outcome.scroll_method}, diff={diff_text})."
-                    )
-                    LOGGER.error(
-                        "[capture-session:%s] movement probe verdict=stalled frame=%s "
-                        "method=%s diff=%s backend=%s action=stop_capture_failed",
-                        session_id,
-                        attempted_frame_index,
-                        outcome.scroll_method,
-                        diff_text,
-                        outcome.backend_used or "unknown",
-                    )
-                    _emit_progress(
-                        progress_callback,
-                        ScrollCaptureProgress(
-                            frame_index=attempted_frame_index,
-                            backend_used=outcome.backend_used,
-                            scroll_method=outcome.scroll_method,
-                            diff_score=diff_score,
-                            repeated_count=repeated_count,
-                            stop_reason=STOP_REASON_CAPTURE_FAILED,
-                            message=message,
-                        ),
-                    )
-                    break
-                message = (
-                    f"Frame {attempted_frame_index}: no movement (scroll={outcome.scroll_method}, "
-                    f"diff={diff_text}, repeat={repeated_count}/{repeat_stop})."
+                message, should_stop = _handle_stalled_capture_outcome(
+                    state,
+                    outcome,
+                    attempted_frame_index=attempted_frame_index,
+                    repeat_stop=repeat_stop,
+                    progress_callback=progress_callback,
+                    session_id=session_id,
                 )
-                LOGGER.info(
-                    "[capture-session:%s] movement probe verdict=stalled frame=%s method=%s "
-                    "diff=%s repeat=%s/%s",
-                    session_id,
-                    attempted_frame_index,
-                    outcome.scroll_method,
-                    diff_text,
-                    repeated_count,
-                    repeat_stop,
-                )
-                if repeated_count >= repeat_stop:
-                    stop_reason = STOP_REASON_REPEAT
-                    _emit_progress(
-                        progress_callback,
-                        ScrollCaptureProgress(
-                            frame_index=attempted_frame_index,
-                            backend_used=outcome.backend_used,
-                            scroll_method=outcome.scroll_method,
-                            diff_score=diff_score,
-                            repeated_count=repeated_count,
-                            stop_reason=stop_reason,
-                            message=message,
-                        ),
-                    )
+                if should_stop:
                     break
             else:
-                repeated_count = 0
-                message = (
-                    f"Frame {attempted_frame_index} captured via "
-                    f"{outcome.backend_used or 'unknown backend'} "
-                    f"(scroll={outcome.scroll_method}, diff={diff_text})."
-                )
                 LOGGER.info(
-                    "[capture-session:%s] movement probe verdict=moved frame=%s method=%s "
-                    "diff=%s backend=%s",
+                    "[capture-session:%s] movement probe verdict=moved frame=%s "
+                    "method=%s diff=%s backend=%s",
                     session_id,
                     attempted_frame_index,
                     outcome.scroll_method,
-                    diff_text,
+                    _diff_text(outcome.diff_score),
                     outcome.backend_used or "unknown",
                 )
-
-                if (
-                    auto_trim_fixed_strips
-                    and frame_region == "client_area"
-                    and (not trim_top_locked or not trim_bottom_locked)
-                ):
-                    trim_changed = False
-                    if not trim_top_locked and outcome.estimated_trim_top_px > 0:
-                        trim_top_px = int(outcome.estimated_trim_top_px)
-                        trim_top_locked = True
-                        trim_changed = True
-                        LOGGER.info(
-                            "[capture-session:%s] auto-trim lock edge=top rows=%s",
-                            session_id,
-                            trim_top_px,
-                        )
-                    if not trim_bottom_locked and outcome.estimated_trim_bottom_px > 0:
-                        trim_bottom_px = int(outcome.estimated_trim_bottom_px)
-                        trim_bottom_locked = True
-                        trim_changed = True
-                        LOGGER.info(
-                            "[capture-session:%s] auto-trim lock edge=bottom rows=%s",
-                            session_id,
-                            trim_bottom_px,
-                        )
-                    if trim_changed:
-                        output_frames = [
-                            _prepare_output_frame(
-                                item,
-                                trim_top_px=trim_top_px,
-                                trim_bottom_px=trim_bottom_px,
-                                trim_right_px=trim_right_px,
-                            )
-                            for item in frames
-                        ]
-                if (
-                    auto_trim_scrollbar
-                    and frame_region == "client_area"
-                    and not trim_right_locked
-                ):
-                    estimated_right = _estimate_right_scrollbar_trim_from_pair(
-                        frames[-1], frame
-                    )
-                    if estimated_right > 0:
-                        if trim_right_candidate_px <= 0:
-                            trim_right_candidate_px = int(estimated_right)
-                            trim_right_candidate_hits = 1
-                        elif abs(trim_right_candidate_px - int(estimated_right)) <= 1:
-                            trim_right_candidate_px = round(
-                                (
-                                    float(trim_right_candidate_px)
-                                    + float(estimated_right)
-                                )
-                                / 2.0
-                            )
-                            trim_right_candidate_hits += 1
-                        else:
-                            trim_right_candidate_px = int(estimated_right)
-                            trim_right_candidate_hits = 1
-                    else:
-                        trim_right_candidate_px = 0
-                        trim_right_candidate_hits = 0
-
-                    if trim_right_candidate_hits >= 2 and trim_right_candidate_px > 0:
-                        trim_right_px = int(trim_right_candidate_px)
-                        trim_right_locked = True
-                        output_frames = [
-                            _prepare_output_frame(
-                                item,
-                                trim_top_px=trim_top_px,
-                                trim_bottom_px=trim_bottom_px,
-                                trim_right_px=trim_right_px,
-                            )
-                            for item in frames
-                        ]
-                        LOGGER.info(
-                            "[capture-session:%s] auto-trim lock edge=right cols=%s",
-                            session_id,
-                            trim_right_px,
-                        )
-
-            frames.append(frame)
-            output_frames.append(
-                _prepare_output_frame(
-                    frame,
-                    trim_top_px=trim_top_px,
-                    trim_bottom_px=trim_bottom_px,
-                    trim_right_px=trim_right_px,
+                message = _handle_movement_capture_outcome(
+                    state,
+                    outcome,
+                    frame_region=frame_region,
+                    auto_trim_fixed_strips=auto_trim_fixed_strips,
+                    auto_trim_scrollbar=auto_trim_scrollbar,
+                    session_id=session_id,
                 )
-            )
-            _emit_progress(
-                progress_callback,
-                ScrollCaptureProgress(
-                    frame_index=len(frames),
-                    backend_used=outcome.backend_used,
-                    scroll_method=outcome.scroll_method,
-                    diff_score=diff_score,
-                    repeated_count=repeated_count,
-                    stop_reason=STOP_REASON_RUNNING,
-                    message=message,
-                ),
+            _append_capture_frame(
+                state,
+                frame=frame,
+                outcome=outcome,
+                message=message,
+                progress_callback=progress_callback,
             )
 
-        if stop_reason == STOP_REASON_RUNNING:
-            stop_reason = STOP_REASON_MAX_PAGES
-        if not frames:
+        if state.stop_reason == STOP_REASON_RUNNING:
+            state.stop_reason = STOP_REASON_MAX_PAGES
+        if not state.frames:
             raise RuntimeError("No frames were captured.")
 
-        stitched = stitch_frames(output_frames).image
+        stitched = stitch_frames(state.output_frames).image
         LOGGER.info(
-            "[capture-session:%s] full-capture complete stop_reason=%s frames=%s trim_top_px=%s trim_bottom_px=%s trim_right_px=%s",
+            "[capture-session:%s] full-capture complete stop_reason=%s "
+            "frames=%s trim_top_px=%s trim_bottom_px=%s trim_right_px=%s",
             session_id,
-            stop_reason,
-            len(frames),
-            trim_top_px,
-            trim_bottom_px,
-            trim_right_px,
+            state.stop_reason,
+            len(state.frames),
+            state.trim_top_px,
+            state.trim_bottom_px,
+            state.trim_right_px,
         )
         return ScrollCaptureResult(
             image=stitched,
-            captured_frames=len(frames),
-            ended_by_repeat=stop_reason == STOP_REASON_REPEAT,
-            stop_reason=stop_reason,
+            captured_frames=len(state.frames),
+            ended_by_repeat=state.stop_reason == STOP_REASON_REPEAT,
+            stop_reason=state.stop_reason,
         )
     finally:
         service.end_full_capture_input_session()
@@ -639,7 +814,8 @@ def _capture_after_scroll_ladder(
             stage_name="wheel_then_pagedown",
         )
         LOGGER.debug(
-            "[capture-session:%s] frame=%s stage=wheel_then_pagedown diff=%s backend=%s",
+            "[capture-session:%s] frame=%s "
+            "stage=wheel_then_pagedown diff=%s backend=%s",
             session_id,
             frame_index,
             _diff_text(diff_after_page),
@@ -696,7 +872,8 @@ def _capture_after_scroll_ladder(
         stage_name="wheel_center",
     )
     LOGGER.debug(
-        "[capture-session:%s] frame=%s stage=wheel_center wheel_ok=%s diff=%s backend=%s",
+        "[capture-session:%s] frame=%s "
+        "stage=wheel_center wheel_ok=%s diff=%s backend=%s",
         session_id,
         frame_index,
         wheel_ok,
@@ -717,7 +894,8 @@ def _capture_after_scroll_ladder(
 
     if scroll_mode in {"wheel_click", "wheel_click_pagedown"}:
         LOGGER.debug(
-            "[capture-session:%s] frame=%s fallback=click_center_then_wheel reason=no_movement "
+            "[capture-session:%s] frame=%s "
+            "fallback=click_center_then_wheel reason=no_movement "
             "diff=%s",
             session_id,
             frame_index,
@@ -817,7 +995,8 @@ def _capture_after_scroll_ladder(
 
     if scroll_mode in {"wheel_pagedown", "wheel_click_pagedown"}:
         LOGGER.debug(
-            "[capture-session:%s] frame=%s fallback=pagedown reason=no_movement diff=%s",
+            "[capture-session:%s] frame=%s "
+            "fallback=pagedown reason=no_movement diff=%s",
             session_id,
             frame_index,
             _diff_text(diff_score),
@@ -1202,21 +1381,15 @@ def _horizontal_band_activity(
     return _average(samples)
 
 
-def detect_right_scrollbar_trim_single_frame(
-    frame: Image.Image,
-) -> int:
-    """Estimate right-edge scrollbar width from one frame with conservative confidence checks."""
-
-    width, height = frame.size
-    min_width = 4
-    max_width = min(140, max(0, int(width * 0.16)))
-    if max_width < min_width or height < 80:
-        return 0
-
-    gray = frame.convert("L")
-    pixels = gray.load()
-    y_step = max(1, height // 260)
-    scan_start = max(0, width - max_width - 36)
+def _scan_right_edge_columns(
+    pixels: Any,
+    *,
+    scan_start: int,
+    width: int,
+    height: int,
+    y_step: int,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """Collect per-column activity and luminance for right-edge analysis."""
 
     col_activity: dict[int, float] = {}
     col_luma: dict[int, float] = {}
@@ -1232,76 +1405,124 @@ def detect_right_scrollbar_trim_single_frame(
             previous_value = value
         col_activity[x_pos] = _average(vertical_deltas)
         col_luma[x_pos] = _average(luminance_samples)
+    return col_activity, col_luma
+
+
+def _single_frame_scrollbar_candidate_confidence(
+    *,
+    candidate_width: int,
+    width: int,
+    height: int,
+    scan_start: int,
+    y_step: int,
+    pixels: Any,
+    col_activity: dict[int, float],
+    col_luma: dict[int, float],
+) -> float:
+    """Score one right-edge scrollbar-width candidate for confidence."""
+
+    boundary_x = width - candidate_width
+    if boundary_x <= scan_start + 1:
+        return 0.0
+
+    band_activity = _average(
+        [col_activity.get(x_pos, 255.0) for x_pos in range(boundary_x, width)]
+    )
+    left_window_width = min(24, max(8, candidate_width + 4))
+    left_start = max(scan_start, boundary_x - left_window_width)
+    left_end = boundary_x
+    if left_end - left_start < 3:
+        return 0.0
+    left_activity = _average(
+        [col_activity.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
+    )
+    if left_activity <= 0.0:
+        return 0.0
+
+    activity_ratio = band_activity / float(max(0.1, left_activity))
+    if activity_ratio > 0.78:
+        return 0.0
+
+    edge_contrast = _boundary_contrast(
+        pixels,
+        boundary_x=boundary_x,
+        height=height,
+        y_step=y_step,
+    )
+    band_horizontal_activity = _horizontal_band_activity(
+        pixels,
+        start_x=boundary_x,
+        end_x=width,
+        height=height,
+        y_step=y_step,
+    )
+    band_luma = _average(
+        [col_luma.get(x_pos, 0.0) for x_pos in range(boundary_x, width)]
+    )
+    left_luma = _average(
+        [col_luma.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
+    )
+    luma_delta = abs(left_luma - band_luma)
+
+    confidence = 0.0
+    if activity_ratio <= 0.56:
+        confidence += 1.2
+    elif activity_ratio <= 0.68:
+        confidence += 0.7
+    if (left_activity - band_activity) >= 2.2:
+        confidence += 0.8
+    elif (left_activity - band_activity) >= 1.2:
+        confidence += 0.4
+    if edge_contrast >= 2.2:
+        confidence += 0.7
+    elif edge_contrast >= 1.3:
+        confidence += 0.35
+    if band_horizontal_activity >= 0.7:
+        confidence += 0.35
+    if luma_delta >= 2.0:
+        confidence += 0.35
+    if candidate_width > 36:
+        confidence -= 0.25
+    return confidence
+
+
+def detect_right_scrollbar_trim_single_frame(
+    frame: Image.Image,
+) -> int:
+    """Estimate right-edge scrollbar width from one frame conservatively."""
+
+    width, height = frame.size
+    min_width = 4
+    max_width = min(140, max(0, int(width * 0.16)))
+    if max_width < min_width or height < 80:
+        return 0
+
+    gray = frame.convert("L")
+    pixels = gray.load()
+    y_step = max(1, height // 260)
+    scan_start = max(0, width - max_width - 36)
+
+    col_activity, col_luma = _scan_right_edge_columns(
+        pixels,
+        scan_start=scan_start,
+        width=width,
+        height=height,
+        y_step=y_step,
+    )
 
     best_trim = 0
     best_score = 0.0
     for candidate_width in range(min_width, max_width + 1):
-        boundary_x = width - candidate_width
-        if boundary_x <= scan_start + 1:
-            continue
-
-        band_activity_values = [
-            col_activity.get(x_pos, 255.0) for x_pos in range(boundary_x, width)
-        ]
-        band_activity = _average(band_activity_values)
-
-        left_window_width = min(24, max(8, candidate_width + 4))
-        left_start = max(scan_start, boundary_x - left_window_width)
-        left_end = boundary_x
-        if left_end - left_start < 3:
-            continue
-        left_activity_values = [
-            col_activity.get(x_pos, 0.0) for x_pos in range(left_start, left_end)
-        ]
-        left_activity = _average(left_activity_values)
-        if left_activity <= 0.0:
-            continue
-
-        activity_ratio = band_activity / float(max(0.1, left_activity))
-        if activity_ratio > 0.78:
-            continue
-
-        edge_contrast = _boundary_contrast(
-            pixels,
-            boundary_x=boundary_x,
+        confidence = _single_frame_scrollbar_candidate_confidence(
+            candidate_width=candidate_width,
+            width=width,
             height=height,
+            scan_start=scan_start,
             y_step=y_step,
+            pixels=pixels,
+            col_activity=col_activity,
+            col_luma=col_luma,
         )
-        band_horizontal_activity = _horizontal_band_activity(
-            pixels,
-            start_x=boundary_x,
-            end_x=width,
-            height=height,
-            y_step=y_step,
-        )
-        band_luma = _average(
-            [col_luma.get(x_pos, 0.0) for x_pos in range(boundary_x, width)]
-        )
-        left_luma = _average(
-            [col_luma.get(x_pos, 0.0) for x_pos in range(left_start, left_end)]
-        )
-        luma_delta = abs(left_luma - band_luma)
-
-        confidence = 0.0
-        if activity_ratio <= 0.56:
-            confidence += 1.2
-        elif activity_ratio <= 0.68:
-            confidence += 0.7
-        if (left_activity - band_activity) >= 2.2:
-            confidence += 0.8
-        elif (left_activity - band_activity) >= 1.2:
-            confidence += 0.4
-        if edge_contrast >= 2.2:
-            confidence += 0.7
-        elif edge_contrast >= 1.3:
-            confidence += 0.35
-        if band_horizontal_activity >= 0.7:
-            confidence += 0.35
-        if luma_delta >= 2.0:
-            confidence += 0.35
-        if candidate_width > 36:
-            confidence -= 0.25
-
         if confidence >= 2.0 and confidence > best_score:
             best_score = confidence
             best_trim = candidate_width
@@ -1315,7 +1536,7 @@ def _estimate_right_scrollbar_trim_from_pair(
     previous_frame: Image.Image,
     current_frame: Image.Image,
 ) -> int:
-    """Estimate right scrollbar width from two frames using right-edge stability vs left movement."""
+    """Estimate scrollbar width from pairwise right-edge stability checks."""
 
     width = min(previous_frame.width, current_frame.width)
     height = min(previous_frame.height, current_frame.height)
@@ -1437,7 +1658,8 @@ def _evaluate_movement(
                 trim_right_px=trim_right_px,
             )
             LOGGER.debug(
-                "[capture-session:%s] frame=%s stage=%s auto-trim probe top=%s bottom=%s "
+                "[capture-session:%s] frame=%s stage=%s "
+                "auto-trim probe top=%s bottom=%s "
                 "base_diff=%s trimmed_diff=%s",
                 session_id,
                 frame_index,

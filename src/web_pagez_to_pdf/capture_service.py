@@ -314,7 +314,7 @@ class WindowCaptureService:
         retries: int = 1,
         settle_ms: int = 180,
     ) -> int | None:
-        """Switch to previous app via Alt+Tab and return a capture-safe foreground hwnd."""
+        """Switch to the previous app and return a capture-safe foreground hwnd."""
 
         attempt_count = max(1, int(retries) + 1)
         settle_s = max(0.05, float(settle_ms) / 1000.0)
@@ -418,7 +418,8 @@ class WindowCaptureService:
                 LOGGER.error("activate_window restore failed hwnd=%s", hwnd)
                 return (
                     False,
-                    "Target window is minimized and could not be restored. Restore it and retry.",
+                    "Target window is minimized and could not be restored. "
+                    "Restore it and retry.",
                 )
         if WindowCaptureService.is_foreground_window(hwnd):
             LOGGER.debug("activate_window already foreground hwnd=%s", hwnd)
@@ -458,7 +459,8 @@ class WindowCaptureService:
             )
             return (
                 False,
-                "Could not focus target window. Click it once, keep it visible, then retry.",
+                "Could not focus target window. Click it once, keep it visible, "
+                "then retry.",
             )
         LOGGER.debug("activate_window focus succeeded via thread attach hwnd=%s", hwnd)
         return (True, "")
@@ -544,7 +546,8 @@ class WindowCaptureService:
         )
         self._scroll_cursor_origin = self._current_cursor_pos()
         LOGGER.info(
-            "%s input-session start %s strategy=%s backend=%s wheel=%s click_assist=%s cursor_hold=%s",
+            "%s input-session start %s strategy=%s backend=%s "
+            "wheel=%s click_assist=%s cursor_hold=%s",
             self._session_prefix(),
             self._capture_session_target,
             scroll_strategy or "n/a",
@@ -749,7 +752,8 @@ class WindowCaptureService:
         normalized_region = self._normalize_frame_region(frame_region)
         include_cursor = bool(include_mouse_cursor)
         LOGGER.debug(
-            "%s capture_window start hwnd=%s primary=%s frame_region=%s include_cursor=%s fallback_chain=%s",
+            "%s capture_window start hwnd=%s primary=%s frame_region=%s "
+            "include_cursor=%s fallback_chain=%s",
             self._session_prefix(),
             hwnd,
             primary_backend,
@@ -1018,7 +1022,8 @@ class WindowCaptureService:
             return None
         if include_mouse_cursor:
             LOGGER.debug(
-                "%s qt_grab_window cursor inclusion not supported; returning frame without cursor hwnd=%s",
+                "%s qt_grab_window cursor inclusion not supported; "
+                "returning frame without cursor hwnd=%s",
                 self._session_prefix(),
                 hwnd,
             )
@@ -1057,7 +1062,8 @@ class WindowCaptureService:
     ) -> tuple[int, int, int, int] | None:
         normalized = self._normalize_frame_region(frame_region)
         if normalized == "client_area":
-            # Prefer client-area bounds so browser chrome/toolbars/status bars are excluded by default.
+            # Prefer client-area bounds so browser chrome and toolbars are
+            # excluded by default.
             client_rect = self._client_rect(hwnd)
             if client_rect is not None:
                 return client_rect
@@ -1175,7 +1181,8 @@ class WindowCaptureService:
                 client_rect = self._client_rect(hwnd)
                 if client_rect is None:
                     LOGGER.debug(
-                        "%s print_window client-area rect unavailable; using full frame hwnd=%s",
+                        "%s print_window client-area rect unavailable; "
+                        "using full frame hwnd=%s",
                         self._session_prefix(),
                         hwnd,
                     )

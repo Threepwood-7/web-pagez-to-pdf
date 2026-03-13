@@ -690,9 +690,7 @@ def test_estimate_right_scrollbar_trim_from_pair_detects_stable_band() -> None:
     assert 10 <= trim <= 18
 
 
-def test_estimate_right_scrollbar_trim_from_pair_returns_zero_without_left_movement() -> (
-    None
-):
+def test_pair_scrollbar_trim_returns_zero_without_left_movement() -> None:
     left = _make_right_scrollbar_frame(
         width=220, height=180, scrollbar_width=14, offset=0
     )
@@ -751,9 +749,7 @@ def test_detect_right_scrollbar_trim_single_frame_detects_low_contrast_band() ->
     assert 7 <= trim <= 16
 
 
-def test_detect_right_scrollbar_trim_single_frame_returns_zero_for_uncertain_right_strip() -> (
-    None
-):
+def test_single_frame_scrollbar_trim_returns_zero_for_uncertain_strip() -> None:
     frame = Image.new("RGB", (220, 160), (205, 205, 205))
     for y_pos in range(frame.height):
         for x_pos in range(frame.width):

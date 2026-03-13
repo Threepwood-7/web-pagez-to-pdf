@@ -495,7 +495,9 @@ def test_capture_progress_updates_status_and_log(qtbot: QtBot) -> None:
         diff_score=3.6,
         repeated_count=0,
         stop_reason="running",
-        message="Frame 2 captured via screen_region_gdi (scroll=wheel_center, diff=3.60).",
+        message=(
+            "Frame 2 captured via screen_region_gdi (scroll=wheel_center, diff=3.60)."
+        ),
     )
     window._on_full_capture_progress(payload)
 

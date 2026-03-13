@@ -1243,11 +1243,13 @@ class MainWindow(QMainWindow):
             (self.pick_list_button, "Choose the window to capture."),
             (
                 self.capture_button,
-                "Capture the currently visible viewport of the selected window (Ctrl+Shift+C).",
+                "Capture the currently visible viewport of the selected window "
+                "(Ctrl+Shift+C).",
             ),
             (
                 self.capture_full_button,
-                "Capture a full scrolling page from the selected window (Ctrl+Shift+S).",
+                "Capture a full scrolling page from the selected window "
+                "(Ctrl+Shift+S).",
             ),
             (
                 self.capture_last_selected_button,
@@ -1316,11 +1318,13 @@ class MainWindow(QMainWindow):
             (self.editor_view_zoom_spin, "Manual editor view zoom percent."),
             (
                 self.pan_tool_button,
-                "Persistent tool mode: pan/scroll the preview while left mouse is pressed.",
+                "Persistent tool mode: pan or scroll the preview while the left "
+                "mouse button is pressed.",
             ),
             (
                 self.vertical_crop_tool_button,
-                "Persistent tool mode: draw a manual vertical crop band for the selected item.",
+                "Persistent tool mode: draw a manual vertical crop band for the "
+                "selected item.",
             ),
             (
                 self.rect_crop_tool_button,
@@ -1328,7 +1332,8 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.free_crop_tool_button,
-                "Persistent tool mode: draw free-form crop points, then double-click to apply.",
+                "Persistent tool mode: draw free-form crop points, then "
+                "double-click to apply.",
             ),
             (
                 self.redact_tool_button,
@@ -1336,13 +1341,16 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.content_sizing_mode_combo,
-                "Persistent transform mode for print sizing: Fit Width scales content to printable width; "
-                "Fit to Page always prints the entire image on one page; Stretch if Smaller upscales only when both "
-                "dimensions are smaller; Original Size uses 96-DPI native size without auto scaling.",
+                "Persistent transform mode for print sizing: Fit Width scales "
+                "content to printable width; Fit to Page prints the entire image "
+                "on one page; Stretch if Smaller upscales only when both "
+                "dimensions are smaller; Original Size uses 96-DPI native size "
+                "without auto scaling.",
             ),
             (
                 self.zoom_spin,
-                "Print scaling percent for pagination/export and page thumbnails. Does not change editor view zoom.",
+                "Print scaling percent for pagination, export, and page "
+                "thumbnails. Does not change editor view zoom.",
             ),
             (self.rotate_spin, "Rotate image in whole degrees."),
             (self.straighten_spin, "Fine rotation used for straightening."),
@@ -1355,25 +1363,30 @@ class MainWindow(QMainWindow):
             (self.gutter_spin, "Extra inner gutter margin in millimeters."),
             (
                 self.blank_spin,
-                "Blank-row threshold (0..255). Higher values treat near-white rows as blank more aggressively; "
-                "lower values require cleaner white rows before accepting a split cut.",
+                "Blank-row threshold (0..255). Higher values treat near-white "
+                "rows as blank more aggressively; lower values require cleaner "
+                "white rows before accepting a split cut.",
             ),
             (
                 self.search_spin,
-                "Search window in pixels around each ideal page break. Larger windows can find cleaner blank-row "
-                "cuts farther from the ideal split; smaller windows keep cuts closer to the target position.",
+                "Search window in pixels around each ideal page break. Larger "
+                "windows can find cleaner blank-row cuts farther from the ideal "
+                "split; smaller windows keep cuts closer to the target position.",
             ),
             (
                 self.header_input,
-                "Header rich text. Supports tokens like {title}, {page}, {pages}, {datetime}.",
+                "Header rich text. Supports tokens like {title}, {page}, "
+                "{pages}, {datetime}.",
             ),
             (
                 self.footer_input,
-                "Footer rich text. Supports tokens like {title}, {page}, {pages}, {datetime}.",
+                "Footer rich text. Supports tokens like {title}, {page}, "
+                "{pages}, {datetime}.",
             ),
             (
                 self.editor_overlay_toggle,
-                "Toggle page-break guides, split markers, labels, and printable area guides.",
+                "Toggle page-break guides, split markers, labels, and printable "
+                "area guides.",
             ),
             (self.thumbnail_zoom_slider, "Scale the bottom thumbnail preview row."),
             (
@@ -1382,23 +1395,29 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.add_split_button,
-                "Arm one-shot split add mode. Then click the image area or Y ruler to place a split marker.",
+                "Arm one-shot split add mode. Then click the image area or "
+                "Y ruler to place a split marker.",
             ),
             (
                 self.split_list,
-                "Current split markers for this queue item (auto-calculated when no edits are persisted).",
+                "Current split markers for this queue item "
+                "(auto-calculated when no edits are persisted).",
             ),
             (
                 self.remove_split_button,
-                "Arm one-shot split remove mode. Then click a split marker on the image or Y ruler to remove it.",
+                "Arm one-shot split remove mode. Then click a split marker on "
+                "the image or Y ruler to remove it.",
             ),
             (
                 self.reset_split_markers_button,
-                "Clear persisted split marker edits and restore auto-calculated split markers.",
+                "Clear persisted split marker edits and restore "
+                "auto-calculated split markers.",
             ),
             (
                 self.vertical_border_crop_button,
-                "One-shot action: auto-detect left/right content boundaries for the selected queue item and apply a non-destructive vertical border crop.",
+                "One-shot action: auto-detect left and right content boundaries "
+                "for the selected queue item and apply a non-destructive "
+                "vertical border crop.",
             ),
             (
                 self.clear_redactions_button,
@@ -1424,7 +1443,8 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.open_after_export_checkbox,
-                "Open output file (or folder when multiple files are generated) after export.",
+                "Open the output file, or the folder when multiple files are "
+                "generated, after export.",
             ),
             (
                 self.docx_mode_combo,
@@ -1508,8 +1528,12 @@ class MainWindow(QMainWindow):
             "capture.scroll_mode": str(
                 self.capture_scroll_mode_combo.currentData() or DEFAULT_SCROLL_MODE
             ),
-            "capture.scroll_to_top_on_full": self.capture_scroll_to_top_checkbox.isChecked(),
-            "capture.auto_trim_fixed_strips": self.capture_auto_trim_fixed_checkbox.isChecked(),
+            "capture.scroll_to_top_on_full": (
+                self.capture_scroll_to_top_checkbox.isChecked()
+            ),
+            "capture.auto_trim_fixed_strips": (
+                self.capture_auto_trim_fixed_checkbox.isChecked()
+            ),
             "capture.frame_region": str(
                 self.capture_frame_region_combo.currentData()
                 or DEFAULT_CAPTURE_FRAME_REGION
@@ -1521,7 +1545,9 @@ class MainWindow(QMainWindow):
             "capture.cursor_hold_mode": str(
                 self.capture_cursor_hold_combo.currentData() or DEFAULT_CURSOR_HOLD_MODE
             ),
-            "capture.include_mouse_cursor": self.capture_include_mouse_checkbox.isChecked(),
+            "capture.include_mouse_cursor": (
+                self.capture_include_mouse_checkbox.isChecked()
+            ),
             "capture.log_level": str(
                 self.capture_log_level_combo.currentData() or DEFAULT_CAPTURE_LOG_LEVEL
             ),
@@ -2229,7 +2255,8 @@ class MainWindow(QMainWindow):
         if target is None:
             return
         CAPTURE_UI_LOGGER.info(
-            "viewport capture target hwnd=%s label=%r backend=%s frame_region=%s include_cursor=%s",
+            "viewport capture target hwnd=%s label=%r backend=%s "
+            "frame_region=%s include_cursor=%s",
             target.hwnd,
             target.label,
             self._capture_backend_primary(),
@@ -2291,7 +2318,9 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Capture already running.")
             return
         CAPTURE_UI_LOGGER.info(
-            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s wheel=%s cursor=%s frame_region=%s include_cursor=%s scroll_to_top=%s auto_trim=%s auto_trim_scrollbar=%s",
+            "full capture target hwnd=%s label=%r backend=%s scroll_mode=%s "
+            "wheel=%s cursor=%s frame_region=%s include_cursor=%s "
+            "scroll_to_top=%s auto_trim=%s auto_trim_scrollbar=%s",
             target.hwnd,
             target.label,
             self._capture_backend_primary(),
@@ -2312,7 +2341,8 @@ class MainWindow(QMainWindow):
                 effective_wheel_mode,
             )
             self._append_capture_log(
-                "Legacy wheel mode overridden to Physical Center (SendInput) for full capture."
+                "Legacy wheel mode overridden to Physical Center (SendInput) "
+                "for full capture."
             )
         focused, message = self._capture_service.ensure_window_foreground(target.hwnd)
         if not focused:
@@ -2325,7 +2355,8 @@ class MainWindow(QMainWindow):
                 message or "Could not focus selected target window."
             )
             self._append_capture_log(
-                f"Failed to focus target before full capture: {message or 'unknown reason'}"
+                "Failed to focus target before full capture: "
+                f"{message or 'unknown reason'}"
             )
             return
         self._stop_event.clear()
@@ -2356,7 +2387,8 @@ class MainWindow(QMainWindow):
         self._append_capture_log(f"Target focused: {target.label}.")
         self._append_capture_log(
             "Full capture started "
-            f"(backend={self._capture_backend_primary()}, scroll_mode={self._capture_scroll_mode()}, "
+            f"(backend={self._capture_backend_primary()}, "
+            f"scroll_mode={self._capture_scroll_mode()}, "
             f"wheel={self._capture_wheel_injection_mode()}, "
             f"cursor={self._capture_cursor_hold_mode()}, "
             f"frame_region={self._capture_frame_region()}, "
@@ -2416,7 +2448,8 @@ class MainWindow(QMainWindow):
         )
         status = (
             f"Full capture frame {progress_obj.frame_index}: "
-            f"scroll={progress_obj.scroll_method}, backend={progress_obj.backend_used or 'unknown'}, "
+            f"scroll={progress_obj.scroll_method}, "
+            f"backend={progress_obj.backend_used or 'unknown'}, "
             f"diff={diff_text}, repeat={progress_obj.repeated_count}"
         )
         if progress_obj.stop_reason != "running":
@@ -3408,7 +3441,9 @@ class MainWindow(QMainWindow):
         if tool != "pan" and self._split_action_mode != "none":
             self._set_split_action_mode(
                 "none",
-                reason="Split marker action canceled because another tool was selected.",
+                reason=(
+                    "Split marker action canceled because another tool was selected."
+                ),
             )
         self.editor_canvas.set_tool(tool)
         self._apply_magnifier_visibility_for_tool(tool)
@@ -3431,12 +3466,14 @@ class MainWindow(QMainWindow):
         self.editor_canvas.set_split_action_mode(normalized)
         if normalized == "add":
             self.status_label.setText(
-                "Add Split Marker armed. Click the image area or Y ruler to place a split marker."
+                "Add Split Marker armed. Click the image area or Y ruler "
+                "to place a split marker."
             )
             return
         if normalized == "remove":
             self.status_label.setText(
-                "Remove Split Marker armed. Click a split marker on the image or Y ruler to remove it."
+                "Remove Split Marker armed. Click a split marker on the image "
+                "or Y ruler to remove it."
             )
             return
         if reason:
@@ -3763,7 +3800,8 @@ class MainWindow(QMainWindow):
         nearest = self._nearest_effective_split_marker(int(marker_y), tolerance_px=18)
         if nearest is None:
             self.status_label.setText(
-                "No split marker near click. Click a marker line or ruler triangle to remove."
+                "No split marker near click. Click a marker line or ruler "
+                "triangle to remove."
             )
             return
         markers = [
@@ -3856,7 +3894,8 @@ class MainWindow(QMainWindow):
             CAPTURE_UI_LOGGER.warning("export blocked: no output formats selected")
             return
         CAPTURE_UI_LOGGER.info(
-            "export start formats=%s output_dir=%s basename=%s combine_mode=%s captures=%s",
+            "export start formats=%s output_dir=%s basename=%s "
+            "combine_mode=%s captures=%s",
             ",".join(selected_formats),
             request.output_dir,
             request.basename,

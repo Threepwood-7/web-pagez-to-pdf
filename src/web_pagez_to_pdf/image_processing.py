@@ -318,7 +318,7 @@ def suggest_navigation_crop_with_confidence(
 def suggest_auto_vertical_border_crop_with_confidence(
     image: Image.Image,
 ) -> tuple[int, int, bool, bool]:
-    """Detect minimal left/right border crop by scanning each sampled row from a robust center."""
+    """Detect left and right border crops around a robust sampled center."""
 
     gray = np.asarray(image.convert("L"), dtype=np.float32)
     if gray.ndim != 2:
