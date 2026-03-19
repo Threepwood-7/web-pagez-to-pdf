@@ -1,5 +1,9 @@
 ### Editor Split + Preview UX Refactor Plan
 
+Add a capture delay after switching window
+Increase the scroll delay default
+
+
 #### Summary
 Implement a coordinated Editor UX update that removes explicit Split Edit mode, keeps split-marker editing accessible via existing split controls, and redesigns `Page Layout & Print Preview` into a top two-column layout with live zoom tooling plus a clearer, zoomable full-width thumbnail preview row.
 
